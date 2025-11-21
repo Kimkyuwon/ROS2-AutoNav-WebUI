@@ -36,6 +36,7 @@ A web-based graphical user interface for ROS2 robotics applications, providing i
 
 - **File Player (ConPR Format)**
   - Play CSV-based trajectory data (pose, IMU)
+  - Based on [ConPR](https://github.com/dongjae0107/ConPR) dataset format
   - Variable playback speed (0.01x ~ 20.0x)
   - Convert to ROS2 bag format
   - Support for Livox LiDAR and camera data
@@ -46,12 +47,6 @@ A web-based graphical user interface for ROS2 robotics applications, providing i
   - Path and Odometry display
   - Interactive camera control
   - WebSocket-based low-latency rendering
-
-### Network Monitoring
-- **Latency Indicator**
-  - Real-time network latency measurement
-  - Color-coded status (green/yellow/red)
-  - Ideal for remote smartphone access
 
 ## Demo
 
@@ -69,7 +64,7 @@ A web-based graphical user interface for ROS2 robotics applications, providing i
 
 ### 1. Ubuntu and ROS2
 
-**Ubuntu:** >= 20.04
+**Ubuntu:** >= 22.04
 
 **ROS2:** >= Jazzy. [ROS2 Installation](https://docs.ros.org/en/jazzy/Installation.html)
 
@@ -115,7 +110,7 @@ colcon build --packages-select fast_lio
 
 ```bash
 cd ~/your_workspace/src
-git clone https://github.com/YOUR_USERNAME/web_gui.git
+git clone https://github.com/Kimkyuwon/Web-based-GUI-for-ROS2-SLAM-and-File-Player.git
 ```
 
 ### Build
@@ -196,7 +191,6 @@ Same workflow as SLAM, but uses `localization_config.yaml` and `localization.lau
 3. Click "Select Topic" to choose topics
 4. Click "Record" to start recording
 5. Click "Stop" to finish recording
-6. Files saved to `/home/YOUR_USERNAME/dataset/BAG_NAME/`
 
 ### 3D Visualization
 
@@ -341,6 +335,9 @@ sudo systemctl start web_gui
 ### SLAM
 - [FAST-LIO](https://github.com/hku-mars/FAST_LIO) - Fast LiDAR-Inertial Odometry
 
+### Dataset
+- [ConPR](https://github.com/dongjae0107/ConPR) - ConPR dataset format for trajectory data
+
 ### Visualization
 - [Three.js](https://threejs.org/) - 3D graphics library
 - [rosbridge_suite](https://github.com/RobotWebTools/rosbridge_suite) - WebSocket interface to ROS
@@ -349,8 +346,7 @@ sudo systemctl start web_gui
 
 Thanks to the developers of:
 - [FAST-LIO](https://github.com/hku-mars/FAST_LIO) for robust SLAM algorithms
-- [rosbridge_suite](https://github.com/RobotWebTools/rosbridge_suite) for ROS-web communication
-- [Three.js](https://threejs.org/) for 3D visualization capabilities
+- [ConPR](https://github.com/dongjae0107/ConPR) for the dataset format used in File Player
 
 ## License
 
