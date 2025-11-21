@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROS2 Web GUI</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>ROS2 Web GUI</h1>
+
+        <!-- Tab Navigation -->
+        <div class="tab-navigation">
+            <button class="tab-button active" onclick="openTab('slam-tab')">SLAM/Localization</button>
+            <button class="tab-button" onclick="openTab('player-tab')">Data Player/Recorder</button>
+        </div>
+
+        <!-- SLAM/Localization Tab -->
+        <div id="slam-tab" class="tab-content active">
+            <!-- Sub-Tab Navigation -->
+            <div class="subtab-navigation">
+                <button class="subtab-button active" onclick="openSubTab('lidar-slam-subtab')">LiDAR SLAM</button>
+                <button class="subtab-button" onclick="openSubTab('localization-subtab')">Localization</button>
+                <button class="subtab-button" onclick="openSubTab('multi-session-slam-subtab')">Multi-Session SLAM</button>
+            </div>
+
+            <!-- LiDAR SLAM Sub-Tab -->
+            <div id="lidar-slam-subtab" class="subtab-content active">
+                <div class="section">
+                    <h2>LiDAR SLAM</h2>
+                    <div class="separator"></div>
+
+                    <!-- Config Parameters Display -->
+                    <div id="slam-config-container" style="display: none;">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <h3>SLAM Configuration Parameters</h3>
+                            <button id="slam-config-toggle-btn" class="collapse-toggle-btn" onclick="toggleSlamConfig()">▲</button>
+                        </div>
+                        <div class="separator"></div>
+                        <div id="slam-config-parameters">
+                            <!-- Parameters will be dynamically loaded here -->
+                        </div>
+                        <div class="separator"></div>
+                    </div>
+
+                    <div class="bag-control-buttons" style="margin-bottom: 15px;">
+                        <button onclick="loadSlamConfig()">Config Load</button>
+                        <button id="slam-save-button" onclick="saveSlamConfig()">Set Config File</button>
+                        <button id="slam-save-map-button" onclick="saveSlamMap()">Save Map</button>
+                        <button id="slam-start-button" onclick="startSlamMapping()">Start SLAM</button>
+                        <button id="slam-stop-button" onclick="stopSlamMapping()">Stop SLAM</button>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <!-- Terminal Output -->
+                    <div class="terminal-container">
+                        <h3>Terminal Output</h3>
+                        <div id="slam-terminal-output" class="terminal-output"></div>
+                    </div>
+
+                    <div class="separator"></div>
+                </div>
+            </div>
+
+            <!-- Localization Sub-Tab -->
+            <div id="localization-subtab" class="subtab-content">
+                <div class="section">
+                    <h2>Localization</h2>
+                    <div class="separator"></div>
+
+                    <!-- Config Parameters Display -->
+                    <div id="localization-config-container" style="display: none;">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <h3>Localization Configuration Parameters</h3>
+                            <button id="localization-config-toggle-btn" class="collapse-toggle-btn" onclick="toggleLocalizationConfig()">▲</button>
+                        </div>
+                        <div class="separator"></div>
+                        <div id="localization-config-parameters">
+                            <!-- Parameters will be dynamically loaded here -->
+                        </div>
+                        <div class="separator"></div>
+                    </div>
+
+                    <div class="bag-control-buttons" style="margin-bottom: 15px;">
+                        <button onclick="loadLocalizationConfig()">Config Load</button>
+                        <button id="localization-save-button" onclick="saveLocalizationConfig()">Set Config File</button>
+                        <button id="localization-start-button" onclick="startLocalizationMapping()">Start Localization</button>
+                        <button id="localization-stop-button" onclick="stopLocalizationMapping()">Stop Localization</button>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <!-- Terminal Output -->
+                    <div class="terminal-container">
+                        <h3>Terminal Output</h3>
+                        <div id="localization-terminal-output" class="terminal-output"></div>
+                    </div>
+
+                    <div class="separator"></div>
+                </div>
+            </div>
+
+            <!-- Multi-Session SLAM Sub-Tab -->
+            <div id="multi-session-slam-subtab" class="subtab-content">
+                <div class="section">
+                    <h2>Multi-Session SLAM</h2>
+                    <div class="separator"></div>
+
+                    <div class="form-group">
+                        <label>Map 1:</label>
+                        <input type="text" id="slam-map1" placeholder="Click Load Map 1 to browse" readonly>
+                        <button onclick="loadMap1()">Load Map 1</button>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Map 2:</label>
+                        <input type="text" id="slam-map2" placeholder="Click Load Map 2 to browse" readonly>
+                        <button onclick="loadMap2()">Load Map 2</button>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Output:</label>
+                        <input type="text" id="slam-output" placeholder="Enter directory name (e.g., result)">
+                        <button onclick="setOutput()">Set Output</button>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <div class="status">
+                        <label id="slam-status">Status: Ready</label>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <div class="action-buttons">
+                        <button class="primary-button" onclick="runOptimization()">Multi Session Optimization</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Player/Recorder Tab -->
+        <div id="player-tab" class="tab-content">
+            <!-- Sub-Tab Navigation -->
+            <div class="subtab-navigation">
+                <button class="subtab-button active" onclick="openSubTab('bag-player-subtab')">Bag Player</button>
+                <button class="subtab-button" onclick="openSubTab('bag-recorder-subtab')">Bag Recorder</button>
+                <button class="subtab-button" onclick="openSubTab('file-player-subtab')">File Player</button>
+            </div>
+
+            <!-- Bag Player Sub-Tab -->
+            <div id="bag-player-subtab" class="subtab-content active">
+                <div class="section">
+                    <h2>Bag Player</h2>
+                    <div class="separator"></div>
+
+                    <div class="form-group">
+                        <label>Bag Directory:</label>
+                        <input type="text" id="bag-directory" placeholder="Click Load Bag File to browse" readonly>
+                        <button onclick="loadBagFile()">Load Bag File</button>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Selected Topics:</label>
+                        <div id="bag-selected-topics-display" style="padding: 5px; background: #3a3a3a; border-radius: 4px; margin-bottom: 10px; min-height: 25px;">
+                            <span style="color: #888;">No topics selected</span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label></label>
+                        <div class="bag-control-buttons">
+                            <button onclick="selectTopics()">Select Topic</button>
+                            <button id="bag-play-button" onclick="playBag()">Play</button>
+                            <button id="bag-pause-button" onclick="pauseBag()">Pause</button>
+                        </div>
+                        <div></div>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <div class="bag-timeline">
+                        <label id="bag-time-label">0:00 / 0:00</label>
+                        <div class="slider-container">
+                            <input type="range" id="bag-slider" min="0" max="10000" value="0" onchange="setBagPosition(this.value)">
+                        </div>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <!-- 3D Display -->
+                    <div class="display-container">
+                        <div class="display-controls">
+                            <div class="controls-left">
+                                <label>3D Visualization</label>
+                            </div>
+                            <div class="controls-right">
+                                <button onclick="selectDisplayTopics()">Select Topics</button>
+                            </div>
+                        </div>
+                        <div id="bag-player-display-canvas-container">
+                            <!-- Three.js canvas will be created here -->
+                        </div>
+                    </div>
+
+                    <div class="separator"></div>
+                </div>
+            </div>
+
+            <!-- Bag Recorder Sub-Tab -->
+            <div id="bag-recorder-subtab" class="subtab-content">
+                <div class="section">
+                    <h2>Bag Recorder</h2>
+                    <div class="separator"></div>
+
+                    <div class="form-group">
+                        <label>Bag Name:</label>
+                        <input type="text" id="recorder-bag-name" placeholder="Enter bag name">
+                        <button onclick="enterBagName()">Enter Bag Name</button>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Selected Topics:</label>
+                        <div id="recorder-selected-topics-display" style="padding: 5px; background: #3a3a3a; border-radius: 4px; margin-bottom: 10px; min-height: 25px;">
+                            <span style="color: #888;">No topics selected</span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label></label>
+                        <div class="bag-control-buttons">
+                            <button onclick="selectRecorderTopics()">Select Topic</button>
+                            <button id="recorder-record-button" onclick="recordBag()">Record</button>
+                        </div>
+                        <div></div>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <!-- 3D Display -->
+                    <div class="display-container">
+                        <div class="display-controls">
+                            <div class="controls-left">
+                                <label>3D Visualization</label>
+                            </div>
+                            <div class="controls-right">
+                                <button onclick="selectDisplayTopics()">Select Topics</button>
+                            </div>
+                        </div>
+                        <div id="bag-recorder-display-canvas-container">
+                            <!-- Three.js canvas will be created here -->
+                        </div>
+                    </div>
+
+                    <div class="separator"></div>
+                </div>
+            </div>
+
+            <!-- File Player Sub-Tab -->
+            <div id="file-player-subtab" class="subtab-content">
+                <div class="section">
+                    <h2>ConPR File Player</h2>
+                    <div class="separator"></div>
+
+                    <div class="player-controls">
+                        <div class="player-grid">
+                            <label id="player-path-label"></label>
+                            <button onclick="loadPlayerPath()">Load</button>
+                            <button onclick="saveBag()">Save bag</button>
+
+                            <label id="player-timestamp-label">0</label>
+                            <button id="play-button" onclick="playPlayer()">Play</button>
+                            <button id="pause-button" onclick="pausePlayer()">Pause</button>
+                        </div>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <div class="player-options">
+                        <label>
+                            <input type="checkbox" id="player-loop" onchange="setLoop(this.checked)">
+                            Loop
+                        </label>
+                        <label>
+                            <input type="checkbox" id="player-skip-stop" checked onchange="setSkipStop(this.checked)">
+                            Skip stop section
+                        </label>
+                        <label>
+                            <input type="checkbox" id="player-auto-start" onchange="setAutoStart(this.checked)">
+                            Auto start
+                        </label>
+
+                        <div class="speed-control">
+                            <label>Speed:</label>
+                            <input type="number" id="player-speed" value="1.0" min="0.1" max="20.0" step="0.1" oninput="setSpeed(this.value)">
+                        </div>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <div class="slider-container">
+                        <input type="range" id="player-slider" min="0" max="10000" value="0" onchange="setSliderPosition(this.value)">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Browser Modal -->
+    <div id="file-browser-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Select File or Directory</h3>
+                <span class="close" onclick="closeFileBrowser()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="current-path">
+                    <strong>Current Path:</strong> <span id="current-path-display">/home</span>
+                </div>
+                <div class="directory-list" id="directory-list">
+                    <!-- Directory and file entries will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="selectCurrentDirectory()">Select This Directory</button>
+                <button onclick="closeFileBrowser()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Topic Selection Modal -->
+    <div id="topic-selection-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Select Topics</h3>
+                <span class="close" onclick="closeTopicSelection()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="topic-list" id="topic-list">
+                    <!-- Topic checkboxes will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="confirmTopicSelection()">Confirm</button>
+                <button onclick="closeTopicSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Display Topic Selection Modal -->
+    <div id="display-topic-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Select Display Topics</h3>
+                <span class="close" onclick="closeDisplayTopicSelection()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="topic-list" id="display-topic-list">
+                    <!-- Display topic checkboxes will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="confirmDisplayTopicSelection()">Confirm</button>
+                <button onclick="closeDisplayTopicSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recorder Topic Selection Modal -->
+    <div id="recorder-topic-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Select Topics to Record</h3>
+                <span class="close" onclick="closeRecorderTopicSelection()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="topic-list" id="recorder-topic-list">
+                    <!-- Recorder topic checkboxes will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="confirmRecorderTopicSelection()">Confirm</button>
+                <button onclick="closeRecorderTopicSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Save Map Modal -->
+    <div id="save-map-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Save Map</h3>
+                <span class="close" onclick="closeSaveMapModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Directory Name:</label>
+                    <input type="text" id="save-map-directory" placeholder="Enter directory name (e.g., map_2024)">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="confirmSaveMap()">OK</button>
+                <button onclick="closeSaveMapModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Latency Indicator -->
+    <div id="latency-indicator" class="latency-indicator">latency: --ms</div>
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <!-- ROSLIB -->
+    <script src="https://cdn.jsdelivr.net/npm/roslib@1.1.0/build/roslib.min.js"></script>
+
+    <script src="static/script.js"></script>
+    <script src="static/threejs_display.js"></script>
+</body>
+</html>
