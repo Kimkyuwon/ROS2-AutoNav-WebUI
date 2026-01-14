@@ -2,10 +2,10 @@ from setuptools import setup
 import os
 from glob import glob
 
-package_name = 'web_gui'
+package_name = 'ros2_autonav_webui'
 
 setup(
-    name=package_name,
+    name='ros2-autonav-webui',  # Python 패키지 이름은 하이픈 사용 (entry point와 일치)
     version='0.0.1',
     packages=[package_name],
     data_files=[
@@ -20,12 +20,11 @@ setup(
     zip_safe=True,
     maintainer='kkw',
     maintainer_email='user@todo.todo',
-    description='Web-based GUI for SLAM and File Player control',
+    description='ROS2 Autonomous Navigation Web UI - Web-based control interface for autonomous robot navigation, SLAM, localization, and visualization',
     license='Apache-2.0',
     tests_require=['pytest'],
-    entry_points={
-        'console_scripts': [
-            'web_server = web_gui.web_server:main',
-        ],
-    },
+    # scripts 방식 사용 (ROS2 표준)
+    scripts=[
+        'scripts/web_server',
+    ],
 )

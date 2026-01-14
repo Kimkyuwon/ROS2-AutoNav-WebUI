@@ -1,12 +1,27 @@
-# ROS2 Web GUI Project
+# ROS2 AUTONAV WEBUI Project
 
 ## 프로젝트 개요
-ROS2 Jazzy 기반의 웹 GUI 패키지로, SLAM, 데이터 플레이어, 데이터 레코더 등의 기능을 웹 브라우저에서 제어할 수 있습니다.
+ROS2 Jazzy 기반의 자율주행 웹 UI 패키지로, SLAM, Localization, Navigation, 데이터 플레이어, 데이터 레코더, 시각화 등의 기능을 웹 브라우저에서 제어할 수 있습니다.
+
+**핵심 기능 (완성도):**
+- ✅ **SLAM/Localization**: LiDAR SLAM, Localization, Multi-Session SLAM (100%)
+- ✅ **데이터 관리**: Bag Player, Bag Recorder, File Player (100%)
+- ⚠️ **시각화**: Plot (40%), 3D Viewer (20%)
+- ✅ **네트워크**: Latency 모니터링 (100%)
+
+**코드베이스 규모:**
+- 총 코드 라인: ~5,200 lines
+  - web_server.py: 2,152 lines (백엔드, 48개 API 엔드포인트)
+  - script.js: 2,237 lines (프론트엔드)
+  - plot_tree.js: ~500 lines (PlotJuggler 스타일 트리)
+  - index.html: 406 lines (UI 구조)
+- ROS2 통합: rclpy, rosbag2_py, cv_bridge, rosbridge_server
+- 성능 최적화: ROS 환경 캐싱, DOM 캐싱, ConfigManager 클래스
 
 ## 디렉토리 구조
 ```
-/home/kkw/localization_ws/src/web_gui/
-├── web_gui/
+/home/kkw/localization_ws/src/ros2_autonav_webui/
+├── ros2_autonav_webui/
 │   ├── web_server.py          # 메인 Python 백엔드 (HTTP 서버 + ROS2 노드)
 │   └── __init__.py
 ├── web/
@@ -14,9 +29,10 @@ ROS2 Jazzy 기반의 웹 GUI 패키지로, SLAM, 데이터 플레이어, 데이�
 │   └── static/
 │       ├── script.js          # JavaScript (UI 로직, API 호출)
 │       ├── style.css          # CSS 스타일
+│       ├── plot_tree.js       # PlotJuggler 스타일 트리 시각화
 │       └── threejs_display.js # Three.js 3D 시각화
 ├── launch/
-│   └── web_gui.launch.py      # ROS2 launch 파일
+│   └── ros2_autonav_webui.launch.py # ROS2 launch 파일
 ├── resource/
 ├── package.xml
 ├── setup.py
@@ -28,11 +44,11 @@ ROS2 Jazzy 기반의 웹 GUI 패키지로, SLAM, 데이터 플레이어, 데이�
 ### 빌드
 ```bash
 cd /home/kkw/localization_ws
-colcon build --packages-select web_gui
+colcon build --packages-select ros2_autonav_webui
 ```
 
-**중요:** 소스 파일(`src/web_gui/`)을 수정한 후에는 반드시 `colcon build`를 실행해야 합니다.
-웹 서버는 `install/web_gui/` 디렉토리의 파일을 서빙하기 때문입니다.
+**중요:** 소스 파일(`src/ros2_autonav_webui/`)을 수정한 후에는 반드시 `colcon build`를 실행해야 합니다.
+웹 서버는 `install/ros2_autonav_webui/` 디렉토리의 파일을 서빙하기 때문입니다.
 
 ### 실행 (권장 방법)
 
@@ -50,7 +66,7 @@ cd /home/kkw/localization_ws
 ```bash
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-ros2 launch web_gui web_gui.launch.py
+ros2 launch ros2_autonav_webui ros2_autonav_webui.launch.py
 ```
 
 ### 종료
@@ -70,11 +86,11 @@ cd /home/kkw/localization_ws
 
 웹 서버가 시작되면 콘솔에 접속 주소가 표시됩니다:
 ```
-[INFO] [web_gui_node]: ======================================
-[INFO] [web_gui_node]: Web server started on port 8080
-[INFO] [web_gui_node]: Local access:   http://localhost:8080
-[INFO] [web_gui_node]: Network access: http://172.30.1.63:8080
-[INFO] [web_gui_node]: ======================================
+[INFO] [ros2_autonav_webui_node]: ======================================
+[INFO] [ros2_autonav_webui_node]: Web server started on port 8080
+[INFO] [ros2_autonav_webui_node]: Local access:   http://localhost:8080
+[INFO] [ros2_autonav_webui_node]: Network access: http://172.30.1.63:8080
+[INFO] [ros2_autonav_webui_node]: ======================================
 ```
 
 **접속 방법:**
@@ -90,14 +106,18 @@ cd /home/kkw/localization_ws
 
 ### 메인 탭
 1. **SLAM/Localization** 탭
-   - LiDAR SLAM ⭐ 완전 구현
-   - Localization ⭐ 완전 구현
-   - Multi-Session SLAM
+   - LiDAR SLAM ⭐ 완전 구현 (100%)
+   - Localization ⭐ 완전 구현 (100%)
+   - Multi-Session SLAM ⭐ 완전 구현 (100%)
 
 2. **Data Player/Recorder** 탭
-   - Bag Player
-   - Bag Recorder
-   - File Player
+   - Bag Player ⭐ 완전 구현 (100%)
+   - Bag Recorder ⭐ 완전 구현 (100%)
+   - File Player (ConPR) ⭐ 완전 구현 (100%)
+
+3. **Visualization** 탭
+   - Plot (PlotJuggler 스타일) ⚠️ 부분 구현 (40%)
+   - 3D Viewer (Three.js) ⚠️ 부분 구현 (20%)
 
 ---
 
@@ -418,7 +438,7 @@ subprocess.Popen(cmd, start_new_session=True)
 
 ---
 
-### 6. File Player (ConPR)
+### 6. File Player (ConPR) ⭐ 완전 구현
 
 **위치:** Data Player/Recorder 탭 > File Player 서브탭
 
@@ -429,6 +449,8 @@ subprocess.Popen(cmd, start_new_session=True)
 - 재생 속도 조절 (0.01x ~ 20.0x)
 - 타임라인 슬라이더
 - Bag 파일로 저장 (rosbag2 형식)
+- Camera 이미지 재생 (선택적)
+- Livox LiDAR 데이터 재생 (선택적)
 
 **발행되는 ROS2 토픽:**
 - `/pose/position` (geometry_msgs/PointStamped) - Pose 데이터
@@ -481,6 +503,134 @@ subprocess.Popen(cmd, start_new_session=True)
 - `POST /api/player/set_options` - 옵션 설정
 - `POST /api/player/save_bag` - Bag 저장
 - `GET /api/player/state` - 상태 조회
+
+---
+
+### 7. Plot 시각화 (PlotJuggler 스타일) ⚠️ 부분 구현
+
+**위치:** Visualization 탭 > Plot 서브탭
+
+**현재 구현 상태 (40%):**
+
+1. **PlotJugglerTree 클래스 (plot_tree.js)** ✓ 완전 구현
+   - 계층형 트리 구조 (토픽 / 메시지 필드)
+   - 2열 레이아웃: 이름 | 값
+   - Expand/Collapse 기능 (화살표 클릭)
+   - 실시간 값 업데이트
+   - rosbridge WebSocket 연동
+
+2. **주요 메서드:**
+   ```javascript
+   class PlotJugglerTree {
+       constructor(containerId)
+       init()                          // 트리 초기화
+       addItem(fullPath, value)        // 경로로 항목 추가 (PlotJuggler 방식)
+       createNode(label, path, isLeaf) // 노드 생성
+       findChildByName(parent, name)   // 자식 노드 검색
+       updateValue(path, value)        // 값 업데이트
+       expandAll() / collapseAll()     // 전체 열기/닫기
+       clear()                         // 트리 초기화
+   }
+   ```
+
+3. **Plotly.js 통합** ✓ 프레임워크 준비됨
+   - Plotly.js 라이브러리 로드됨
+   - 기본 plot 컨테이너 준비됨
+   - Plot 생성 함수 구현 필요
+
+**미구현 기능 (60%):**
+
+1. **Drag-and-Drop 플로팅** ✗
+   - 트리 항목을 plot 영역으로 드래그
+   - 다중 시계열 동시 표시
+   - X/Y축 자동 스케일링
+
+2. **Plot 패널 관리** ✗
+   - 수평/수직 split 기능
+   - 패널 크기 조정 (resize)
+   - 여러 plot 동시 표시
+
+3. **Plot 제어 기능** ✗
+   - Zoom in/out
+   - Pan (이동)
+   - Legend 토글
+   - 축 범위 수동 설정
+   - 데이터 필터링
+
+4. **데이터 버퍼링** ✗
+   - 시계열 데이터 저장
+   - 버퍼 크기 제한
+   - 오래된 데이터 자동 삭제
+
+**테스트 페이지:**
+- `web/test_tree.html` - PlotJugglerTree 단독 테스트
+- Odometry 메시지 구조로 트리 생성 테스트
+
+**PlotJuggler 원본 구현 분석:**
+- Qt QTreeWidget 기반 구조를 JavaScript로 재구현
+- 기본 상태: 모든 노드 collapsed (setExpanded 호출 안 함)
+- 더블클릭 시 재귀적 확장/축소 (`expandChildren`)
+- 리프 노드만 선택 가능 (Qt::ItemIsSelectable)
+- 값 업데이트: `update2ndColumnValues(time)` - 두 번째 컬럼에 현재 시간 값 표시
+- 상세 분석: [PLOTJUGGLER_ANALYSIS.md](PLOTJUGGLER_ANALYSIS.md)
+
+**다음 구현 단계:**
+1. rosbridge 토픽 구독 → 트리 자동 생성
+2. 트리 항목 drag 이벤트 핸들러
+3. Plotly.js plot 생성 및 업데이트
+4. 시계열 데이터 버퍼 구현
+5. Plot 패널 split/resize 구현
+
+---
+
+### 8. 3D Viewer (Three.js) ⚠️ 부분 구현
+
+**위치:** Visualization 탭 > 3D Viewer 서브탭
+
+**현재 구현 상태 (20%):**
+
+1. **Three.js 기본 설정** ✓
+   - Scene, Camera, Renderer 초기화됨
+   - OrbitControls (카메라 회전/줌) 구현됨
+   - Grid Helper (바닥 그리드) 표시
+   - Ambient + Directional 조명
+
+2. **구현된 기능:**
+   - 3D 씬 렌더링
+   - 마우스 드래그로 카메라 회전
+   - 마우스 휠로 줌 인/아웃
+   - 기본 좌표계 표시
+
+**미구현 기능 (80%):**
+
+1. **PointCloud2 렌더링** ✗
+   - rosbridge WebSocket 구독
+   - Binary 데이터 디코딩
+   - THREE.Points 객체 생성
+   - 색상 매핑
+
+2. **Path 렌더링** ✗
+   - nav_msgs/Path 처리
+   - THREE.Line 객체 생성
+   - 경로 시각화
+
+3. **Odometry 렌더링** ✗
+   - geometry_msgs/Odometry 처리
+   - 로봇 위치/방향 표시
+   - 궤적 추적
+
+4. **UI 제어** ✗
+   - 토픽 선택 모달
+   - Frame ID 설정
+   - 색상/크기 조정
+   - 표시/숨기기 토글
+
+**다음 구현 단계:**
+1. rosbridge 토픽 구독 구현
+2. PointCloud2 메시지 파싱
+3. THREE.Points 생성 및 업데이트
+4. Path/Odometry 렌더링
+5. 토픽 선택 UI 완성
 
 ---
 
@@ -610,68 +760,6 @@ let currentBrowseCallback = null;
   <div id="recorder-topic-modal">...</div>
 </div>
 ```
-
----
-
-## 최근 변경 이력
-
-### 2025-11-19 ⭐ LiDAR SLAM 전체 기능 구현
-1. **SLAM Configuration 관리**
-   - Config Load 기능 (파일 브라우저)
-   - Config Save 기능 (ruamel.yaml, 주석/포맷 유지)
-   - 파라미터 실시간 편집 (체크박스, 텍스트, 숫자)
-   - 소수점 값 유지 (1.0 → 1.0)
-   - 문자열 쌍따옴표 추가 (lid_topic: "/livox/lidar")
-   - 리스트 flow style ([1, 2, 3])
-   - 중첩 딕셔너리 block style 유지
-
-2. **SLAM 실행/중지**
-   - Start SLAM 버튼 (fast_lio mapping.launch.py)
-   - Stop SLAM 버튼 (SIGINT/SIGTERM/SIGKILL)
-   - 실시간 터미널 출력 (10줄 제한)
-   - 검은 배경 (rgb(0,0,0)), 흰 글씨
-
-3. **UI 개선**
-   - 파라미터 접기/펼치기 (▲/▼ 화살표)
-   - 탭 고정 (position: sticky)
-   - 탭 전환 시 자동 스크롤 (window.scrollTo)
-   - h3 글씨 크기 축소 (13px)
-   - 미니멀 버튼 디자인 (투명 배경)
-
-4. **config.yaml 반영 가이드 추가**
-   - 일반 빌드 vs symlink 빌드 설명
-   - launch 파일이 install 디렉토리 참조 설명
-
-### 2025-10-25
-1. **Bag Recorder 저장 경로 수정**
-   - 문제: bag 이름을 `test`로 입력하면 `/home/kkw/test/test/` 안에 저장됨
-   - 해결: `/home/kkw/` 디렉토리에서 `ros2 bag record -o {bag_name}` 실행
-   - 결과: `/home/kkw/{bag_name}/` 안에 직접 저장됨
-
-2. **Bag Recorder 권한 에러 수정**
-   - 문제: `/home/{bag_name}` 디렉토리 생성 시 Permission denied
-   - 해결: `/home/kkw/{bag_name}`으로 경로 변경
-
-3. **Bag Recorder 전체 기능 구현**
-   - Enter Bag Name 기능
-   - Select Topic 기능 (현재 ROS2 토픽 조회)
-   - Record/Stop 토글 기능
-
-4. **Bag Recorder 레이아웃 재구성**
-   - Bag Player 레이아웃 복사
-   - "Load Bag File" → "Enter Bag Name"
-   - "Play" → "Record"
-   - "Pause" 버튼 제거
-   - 타임라인 제거
-
-### 이전 변경사항
-1. **Multi-Session SLAM 독립 실행**
-   - subprocess → gnome-terminal 방식 변경
-   - lt_mapper 크래시가 web_gui에 영향 없음
-
-2. **SLAM 탭 재구조화**
-   - "Multi-Session SLAM" → "SLAM/Localization"
-   - 서브탭 추가: LiDAR SLAM, Localization, Multi-Session SLAM
 
 ---
 
@@ -1055,41 +1143,58 @@ web_thread = threading.Thread(target=run_web_server, args=(node, 8080), daemon=T
 
 ## 향후 작업 계획
 
-### 🎯 단기 개선 과제
-1. **3D Visualization 개선**
-   - Path, Odometry 토픽 지원 추가
-   - 여러 PointCloud 동시 표시
-   - 색상/크기 조정 UI 추가
+### 🎯 최우선 과제 (Plot/3D Visualization 완성)
 
-2. **에러 핸들링 개선**
-   - bag play 실패 시 사용자에게 명확한 메시지
-   - rosbridge 연결 실패 시 재시도 로직
-   - 토픽 조회 실패 시 fallback 메커니즘
+1. **Plot 시각화 완성 (60% 남음)**
+   - [ ] rosbridge 토픽 구독 → 트리 자동 생성
+   - [ ] Drag-and-Drop 플로팅 (트리 → plot 영역)
+   - [ ] Plotly.js plot 생성 및 실시간 업데이트
+   - [ ] 시계열 데이터 버퍼 구현
+   - [ ] Plot 패널 split/resize 기능
+   - [ ] Zoom, Pan, Legend 제어 UI
 
-3. **Bag Player 타임라인 개선**
-   - 드래그로 위치 이동 (현재 슬라이더 클릭만 가능)
-   - 재생 속도 조절 UI 추가
+2. **3D Viewer 완성 (80% 남음)**
+   - [ ] PointCloud2 렌더링 (rosbridge 구독)
+   - [ ] Path 렌더링 (nav_msgs/Path)
+   - [ ] Odometry 렌더링 (로봇 위치/궤적)
+   - [ ] 토픽 선택 모달 UI
+   - [ ] 색상/크기 조정 컨트롤
+   - [ ] 표시/숨기기 토글
 
-### 📚 장기 개선 과제
-1. **성능 최적화**
-   - 대용량 bag 파일 처리
-   - PointCloud2 다운샘플링
-   - 메모리 사용량 최적화
+### 🟡 중요도: 중 (기능 개선)
 
-2. **사용자 경험 개선**
-   - 진행 상태 표시 (로딩 스피너)
-   - 단축키 지원
-   - 설정 저장/불러오기
+1. **코드 품질 개선 (남은 과제)**
+   - [ ] 변수명 명확화 (10개 이슈)
+   - [ ] Topic selection 모달 로직 통합
+   - [ ] Update state 함수 패턴 통합
+   - [ ] API 입력 검증 추가
+
+2. **Bag Player 개선**
+   - [ ] 타임라인 드래그로 위치 이동
+   - [ ] 재생 속도 조절 UI
+   - [ ] DDS Discovery 문제 해결
 
 3. **네트워크 모니터링 고도화**
-   - 평균/최소/최대 latency 통계
-   - Latency 그래프 시각화
-   - 패킷 손실 감지
+   - [ ] 평균/최소/최대 latency 통계
+   - [ ] Latency 그래프 시각화
+   - [ ] 패킷 손실 감지
 
-4. **문서화**
-   - 각 기능별 사용 가이드
-   - 트러블슈팅 가이드 확충
-   - API 문서 작성
+### 🟢 중요도: 하 (점진적 개선)
+
+1. **성능 최적화**
+   - [ ] Binary search for playback (현재 linear search)
+   - [ ] PointCloud2 다운샘플링
+   - [ ] 대용량 bag 파일 처리
+
+2. **사용자 경험**
+   - [ ] 진행 상태 표시 (로딩 스피너)
+   - [ ] 단축키 지원
+   - [ ] 설정 저장/불러오기
+
+3. **문서화**
+   - [ ] 각 기능별 사용 가이드
+   - [ ] 트러블슈팅 가이드 확충
+   - [ ] API 문서 작성
 
 ---
 
@@ -1125,554 +1230,71 @@ export ROS_LOCALHOST_ONLY=1
 
 ## 코드 품질 개선 (2025-11-20) 🔧
 
-### 개요
-web_gui 패키지 전체에 대한 체계적인 코드 리팩토링을 수행하여 유지보수성, 성능, 안정성을 크게 개선했습니다.
-
-### 코드 품질 분석 결과
-**분석 범위:** 3,876 라인 (web_server.py, script.js, threejs_display.js)
-**발견된 이슈:** 46개
-**수정 완료:** 주요 이슈 22개 (약 48% 개선)
-
-#### 이슈 분류
-| 분류 | 발견 | 수정 | 비고 |
-|------|------|------|------|
-| 중복 코드 | 8 | 8 | 100% 개선 - 600+ 라인 감소 |
-| 비효율적 패턴 | 13 | 7 | 주요 성능 이슈 해결 |
-| 불명확한 변수명 | 10 | 0 | 향후 개선 계획 |
-| 미사용 코드 | 8 | 3 | 주요 데드 코드 제거 |
-| 에러 처리 부족 | 7 | 4 | 핵심 에러 처리 추가 |
+**리팩토링 개요:** web_gui 패키지 전체에 대한 체계적인 코드 리팩토링을 수행하여 유지보수성, 성능, 안정성을 대폭 개선했습니다.
 
 ### 주요 개선 사항
 
-#### 1. web_server.py 리팩토링 ⭐
+#### 1. web_server.py 리팩토링 (150+ 라인 감소)
+- **통합 프로세스 관리 헬퍼 메서드**: `_stop_process()`, `_read_process_output()`, `_kill_processes_by_pattern()`
+  - SLAM/Localization 중복 코드 제거 (각 50+ 라인 → 통합)
+- **ROS 환경 캐싱**: 초기화 시 1회 소싱, subprocess 시작 시간 20-30% 단축
+- **에러 처리 강화**: CSV 파일 파싱 try-catch 추가, 손상된 파일에도 크래시 없음
+- **Import 정리**: 불필요한 별칭 제거 (`rclcppTime` → `Time`)
 
-**중복 코드 제거 (150+ 라인 감소):**
+#### 2. script.js 리팩토링 (182 라인 감소)
+- **ConfigManager 클래스 도입**: SLAM/Localization config 관리 통합 (400+ 라인 중복 제거)
+- **DOM 캐싱 시스템**: 반복 DOM 조회 제거, 50-70% 성능 향상
+- **함수 통합**: `selectSubTab()` → `openSubTab()` 통합
+- **미사용 코드 제거**: `displayTopics` 변수 등
 
-1. **통합 프로세스 관리 헬퍼 메서드**
-   ```python
-   def _stop_process(self, process, process_name, output_lock=None, output_attr_name=None):
-       """프로세스를 단계적으로 종료 (SIGINT → SIGTERM → SIGKILL)"""
-
-   def _read_process_output(self, process, output_lock, output_attr_name, max_lines=10):
-       """프로세스 출력을 스레드로 읽어 버퍼에 저장 (최신 N줄 유지)"""
-
-   def _kill_processes_by_pattern(self, patterns):
-       """패턴으로 프로세스 찾아 종료"""
-   ```
-   - **이전:** SLAM과 Localization 각각 50+ 라인씩 중복
-   - **이후:** 단일 헬퍼 메서드로 통합
-   - **효과:** 코드 150+ 라인 감소, 단일 수정 지점
-
-2. **ROS 환경 캐싱 (성능 개선)**
-   ```python
-   def _setup_ros_environment(self):
-       """ROS 환경을 한 번만 소싱하고 캐시"""
-       self._ros_env = os.environ.copy()
-       # /opt/ros/jazzy/setup.bash 소싱
-       # /home/kkw/localization_ws/install/setup.bash 소싱
-   ```
-   - **이전:** 매 subprocess 호출마다 `source` 실행
-   - **이후:** 초기화 시 1회만 소싱, 캐시된 환경 변수 재사용
-   - **효과:** subprocess 시작 시간 20-30% 감소
-
-3. **에러 처리 강화 (안정성 개선)**
-   - **파일 파싱에 try-catch 추가**
-     ```python
-     try:
-         stamp = int(parts[0])
-         x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-     except ValueError as e:
-         self.get_logger().warn(f'Malformed line: {line.strip()}')
-         continue  # 잘못된 라인 스킵하고 계속 진행
-     ```
-   - **대상:** `data_stamp.csv`, `pose.csv`, `imu.csv` 파싱
-   - **효과:** 손상된 데이터 파일에도 크래시 없이 동작
-
-4. **Import 수정**
-   - **변경:** `from rclpy.time import Time as rclcppTime` → `from rclpy.time import Time`
-   - **효과:** 불필요한 별칭 제거, 코드 가독성 향상
-
-**영향받는 함수:**
-- `start_slam_mapping()`: 6줄로 단순화 (58 → 6 라인)
-- `stop_slam_mapping()`: 5줄로 단순화 (56 → 5 라인)
-- `start_localization_mapping()`: 6줄로 단순화
-- `stop_localization_mapping()`: 5줄로 단순화
-- `kill_localization_processes()`: 2줄로 단순화 (21 → 2 라인)
-
-#### 2. script.js 리팩토링 ⭐
-
-**중복 코드 제거 (182 라인 감소):**
-
-1. **ConfigManager 클래스 도입 (400+ 라인 중복 제거)**
-   ```javascript
-   class ConfigManager {
-       constructor(name, defaultPath, containerIds, apiEndpoints) {...}
-       async loadDefault() {...}
-       async load(startPath) {...}
-       async save(targetPath) {...}
-       display() {...}
-       createParameterInput(container, label, value, fullKey) {...}
-       updateValue(key, value) {...}
-       toggle() {...}
-   }
-
-   // 인스턴스 생성
-   const slamConfig = new ConfigManager('slam', ...);
-   const localizationConfig = new ConfigManager('localization', ...);
-   ```
-
-   **제거된 중복 함수:**
-   - `loadDefaultSlamConfig` / `loadDefaultLocalizationConfig` → `ConfigManager.loadDefault()`
-   - `loadSlamConfig` / `loadLocalizationConfig` → `ConfigManager.load()`
-   - `saveSlamConfig` / `saveLocalizationConfig` → `ConfigManager.save()`
-   - `displaySlamConfigParameters` / `displayLocalizationConfigParameters` → `ConfigManager.display()`
-   - `createParameterInput` / `createLocalizationParameterInput` → `ConfigManager.createParameterInput()`
-   - `updateSlamConfigValue` / `updateLocalizationConfigValue` → `ConfigManager.updateValue()`
-   - `toggleSlamConfig` / `toggleLocalizationConfig` → `ConfigManager.toggle()`
-
-   **제거된 중복 변수:**
-   - `slamConfigData` / `localizationConfigData` → `ConfigManager.data`
-   - `currentConfigPath` / `currentLocalizationConfigPath` → `ConfigManager.currentPath`
-   - `slamConfigCollapsed` / `localizationConfigCollapsed` → `ConfigManager.collapsed`
-
-2. **DOM 캐싱 시스템 도입 (성능 개선)**
-   ```javascript
-   const domCache = {
-       elements: {},
-       get(id) {
-           if (!this.elements[id]) {
-               this.elements[id] = document.getElementById(id);
-           }
-           return this.elements[id];
-       },
-       clear() { this.elements = {}; }
-   };
-
-   // 사용 예시
-   domCache.get('slam-output').value = state.output;  // 캐시된 요소 재사용
-   ```
-   - **효과:** 반복적인 `document.getElementById()` 호출 제거, DOM 조회 시간 단축
-
-3. **함수 통합**
-   - **`selectSubTab()` 제거:** `openSubTab(subtabId, skipEvent)`로 통합
-   - **중복 로직 제거:** 단일 함수로 이벤트 처리 및 프로그래밍 호출 모두 지원
-
-4. **미사용 코드 제거**
-   - `displayTopics` 변수 제거 (threejs_display.js로 이동)
-   - 불필요한 코멘트 정리
-
-**파일 크기:**
-- **이전:** 1,427 라인
-- **이후:** 1,245 라인
-- **감소:** 182 라인 (약 13% 감소)
-
-#### 3. Localization 기능 구현
-
-**추가된 기능:**
-1. **Localization 탭 완전 구현**
-   - LiDAR SLAM과 동일한 모든 기능 복제
-   - Config Load/Save: `localization_config.yaml` 사용
-   - Start/Stop Localization: `localization.launch.py` 실행
-   - 실시간 터미널 출력
-   - Save Map 제거 (SLAM에만 유지)
-
-2. **기본 서브탭 자동 선택**
-   - SLAM/Localization 탭 → LiDAR SLAM 서브탭 자동 선택
-   - Data Player/Recorder 탭 → Bag Player 서브탭 자동 선택
-
-3. **FAST_LIO localization 버그 수정**
-   - **문제:** `malloc(): invalid next size (unsorted)` 에러
-   - **원인:** `memset(res_last, -1000.0f, ...)` - float 값으로 memset 호출
-   - **수정:** `std::fill_n(res_last, 100000, -1000.0f)` 사용
-   - **파일:** `/home/kkw/localization_ws/src/FAST_LIO_ROS2/src/laserLocalization.cpp`
-
-### 성능 개선 결과
-
+#### 3. 성능 개선 결과
 | 항목 | 이전 | 이후 | 개선율 |
 |------|------|------|--------|
-| 코드 라인 수 | ~4,000 라인 | ~3,400 라인 | **15% 감소** |
-| SLAM/Localization 시작 시간 | ~1.5초 | ~1.0초 | **33% 단축** |
-| DOM 조회 성능 | 반복 조회 | 캐시 재사용 | **50-70% 향상** |
-| 코드 중복도 | 높음 | 낮음 | **90% 개선** |
+| 코드 라인 수 | ~4,000 | ~3,400 | **15% 감소** |
+| SLAM 시작 시간 | ~1.5초 | ~1.0초 | **33% 단축** |
+| DOM 조회 | 반복 조회 | 캐시 재사용 | **50-70% 향상** |
 
-### 유지보수성 개선
-
-**단일 수정 지점 (Single Point of Truth):**
-- 프로세스 종료 로직: 1개 함수 (`_stop_process`)
-- Config 관리: 1개 클래스 (`ConfigManager`)
-- DOM 조회: 1개 캐시 시스템 (`domCache`)
-
-**코드 재사용성:**
-- 새 config 타입 추가 시: `new ConfigManager()` 인스턴스 생성만 하면 됨
-- 새 프로세스 추가 시: `_stop_process()` 재사용
-
-**가독성:**
-- 헬퍼 메서드에 docstring 추가
-- 클래스 기반 구조로 명확한 역할 분리
-- 중복 제거로 코드 흐름 파악 용이
-
-### 남은 개선 과제 (향후 작업)
-
-#### 🟡 중요도: 중 (개선 권장)
-1. **변수명 명확화** (10개 이슈)
-   - `player_processed_stamp` → `player_elapsed_nanoseconds`
-   - `pgid` → `process_group_id`
-   - `data_stamp` → `timestamp_to_datatype_map`
-
-2. **추가 중복 코드 제거**
-   - Topic selection 모달 로직 통합
-   - Update state 함수 패턴 통합
-
-3. **에러 처리 개선**
-   - API 입력 검증 추가
-   - 사용자 대상 에러 메시지 개선
-   - WebSocket 연결 에러 처리
-
-#### 🟢 중요도: 하 (점진적 개선)
-1. **성능 최적화**
-   - Binary search for playback (현재 linear search)
-   - Point cloud caching
-   - 통합 폴링 루프
-
-2. **코드 품질**
-   - 미사용 변수 제거 (`player_skip_stop`, `player_auto_start`)
-   - 더 나은 데이터 구조 선택
-
-### 기술 스택 활용
-
-**Python (백엔드):**
-- 클래스 메서드를 활용한 코드 재사용
-- 환경 변수 캐싱으로 성능 개선
-- try-catch로 강건성 향상
-
-**JavaScript (프론트엔드):**
-- ES6 클래스로 객체지향 설계
-- DOM 캐싱 패턴으로 성능 최적화
-- 함수형 프로그래밍 요소 활용
-
-### 참고 자료
-
-**리팩토링 적용 원칙:**
-- DRY (Don't Repeat Yourself): 중복 코드 제거
-- Single Responsibility: 각 함수/클래스는 하나의 책임만
-- Caching: 반복 계산 결과 재사용
-- Defensive Programming: 예외 처리로 안정성 확보
+**적용 원칙:** DRY (중복 제거), Single Responsibility (단일 책임), Caching (캐시 재사용), Defensive Programming (예외 처리)
 
 ---
 
 ## 네트워크 지연 모니터링 (2025-11-20) 📡
 
-### 개요
-스마트폰 등 원격 접속 시 네트워크 지연 시간을 실시간으로 확인할 수 있는 latency indicator를 추가했습니다.
+**개요:** 스마트폰 등 원격 접속 시 네트워크 지연 시간을 실시간으로 확인할 수 있는 latency indicator를 화면 오른쪽 상단에 추가했습니다.
 
-### 구현 내용
+**구현 내용:**
+- **백엔드**: `/api/ping` 엔드포인트 (web_server.py)
+- **프론트엔드**: `measureLatency()` 함수 (script.js)
+  - `performance.now()`로 왕복 시간(RTT) 측정
+  - 2초마다 자동 업데이트
+- **UI**: 화면 오른쪽 상단 고정 표시 (스크롤 무관)
+  - 🟢 초록색 (<50ms): 로컬 네트워크
+  - 🟡 노란색 (50-150ms): WiFi
+  - 🔴 빨간색 (>150ms): 인터넷/모바일
+  - ⚫ 회색 (N/A): 연결 오류
 
-#### 1. 백엔드: Ping 엔드포인트 추가
-**파일:** `web_gui/web_server.py`
+**활용:**
+- WiFi 신호 강도 간접 확인
+- 네트워크 vs 서버 이슈 구분
+- 원격 작업 시 네트워크 품질 모니터링
 
-```python
-# web_server.py (line 1625-1627)
-elif parsed_path.path == '/api/ping':
-    # Simple ping endpoint for latency measurement
-    self.send_json_response({'success': True, 'timestamp': time.time()})
-```
-
-- **엔드포인트:** `/api/ping`
-- **메서드:** GET
-- **응답:** JSON 형식 (`{"success": true, "timestamp": <서버 시간>}`)
-- **목적:** 클라이언트가 서버와의 왕복 시간(RTT) 측정
-
-#### 2. 프론트엔드: 지연 시간 측정 로직
-**파일:** `web/static/script.js`
-
-```javascript
-// script.js (lines 1197-1224)
-async function measureLatency() {
-    const latencyElement = domCache.get('latency-indicator');
-    if (!latencyElement) return;
-
-    try {
-        const startTime = performance.now();
-        const response = await fetch('/api/ping');
-        const endTime = performance.now();
-
-        if (response.ok) {
-            const latency = Math.round(endTime - startTime);
-            latencyElement.textContent = `latency: ${latency}ms`;
-
-            // Color coding based on latency
-            if (latency < 50) {
-                latencyElement.style.color = '#4CAF50'; // Green
-            } else if (latency < 150) {
-                latencyElement.style.color = '#FFC107'; // Yellow
-            } else {
-                latencyElement.style.color = '#F44336'; // Red
-            }
-        }
-    } catch (error) {
-        latencyElement.textContent = 'latency: N/A';
-        latencyElement.style.color = '#888';
-    }
-}
-
-// Initialize latency monitoring (line 1240-1241)
-measureLatency();
-setInterval(measureLatency, 2000); // Update every 2 seconds
-```
-
-**동작 방식:**
-1. `performance.now()`로 요청 시작 시간 기록
-2. `/api/ping`에 비동기 요청 전송
-3. 응답 수신 후 종료 시간 기록
-4. 왕복 시간(RTT) 계산: `endTime - startTime`
-5. 2초마다 자동 업데이트
-
-**색상 코딩:**
-- 🟢 **초록색 (< 50ms):** 매우 좋음 (로컬 네트워크)
-- 🟡 **노란색 (50-150ms):** 보통 (같은 건물 WiFi, 원격 LAN)
-- 🔴 **빨간색 (> 150ms):** 느림 (인터넷, 모바일 네트워크)
-- ⚫ **회색 (N/A):** 연결 오류
-
-#### 3. UI 요소 추가
-**파일:** `web/index.html`
-
-```html
-<!-- index.html (line 410-411) -->
-<!-- Latency Indicator -->
-<div id="latency-indicator" class="latency-indicator">latency: --ms</div>
-```
-
-- **위치:** body 태그 끝, 스크립트 로드 전
-- **ID:** `latency-indicator`
-- **초기값:** `latency: --ms`
-
-#### 4. CSS 스타일링
-**파일:** `web/static/style.css`
-
-```css
-/* style.css (lines 694-709) */
-.latency-indicator {
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    background-color: rgba(40, 40, 40, 0.9);
-    color: rgb(210, 210, 210);
-    padding: 8px 15px;
-    border-radius: 6px;
-    font-size: 14px;
-    font-family: 'Courier New', monospace;
-    border: 1px solid rgb(70, 70, 70);
-    z-index: 9999;
-    user-select: none;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-```
-
-**스타일 특징:**
-- **위치:** 화면 오른쪽 상단 고정 (`position: fixed`, `top: 20px`, `right: 20px`)
-- **스크롤 고정:** 스크롤 내려도 항상 같은 위치에 표시
-- **배경:** 반투명 검정 (`rgba(40, 40, 40, 0.9)`)
-- **폰트:** 모노스페이스 (Courier New) - 숫자 정렬 일관성
-- **z-index:** 9999 (모든 요소 위에 표시)
-- **user-select: none:** 드래그 방지
-- **box-shadow:** 3D 효과
-
-### 사용 시나리오
-
-#### 로컬 접속 (PC)
-```
-latency: 5ms (초록색)
-```
-- 매우 빠른 응답
-- localhost 또는 같은 PC에서 접속
-
-#### 같은 WiFi 네트워크 (스마트폰)
-```
-latency: 80ms (노란색)
-```
-- 정상 범위
-- 같은 건물 내 WiFi 접속
-
-#### 원격 접속 (외부 네트워크)
-```
-latency: 250ms (빨간색)
-```
-- 느린 응답
-- 인터넷을 통한 원격 접속
-- 모바일 데이터 사용 시
-
-#### 연결 오류
-```
-latency: N/A (회색)
-```
-- 서버 응답 없음
-- 네트워크 연결 끊김
-
-### 기술 세부사항
-
-**측정 정확도:**
-- `performance.now()` 사용: 마이크로초 단위 정밀도
-- `Math.round()`: 밀리초 단위로 반올림
-- 네트워크 왕복 시간(RTT)만 측정 (서버 처리 시간 포함)
-
-**업데이트 주기:**
-- 2초마다 자동 측정
-- 페이지 로드 시 즉시 1회 측정
-- 백그라운드에서 지속 실행
-
-**리소스 사용:**
-- 매우 경량 (GET 요청 1개, JSON 응답 ~50 bytes)
-- CPU: 거의 무시 가능
-- 네트워크: 2초당 ~100 bytes
-
-### 활용 방안
-
-1. **네트워크 품질 확인**
-   - WiFi 신호 강도 간접 확인
-   - 로밍/모바일 데이터 전환 감지
-
-2. **원격 작업 최적화**
-   - 지연 시간이 높을 때 대용량 작업 회피
-   - 네트워크 상태에 따른 작업 스케줄링
-
-3. **디버깅 도구**
-   - 응답 없음 시 서버 다운 여부 확인
-   - 네트워크 이슈 vs 서버 이슈 구분
-
-4. **사용자 경험 개선**
-   - 느린 네트워크 환경 시각적 피드백
-   - 적절한 대기 시간 예측
-
-### 파일 변경 사항
-
-| 파일 | 변경 내용 | 라인 수 |
-|------|----------|--------|
-| `web_server.py` | Ping 엔드포인트 추가 | +3 |
-| `script.js` | 지연 측정 로직 추가 | +30 |
-| `index.html` | UI 요소 추가 | +2 |
-| `style.css` | 스타일링 추가 | +16 |
-| **합계** | | **+51** |
-
-### 테스트 방법
-
-1. **로컬 테스트:**
-   ```bash
-   cd /home/kkw/localization_ws
-   source install/setup.bash
-   ros2 run web_gui web_server
-   ```
-   - 브라우저에서 `http://localhost:8080` 접속
-   - 오른쪽 상단에 `latency: X ms` 확인 (스크롤해도 고정 위치)
-   - 예상 값: 5-20ms (초록색)
-
-2. **스마트폰 테스트:**
-   - 스마트폰을 PC와 같은 WiFi에 연결
-   - PC의 로컬 IP 확인: `ip addr show` 또는 `ifconfig`
-   - 스마트폰 브라우저에서 `http://<PC_IP>:8080` 접속
-   - 예상 값: 50-150ms (노란색)
-
-3. **네트워크 부하 시뮬레이션:**
-   - 대용량 파일 다운로드 중 latency 변화 관찰
-   - WiFi 신호 약한 곳으로 이동 후 변화 확인
-
-### 향후 개선 가능 사항
-
-1. **통계 정보 추가**
-   - 평균/최소/최대 지연 시간 표시
-   - 지연 시간 그래프 (차트)
-
-2. **임계값 사용자 설정**
-   - 색상 변경 기준 커스터마이징
-   - 알림 설정 (지연 시간 > XXms)
-
-3. **패킷 손실 감지**
-   - 연속 실패 횟수 카운트
-   - 불안정한 네트워크 경고
-
-4. **서버 상태 정보 추가**
-   - CPU/메모리 사용률
-   - 활성 ROS 노드 수
+**리소스 사용:** 매우 경량 (2초당 ~100 bytes, CPU 무시 가능)
 
 ---
 
-## 변경 이력
+## 개발 규칙
 
-### 2025-11-20 🔧 코드 품질 대폭 개선 및 네트워크 모니터링 추가
-1. **web_server.py 리팩토링**
-   - 중복 코드 150+ 라인 제거 (process management 통합)
-   - ROS 환경 캐싱으로 subprocess 시작 시간 33% 단축
-   - 파일 파싱 에러 처리 강화
-   - Import 정리 및 최적화
+프로젝트 개발 시 준수해야 할 코딩 스타일, 네이밍 컨벤션, 아키텍처 규칙 등은 **[DEVELOPMENT_RULES.md](./DEVELOPMENT_RULES.md)** 문서를 참조하세요.
 
-2. **script.js 리팩토링**
-   - ConfigManager 클래스 도입으로 182 라인 감소
-   - DOM 캐싱 시스템으로 50-70% 성능 향상
-   - 중복 함수 제거 및 통합
-   - 미사용 코드 정리
+**주요 내용:**
+- 코딩 스타일 가이드 (Python, JavaScript, HTML/CSS)
+- 네이밍 컨벤션
+- 코드 구조 규칙
+- 아키텍처 규칙
+- 개발 워크플로우
+- 커밋 메시지 규칙
+- 문서화 규칙
+- 성능 및 보안 고려사항
 
-3. **Localization 기능 완전 구현**
-   - Config Load/Save (localization_config.yaml)
-   - Start/Stop Localization (localization.launch.py)
-   - 실시간 터미널 출력
-   - FAST_LIO localization malloc 버그 수정
+**개발 시작 전 필독 권장**
 
-4. **UI/UX 개선**
-   - 기본 서브탭 자동 선택 (LiDAR SLAM, Bag Player)
-   - Save Map 버튼을 Localization에서 제거 (SLAM만 유지)
-
-5. **네트워크 지연 모니터링 추가 📡**
-   - 오른쪽 상단 latency indicator 구현 (스크롤 고정)
-   - 2초마다 자동 RTT 측정 (왕복 시간)
-   - 색상 코딩 (초록/노란/빨강: <50ms / 50-150ms / >150ms)
-   - 스마트폰 원격 접속 시 네트워크 품질 실시간 확인
-   - Ping 엔드포인트 추가 (`/api/ping`)
-   - 경량 구현 (2초당 ~100 bytes)
-
-6. **코드 품질 분석**
-   - 전체 코드베이스 체계적 분석 (46개 이슈 발견)
-   - 주요 이슈 22개 수정 완료
-   - 성능/유지보수성/안정성 대폭 개선
-
-### 2025-11-19 ⭐ 대규모 업데이트
-1. **LiDAR SLAM 전체 기능 구현**
-   - SLAM Configuration 관리 (Load/Save)
-   - YAML 파라미터 편집 (소수점, 문자열, 리스트 포맷 유지)
-   - SLAM 실행/중지 (Start/Stop SLAM)
-   - 실시간 터미널 출력 (10줄 제한, 검은 배경)
-   - 파라미터 접기/펼치기 기능
-
-2. **UI 개선**
-   - 탭 고정 (position: sticky)
-   - 탭 전환 시 자동 스크롤
-   - h3 글씨 크기 축소 (13px)
-   - 미니멀 화살표 버튼 디자인
-
-3. **API 엔드포인트 추가**
-   - `/api/slam/load_config_file`
-   - `/api/slam/save_config_file`
-   - `/api/slam/start_mapping`
-   - `/api/slam/stop_mapping`
-   - `/api/slam/get_terminal_output`
-
-### 2025-10-28
-1. **Bag Player/Recorder UI 개선**
-   - 선택된 토픽 표시 영역 추가
-   - Bag Player: 파란색 태그
-   - Bag Recorder: 빨간색 태그
-
-2. **환경 변수 상속 수정**
-   - 모든 subprocess에 `env=os.environ.copy()` 추가
-   - ROS_DOMAIN_ID, ROS_LOCALHOST_ONLY 전파
-
-3. **start_web_gui.sh 환경 설정 추가**
-   - `ROS_DOMAIN_ID=0` 명시적 설정
-   - `ROS_LOCALHOST_ONLY=1` 추가 (localhost 전용)
-
-4. **디버깅 로그 추가**
-   - bag play 실시간 로그 출력
-   - 환경 변수 출력 (ROS_DOMAIN_ID, ROS_DISTRO)
-
-5. **이슈 발견: DDS Discovery 문제**
-   - bag play 실행되지만 ros2 topic list에 안 보임
-   - rosbridge는 정상 작동 (WebSocket 통신)
-   - 해결 진행 중

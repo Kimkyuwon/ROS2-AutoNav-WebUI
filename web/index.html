@@ -3,23 +3,36 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ROS2 Web GUI</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>ROS2 AUTONAV WEBUI</title>
     <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
-    <div class="container">
-        <h1>ROS2 Web GUI</h1>
+    <div class="page-shell">
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand-dot"></span>
+                <span class="brand-title">ROS2 AUTONAV WEBUI</span>
+            </div>
+            <div class="topbar-status">
+                <span class="chip" id="ros-domain-chip">ROS DOMAIN ID: 0</span>
+                <span class="chip chip-soft">Web: 8080</span>
+                <span class="chip chip-soft">rosbridge: 9090</span>
+                <span class="chip chip-soft" id="latency-indicator">latency: --ms</span>
+            </div>
+        </header>
 
-        <!-- Tab Navigation -->
-        <div class="tab-navigation">
+        <div class="tab-navigation card">
             <button class="tab-button active" onclick="openTab('slam-tab')">SLAM/Localization</button>
             <button class="tab-button" onclick="openTab('player-tab')">Data Player/Recorder</button>
+            <button class="tab-button" onclick="openTab('visualization-tab')">Visualization</button>
         </div>
 
         <!-- SLAM/Localization Tab -->
         <div id="slam-tab" class="tab-content active">
-            <!-- Sub-Tab Navigation -->
-            <div class="subtab-navigation">
+            <div class="subtab-navigation card">
                 <button class="subtab-button active" onclick="openSubTab('lidar-slam-subtab')">LiDAR SLAM</button>
                 <button class="subtab-button" onclick="openSubTab('localization-subtab')">Localization</button>
                 <button class="subtab-button" onclick="openSubTab('multi-session-slam-subtab')">Multi-Session SLAM</button>
@@ -27,15 +40,14 @@
 
             <!-- LiDAR SLAM Sub-Tab -->
             <div id="lidar-slam-subtab" class="subtab-content active">
-                <div class="section">
+                <div class="section card">
                     <h2>LiDAR SLAM</h2>
-                    <div class="separator"></div>
 
                     <!-- Config Parameters Display -->
                     <div id="slam-config-container" style="display: none;">
-                        <div style="display: flex; align-items: center; justify-content: space-between;">
-                            <h3>SLAM Configuration Parameters</h3>
-                            <button id="slam-config-toggle-btn" class="collapse-toggle-btn" onclick="toggleSlamConfig()">▲</button>
+                        <div style="display: flex; align-items: center; justify-content: center; position: relative;">
+                            <h3 style="text-align: center;">SLAM Configuration Parameters</h3>
+                            <button id="slam-config-toggle-btn" class="collapse-toggle-btn" onclick="toggleSlamConfig()" style="position: absolute; right: 0;">▲</button>
                         </div>
                         <div class="separator"></div>
                         <div id="slam-config-parameters">
@@ -54,27 +66,23 @@
 
                     <div class="separator"></div>
 
-                    <!-- Terminal Output -->
-                    <div class="terminal-container">
-                        <h3>Terminal Output</h3>
-                        <div id="slam-terminal-output" class="terminal-output"></div>
+                    <div class="status">
+                        <label id="lidar-slam-status">Status: Ready</label>
                     </div>
 
-                    <div class="separator"></div>
                 </div>
             </div>
 
             <!-- Localization Sub-Tab -->
             <div id="localization-subtab" class="subtab-content">
-                <div class="section">
+                <div class="section card">
                     <h2>Localization</h2>
-                    <div class="separator"></div>
 
                     <!-- Config Parameters Display -->
                     <div id="localization-config-container" style="display: none;">
-                        <div style="display: flex; align-items: center; justify-content: space-between;">
-                            <h3>Localization Configuration Parameters</h3>
-                            <button id="localization-config-toggle-btn" class="collapse-toggle-btn" onclick="toggleLocalizationConfig()">▲</button>
+                        <div style="display: flex; align-items: center; justify-content: center; position: relative;">
+                            <h3 style="text-align: center;">Localization Configuration Parameters</h3>
+                            <button id="localization-config-toggle-btn" class="collapse-toggle-btn" onclick="toggleLocalizationConfig()" style="position: absolute; right: 0;">▲</button>
                         </div>
                         <div class="separator"></div>
                         <div id="localization-config-parameters">
@@ -92,21 +100,17 @@
 
                     <div class="separator"></div>
 
-                    <!-- Terminal Output -->
-                    <div class="terminal-container">
-                        <h3>Terminal Output</h3>
-                        <div id="localization-terminal-output" class="terminal-output"></div>
+                    <div class="status">
+                        <label id="localization-status">Status: Ready</label>
                     </div>
 
-                    <div class="separator"></div>
                 </div>
             </div>
 
             <!-- Multi-Session SLAM Sub-Tab -->
             <div id="multi-session-slam-subtab" class="subtab-content">
-                <div class="section">
+                <div class="section card">
                     <h2>Multi-Session SLAM</h2>
-                    <div class="separator"></div>
 
                     <div class="form-group">
                         <label>Map 1:</label>
@@ -134,7 +138,7 @@
 
                     <div class="separator"></div>
 
-                    <div class="action-buttons">
+                    <div class="action-buttons center">
                         <button class="primary-button" onclick="runOptimization()">Multi Session Optimization</button>
                     </div>
                 </div>
@@ -143,8 +147,7 @@
 
         <!-- Data Player/Recorder Tab -->
         <div id="player-tab" class="tab-content">
-            <!-- Sub-Tab Navigation -->
-            <div class="subtab-navigation">
+            <div class="subtab-navigation card">
                 <button class="subtab-button active" onclick="openSubTab('bag-player-subtab')">Bag Player</button>
                 <button class="subtab-button" onclick="openSubTab('bag-recorder-subtab')">Bag Recorder</button>
                 <button class="subtab-button" onclick="openSubTab('file-player-subtab')">File Player</button>
@@ -152,9 +155,8 @@
 
             <!-- Bag Player Sub-Tab -->
             <div id="bag-player-subtab" class="subtab-content active">
-                <div class="section">
+                <div class="section card">
                     <h2>Bag Player</h2>
-                    <div class="separator"></div>
 
                     <div class="form-group">
                         <label>Bag Directory:</label>
@@ -188,32 +190,13 @@
                         </div>
                     </div>
 
-                    <div class="separator"></div>
-
-                    <!-- 3D Display -->
-                    <div class="display-container">
-                        <div class="display-controls">
-                            <div class="controls-left">
-                                <label>3D Visualization</label>
-                            </div>
-                            <div class="controls-right">
-                                <button onclick="selectDisplayTopics()">Select Topics</button>
-                            </div>
-                        </div>
-                        <div id="bag-player-display-canvas-container">
-                            <!-- Three.js canvas will be created here -->
-                        </div>
-                    </div>
-
-                    <div class="separator"></div>
                 </div>
             </div>
 
             <!-- Bag Recorder Sub-Tab -->
             <div id="bag-recorder-subtab" class="subtab-content">
-                <div class="section">
+                <div class="section card">
                     <h2>Bag Recorder</h2>
-                    <div class="separator"></div>
 
                     <div class="form-group">
                         <label>Bag Name:</label>
@@ -237,32 +220,13 @@
                         <div></div>
                     </div>
 
-                    <div class="separator"></div>
-
-                    <!-- 3D Display -->
-                    <div class="display-container">
-                        <div class="display-controls">
-                            <div class="controls-left">
-                                <label>3D Visualization</label>
-                            </div>
-                            <div class="controls-right">
-                                <button onclick="selectDisplayTopics()">Select Topics</button>
-                            </div>
-                        </div>
-                        <div id="bag-recorder-display-canvas-container">
-                            <!-- Three.js canvas will be created here -->
-                        </div>
-                    </div>
-
-                    <div class="separator"></div>
                 </div>
             </div>
 
             <!-- File Player Sub-Tab -->
             <div id="file-player-subtab" class="subtab-content">
-                <div class="section">
+                <div class="section card">
                     <h2>ConPR File Player</h2>
-                    <div class="separator"></div>
 
                     <div class="player-controls">
                         <div class="player-grid">
@@ -302,6 +266,79 @@
 
                     <div class="slider-container">
                         <input type="range" id="player-slider" min="0" max="10000" value="0" onchange="setSliderPosition(this.value)">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Visualization Tab -->
+        <div id="visualization-tab" class="tab-content">
+            <div class="subtab-navigation card">
+                <button class="subtab-button active" onclick="openSubTab('plot-subtab')">Plot</button>
+                <button class="subtab-button" onclick="openSubTab('3d-viewer-subtab')">3D Viewer</button>
+            </div>
+
+            <!-- Plot Sub-Tab -->
+            <div id="plot-subtab" class="subtab-content active">
+                <div class="section card">
+                    <h2>Plot</h2>
+                    <div class="plot-container">
+                        <!-- 왼쪽 Display 창 (통합 트리 뷰) -->
+                        <div class="plot-display-panel">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                <h3>Timeseries List</h3>
+                                <div style="display: flex; gap: 8px;">
+                                    <button onclick="expandAllPlotTree()" style="padding: 4px 12px; font-size: 11px;">Expand All</button>
+                                    <button onclick="collapseAllPlotTree()" style="padding: 4px 12px; font-size: 11px;">Collapse All</button>
+                                </div>
+                            </div>
+                            <!-- 검색창 -->
+                            <div style="margin-bottom: 12px;">
+                                <input type="text" id="plot-search-input" placeholder="Search by name for topics..." 
+                                       style="width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 4px; color: var(--text);"
+                                       oninput="filterPlotTree(this.value)">
+                            </div>
+                            <!-- 통합 트리 (토픽 + 메시지) -->
+                            <div id="plot-tree" style="overflow-y: auto; max-height: 600px;">
+                                <div style="color: var(--muted); padding: 12px; text-align: center;">
+                                    Loading topics...
+                                </div>
+                            </div>
+                        </div>
+                        <!-- 오른쪽 Plot 영역 -->
+                        <div class="plot-panel">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                <h3 style="margin: 0;">Plot Area</h3>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <label for="buffer-time-input" style="font-size: 12px; color: var(--text);">Buffer:</label>
+                                    <input type="number" id="buffer-time-input" min="1" max="300" value="5" step="1"
+                                           style="width: 60px; padding: 4px 8px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 12px;"
+                                           onchange="updateBufferTime(this.value)">
+                                    <span style="font-size: 12px; color: var(--muted);">sec</span>
+                                </div>
+                            </div>
+                            <div id="plot-area">
+                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted);">
+                                    Drag items from the tree to create plots
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3D Viewer Sub-Tab -->
+            <div id="3d-viewer-subtab" class="subtab-content">
+                <div class="section card">
+                    <h2>3D Viewer</h2>
+                    <div id="3d-viewer-container" style="width: 100%; height: 600px; background: #2a2a2a; border-radius: 8px; position: relative; overflow: hidden;">
+                        <!-- Three.js canvas will be inserted here -->
+                        <div id="3d-viewer-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 14px;">
+                            Initializing 3D Viewer...
+                        </div>
+                    </div>
+                    <div style="margin-top: 16px;">
+                        <button onclick="selectDisplayTopics()">Select PointCloud2 Topics</button>
                     </div>
                 </div>
             </div>
@@ -349,25 +386,6 @@
         </div>
     </div>
 
-    <!-- Display Topic Selection Modal -->
-    <div id="display-topic-modal" class="modal" style="display:none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Select Display Topics</h3>
-                <span class="close" onclick="closeDisplayTopicSelection()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <div class="topic-list" id="display-topic-list">
-                    <!-- Display topic checkboxes will be loaded here -->
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button onclick="confirmDisplayTopicSelection()">Confirm</button>
-                <button onclick="closeDisplayTopicSelection()">Cancel</button>
-            </div>
-        </div>
-    </div>
-
     <!-- Recorder Topic Selection Modal -->
     <div id="recorder-topic-modal" class="modal" style="display:none;">
         <div class="modal-content">
@@ -383,6 +401,25 @@
             <div class="modal-footer">
                 <button onclick="confirmRecorderTopicSelection()">Confirm</button>
                 <button onclick="closeRecorderTopicSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3D Viewer Topic Selection Modal -->
+    <div id="display-topic-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Select PointCloud2 Topics</h3>
+                <span class="close" onclick="closeDisplayTopicSelection()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="topic-list" id="display-topic-list">
+                    <!-- Display topic checkboxes will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="confirmDisplayTopicSelection()">Confirm</button>
+                <button onclick="closeDisplayTopicSelection()">Cancel</button>
             </div>
         </div>
     </div>
@@ -407,19 +444,58 @@
         </div>
     </div>
 
-    <!-- Latency Indicator -->
-    <div id="latency-indicator" class="latency-indicator">latency: --ms</div>
 
-    <!-- Three.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-
-    <!-- OrbitControls -->
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- Import Map for Three.js -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/"
+        }
+    }
+    </script>
 
     <!-- ROSLIB -->
     <script src="https://cdn.jsdelivr.net/npm/roslib@1.1.0/build/roslib.min.js"></script>
 
+    <!-- Plotly.js for Plot visualization -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+    <!-- PlotJugglerTree -->
+    <script src="static/plot_tree.js"></script>
+    
+    <!-- Plot Manager (DataBuffer, PlotlyPlotManager) -->
+    <script src="static/plot_manager.js"></script>
+    
     <script src="static/script.js"></script>
+    
+    <!-- Three.js and OrbitControls as ES6 modules -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        
+        // Make THREE and OrbitControls globally available
+        window.THREE = THREE;
+        window.OrbitControls = OrbitControls;
+        window.threeReady = true;
+        window.orbitControlsReady = true;
+        
+        console.log('Three.js and OrbitControls loaded successfully');
+        console.log('THREE:', typeof window.THREE);
+        console.log('OrbitControls:', typeof window.OrbitControls);
+        
+        // Trigger initialization if 3D Viewer is already active
+        if (window.threejsDisplayReady) {
+            window.threejsDisplayReady();
+        }
+        
+        // Also trigger if initialize3DViewer is waiting
+        if (window.waitingForThree) {
+            window.waitingForThree();
+        }
+    </script>
+    
+    <!-- Three.js Display Script -->
     <script src="static/threejs_display.js"></script>
 </body>
 </html>

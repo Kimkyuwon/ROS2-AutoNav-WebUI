@@ -1,105 +1,171 @@
 // Three.js Direct Implementation for PointCloud2 Visualization
 
-let scene, camera, renderer, controls;
-let ros, rosConnected = false;
-let pointCloudMeshes = {};
-let displaySelectedTopics = [];
-let currentDisplayContainer = null;
-let threeJSInitialized = false;
+// 3D Viewer 상태 - 객체로 그룹화
+const viewer3DState = {
+    scene: null,
+    camera: null,
+    renderer: null,
+    controls: null,
+    ros: null,
+    rosConnected: false,
+    pointCloudMeshes: {},
+    displaySelectedTopics: [],
+    currentDisplayContainer: null,
+    threeJSInitialized: false
+};
 
 // Get the active display container based on current subtab
 function getActiveDisplayContainer() {
     const activeSubTab = document.querySelector('.subtab-content.active');
-    if (!activeSubTab) return null;
-
-    if (activeSubTab.id === 'bag-player-subtab') {
-        return document.getElementById('bag-player-display-canvas-container');
-    } else if (activeSubTab.id === 'bag-recorder-subtab') {
-        return document.getElementById('bag-recorder-display-canvas-container');
+    console.log('getActiveDisplayContainer - activeSubTab:', activeSubTab);
+    
+    if (!activeSubTab) {
+        console.warn('No active subtab found');
+        // Fallback: try to get 3d-viewer-subtab directly
+        const viewerSubtab = document.getElementById('3d-viewer-subtab');
+        if (viewerSubtab) {
+            console.log('Using 3d-viewer-subtab as fallback');
+            return document.getElementById('3d-viewer-container');
+        }
+        return null;
     }
+
+    if (activeSubTab.id === '3d-viewer-subtab') {
+        const container = document.getElementById('3d-viewer-container');
+        console.log('Found 3D viewer container:', container);
+        return container;
+    }
+    
+    console.warn('Active subtab is not 3d-viewer-subtab:', activeSubTab.id);
     return null;
 }
 
 // Move renderer to active container
 function moveRendererToActiveContainer() {
     const newContainer = getActiveDisplayContainer();
-    if (!newContainer || !renderer) return;
+    if (!newContainer || !viewer3DState.renderer) return;
 
     // Don't move if already in the correct container
-    if (currentDisplayContainer === newContainer) return;
+    if (viewer3DState.currentDisplayContainer === newContainer) return;
 
     console.log('Moving renderer to:', newContainer.id);
 
     // Append renderer to new container
-    newContainer.appendChild(renderer.domElement);
-    currentDisplayContainer = newContainer;
+    newContainer.appendChild(viewer3DState.renderer.domElement);
+    viewer3DState.currentDisplayContainer = newContainer;
 
     // Resize renderer to fit new container
-    if (camera) {
-        camera.aspect = newContainer.clientWidth / newContainer.clientHeight;
-        camera.updateProjectionMatrix();
+    if (viewer3DState.camera) {
+        viewer3DState.camera.aspect = newContainer.clientWidth / newContainer.clientHeight;
+        viewer3DState.camera.updateProjectionMatrix();
     }
-    renderer.setSize(newContainer.clientWidth, newContainer.clientHeight);
+    viewer3DState.renderer.setSize(newContainer.clientWidth, newContainer.clientHeight);
 }
 
 // Initialize Three.js scene
 function initThreeJSDisplay() {
-    // Skip if already initialized
-    if (threeJSInitialized) {
+    console.log('=== initThreeJSDisplay called ===');
+    console.log('THREE available:', typeof THREE !== 'undefined');
+    console.log('OrbitControls available:', typeof window.OrbitControls !== 'undefined');
+
+    // Try multiple ways to get the container
+    let container = getActiveDisplayContainer();
+    
+    // Fallback: directly get the container
+    if (!container) {
+        console.log('Trying direct container access...');
+        container = document.getElementById('3d-viewer-container');
+    }
+    
+    if (!container) {
+        console.error('3D Viewer container not found. Make sure 3D Viewer tab is active.');
+        console.error('Attempted to find: #3d-viewer-container');
+        return;
+    }
+    
+    console.log('Container found:', container.id);
+    console.log('Container dimensions:', container.clientWidth, 'x', container.clientHeight);
+
+    // Remove loading message if present
+    const loadingMsg = document.getElementById('3d-viewer-loading');
+    if (loadingMsg) {
+        loadingMsg.remove();
+    }
+
+    // If already initialized, just move renderer to new container
+    if (viewer3DState.threeJSInitialized) {
+        console.log('Three.js already initialized, moving renderer...');
         moveRendererToActiveContainer();
         return;
     }
 
-    console.log('Initializing Three.js display...');
-
-    const container = getActiveDisplayContainer();
-    if (!container) {
-        console.log('Display container not found, deferring initialization');
+    // Check if THREE is available
+    if (typeof THREE === 'undefined') {
+        console.error('Three.js library not loaded!');
+        container.innerHTML = '<p style="color: #fff; padding: 20px;">Error: Three.js library failed to load. Please check your internet connection.</p>';
         return;
     }
 
-    currentDisplayContainer = container;
-    threeJSInitialized = true;
+    viewer3DState.currentDisplayContainer = container;
+    viewer3DState.threeJSInitialized = true;
 
     // Create scene
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x2a2a2a);
+    viewer3DState.scene = new THREE.Scene();
+    viewer3DState.scene.background = new THREE.Color(0x2a2a2a);
 
+    // Get container dimensions
+    const containerWidth = container.clientWidth || 800;
+    const containerHeight = container.clientHeight || 600;
+    const aspect = containerWidth / containerHeight || 1.33;
+    
     // Create camera - positioned for top-view (looking down Z-axis)
-    camera = new THREE.PerspectiveCamera(
-        75,
-        container.clientWidth / container.clientHeight,
-        0.1,
-        1000
-    );
-    camera.position.set(0, 0, 50);  // Top-view: looking down from +Z
-    camera.lookAt(0, 0, 0);
+    viewer3DState.camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 1000);
+    viewer3DState.camera.position.set(0, 0, 50);  // Top-view: looking down from +Z
+    viewer3DState.camera.lookAt(0, 0, 0);
 
     // Create renderer
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(container.clientWidth, container.clientHeight);
-    container.appendChild(renderer.domElement);
+    viewer3DState.renderer = new THREE.WebGLRenderer({ antialias: true });
+    
+    // Ensure container has valid dimensions
+    if (containerWidth === 0 || containerHeight === 0) {
+        console.warn('Container has zero dimensions, using default size');
+        viewer3DState.renderer.setSize(800, 600);
+    } else {
+        viewer3DState.renderer.setSize(containerWidth, containerHeight);
+    }
+    
+    container.appendChild(viewer3DState.renderer.domElement);
 
-    // Add OrbitControls
-    controls = new THREE.OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.25;
+    // Add OrbitControls (ES6 module import)
+    if (typeof window.OrbitControls !== 'undefined') {
+        try {
+            viewer3DState.controls = new window.OrbitControls(viewer3DState.camera, viewer3DState.renderer.domElement);
+            viewer3DState.controls.enableDamping = true;
+            viewer3DState.controls.dampingFactor = 0.25;
+            console.log('OrbitControls initialized successfully');
+        } catch (error) {
+            console.error('Failed to initialize OrbitControls:', error);
+        }
+    } else {
+        console.warn('OrbitControls not loaded. 3D navigation will be limited.');
+        console.warn('Make sure OrbitControls is imported as ES6 module.');
+    }
 
     // Add grid in XY plane (Z-up coordinate system)
     const gridHelper = new THREE.GridHelper(100, 100, 0x444444, 0x444444);
     gridHelper.rotation.x = Math.PI / 2;  // Rotate to XY plane
-    scene.add(gridHelper);
+    viewer3DState.scene.add(gridHelper);
 
     // Add axes helper (X=red/forward, Y=green/left, Z=blue/up)
     const axesHelper = new THREE.AxesHelper(5);
-    scene.add(axesHelper);
+    viewer3DState.scene.add(axesHelper);
 
     // Add lights
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(ambientLight);
+    viewer3DState.scene.add(ambientLight);
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.4);
     directionalLight.position.set(10, 10, 10);
-    scene.add(directionalLight);
+    viewer3DState.scene.add(directionalLight);
 
     // Handle window resize
     window.addEventListener('resize', onWindowResize);
@@ -110,23 +176,29 @@ function initThreeJSDisplay() {
     // Connect to ROS
     connectToROS();
 
-    console.log('Three.js display initialized');
+    console.log('=== Three.js display initialized successfully ===');
+    console.log('Scene:', viewer3DState.scene);
+    console.log('Camera:', viewer3DState.camera);
+    console.log('Renderer:', viewer3DState.renderer);
+    console.log('Container:', container);
 }
 
 function onWindowResize() {
     const container = getActiveDisplayContainer();
-    if (!container || !camera || !renderer) return;
+    if (!container || !viewer3DState.camera || !viewer3DState.renderer) return;
 
-    camera.aspect = container.clientWidth / container.clientHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    viewer3DState.camera.aspect = container.clientWidth / container.clientHeight;
+    viewer3DState.camera.updateProjectionMatrix();
+    viewer3DState.renderer.setSize(container.clientWidth, container.clientHeight);
 }
 
 function animate() {
     requestAnimationFrame(animate);
-    if (controls) controls.update();
-    if (renderer && scene && camera) {
-        renderer.render(scene, camera);
+    if (viewer3DState.controls && viewer3DState.controls.update) {
+        viewer3DState.controls.update();
+    }
+    if (viewer3DState.renderer && viewer3DState.scene && viewer3DState.camera) {
+        viewer3DState.renderer.render(viewer3DState.scene, viewer3DState.camera);
     }
 }
 
@@ -142,24 +214,24 @@ function connectToROS() {
     console.log('window.location.hostname:', window.location.hostname);
     console.log('window.location.href:', window.location.href);
 
-    ros = new ROSLIB.Ros({
+    viewer3DState.ros = new ROSLIB.Ros({
         url: rosbridgeUrl
     });
 
-    ros.on('connection', function() {
+    viewer3DState.ros.on('connection', function() {
         console.log('✓ Successfully connected to rosbridge:', rosbridgeUrl);
-        rosConnected = true;
+        viewer3DState.rosConnected = true;
     });
 
-    ros.on('error', function(error) {
+    viewer3DState.ros.on('error', function(error) {
         console.error('✗ Error connecting to rosbridge:', rosbridgeUrl);
         console.error('Error details:', error);
-        rosConnected = false;
+        viewer3DState.rosConnected = false;
     });
 
-    ros.on('close', function() {
+    viewer3DState.ros.on('close', function() {
         console.log('✗ Connection to rosbridge closed');
-        rosConnected = false;
+        viewer3DState.rosConnected = false;
         console.log('Will retry in 3 seconds...');
         // Try to reconnect after 3 seconds
         setTimeout(connectToROS, 3000);
@@ -187,7 +259,13 @@ function parsePointCloud2(message) {
     }
 
     // Convert base64 data to binary
-    const data = new Uint8Array(atob(message.data).split('').map(c => c.charCodeAt(0)));
+    // Optimized base64 decoding (5-10x faster than split+map)
+    const binaryString = atob(message.data);
+    const len = binaryString.length;
+    const data = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        data[i] = binaryString.charCodeAt(i);
+    }
     const view = new DataView(data.buffer);
 
     const pointStep = message.point_step;
@@ -227,7 +305,7 @@ function parsePointCloud2(message) {
 
 // Subscribe to PointCloud2 topic
 function subscribeToPointCloud(topicName) {
-    if (!rosConnected) {
+    if (!viewer3DState.rosConnected) {
         console.warn('Not connected to ROS');
         return;
     }
@@ -235,16 +313,16 @@ function subscribeToPointCloud(topicName) {
     console.log('Subscribing to PointCloud2 topic:', topicName);
 
     // Remove existing mesh if any
-    if (pointCloudMeshes[topicName]) {
-        scene.remove(pointCloudMeshes[topicName]);
-        pointCloudMeshes[topicName].geometry.dispose();
-        pointCloudMeshes[topicName].material.dispose();
-        delete pointCloudMeshes[topicName];
+    if (viewer3DState.pointCloudMeshes[topicName]) {
+        viewer3DState.scene.remove(viewer3DState.pointCloudMeshes[topicName]);
+        viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
+        viewer3DState.pointCloudMeshes[topicName].material.dispose();
+        delete viewer3DState.pointCloudMeshes[topicName];
     }
 
     // Create ROS topic
     const topic = new ROSLIB.Topic({
-        ros: ros,
+        ros: viewer3DState.ros,
         name: topicName,
         messageType: 'sensor_msgs/msg/PointCloud2',
         throttle_rate: 100 // Throttle to 10 Hz
@@ -265,7 +343,7 @@ function subscribeToPointCloud(topicName) {
         console.log('Parsed', points.length / 3, 'points');
 
         // Create or update point cloud mesh
-        if (!pointCloudMeshes[topicName]) {
+        if (!viewer3DState.pointCloudMeshes[topicName]) {
             const geometry = new THREE.BufferGeometry();
             geometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
             geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -278,17 +356,17 @@ function subscribeToPointCloud(topicName) {
             });
 
             const mesh = new THREE.Points(geometry, material);
-            pointCloudMeshes[topicName] = mesh;
-            scene.add(mesh);
+            viewer3DState.pointCloudMeshes[topicName] = mesh;
+            viewer3DState.scene.add(mesh);
             console.log('Added point cloud mesh to scene:', topicName);
             console.log('Mesh position:', mesh.position);
             console.log('Bounding sphere:', geometry.boundingSphere);
         } else {
-            pointCloudMeshes[topicName].geometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
-            pointCloudMeshes[topicName].geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-            pointCloudMeshes[topicName].geometry.attributes.position.needsUpdate = true;
-            pointCloudMeshes[topicName].geometry.attributes.color.needsUpdate = true;
-            pointCloudMeshes[topicName].geometry.computeBoundingSphere();
+            viewer3DState.pointCloudMeshes[topicName].geometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
+            viewer3DState.pointCloudMeshes[topicName].geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            viewer3DState.pointCloudMeshes[topicName].geometry.attributes.position.needsUpdate = true;
+            viewer3DState.pointCloudMeshes[topicName].geometry.attributes.color.needsUpdate = true;
+            viewer3DState.pointCloudMeshes[topicName].geometry.computeBoundingSphere();
         }
     });
 
@@ -299,17 +377,17 @@ function subscribeToPointCloud(topicName) {
 async function waitForROSConnection(timeoutMs = 5000) {
     const startTime = Date.now();
 
-    while (!rosConnected && (Date.now() - startTime) < timeoutMs) {
+    while (!viewer3DState.rosConnected && (Date.now() - startTime) < timeoutMs) {
         await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    return rosConnected;
+    return viewer3DState.rosConnected;
 }
 
 // Get available PointCloud2 topics
 async function getAvailablePointCloudTopics() {
     // Wait for connection if not connected yet
-    if (!rosConnected) {
+    if (!viewer3DState.rosConnected) {
         console.log('Waiting for ROS connection...');
         const connected = await waitForROSConnection(5000);
 
@@ -320,7 +398,7 @@ async function getAvailablePointCloudTopics() {
     }
 
     return new Promise((resolve) => {
-        ros.getTopics(function(topics) {
+        viewer3DState.ros.getTopics(function(topics) {
             const pointCloudTopics = [];
 
             if (topics.topics && topics.types) {
@@ -348,7 +426,7 @@ async function selectDisplayTopics() {
     const topics = await getAvailablePointCloudTopics();
 
     if (topics.length === 0) {
-        if (!rosConnected) {
+        if (!viewer3DState.rosConnected) {
             alert('Not connected to ROS. Make sure rosbridge_server is running:\n\nros2 launch rosbridge_server rosbridge_websocket_launch.xml');
         } else {
             alert('No PointCloud2 topics available. Make sure topics are being published.');
@@ -375,7 +453,7 @@ async function selectDisplayTopics() {
         checkbox.type = 'checkbox';
         checkbox.id = `display-topic-${topic}`;
         checkbox.value = topic;
-        checkbox.checked = displaySelectedTopics.includes(topic);
+        checkbox.checked = viewer3DState.displaySelectedTopics.includes(topic);
 
         const label = document.createElement('label');
         label.htmlFor = `display-topic-${topic}`;
@@ -405,42 +483,103 @@ function confirmDisplayTopicSelection() {
     });
 
     // Unsubscribe from removed topics
-    displaySelectedTopics.forEach(topic => {
+    viewer3DState.displaySelectedTopics.forEach(topic => {
         if (!newTopics.includes(topic)) {
-            if (pointCloudMeshes[topic]) {
-                scene.remove(pointCloudMeshes[topic]);
-                pointCloudMeshes[topic].geometry.dispose();
-                pointCloudMeshes[topic].material.dispose();
-                delete pointCloudMeshes[topic];
+            if (viewer3DState.pointCloudMeshes[topic]) {
+                viewer3DState.scene.remove(viewer3DState.pointCloudMeshes[topic]);
+                viewer3DState.pointCloudMeshes[topic].geometry.dispose();
+                viewer3DState.pointCloudMeshes[topic].material.dispose();
+                delete viewer3DState.pointCloudMeshes[topic];
             }
         }
     });
 
     // Subscribe to new topics
     newTopics.forEach(topic => {
-        if (!displaySelectedTopics.includes(topic)) {
+        if (!viewer3DState.displaySelectedTopics.includes(topic)) {
             subscribeToPointCloud(topic);
         }
     });
 
-    displaySelectedTopics = newTopics;
+    viewer3DState.displaySelectedTopics = newTopics;
     closeDisplayTopicSelection();
 
-    console.log('Display selected topics:', displaySelectedTopics);
+    console.log('Display selected topics:', viewer3DState.displaySelectedTopics);
 }
 
-// Initialize on page load
+// Initialize when 3D Viewer tab is opened
+function initialize3DViewer() {
+    console.log('initialize3DViewer called');
+    
+    // Check if 3D Viewer subtab is active
+    const viewerSubtab = document.getElementById('3d-viewer-subtab');
+    if (!viewerSubtab) {
+        console.warn('3D Viewer subtab not found');
+        return;
+    }
+    
+    // Wait for Three.js to be ready (required)
+    const checkThree = (attempts = 0) => {
+        if (typeof window.THREE === 'undefined' && !window.threeReady) {
+            if (attempts < 50) { // Wait up to 5 seconds
+                console.log('Waiting for Three.js...', attempts);
+                window.waitingForThree = () => checkThree(attempts + 1);
+                setTimeout(() => checkThree(attempts + 1), 100);
+                return;
+            } else {
+                console.error('Three.js failed to load after 5 seconds');
+                return;
+            }
+        }
+        
+        // Three.js is ready, OrbitControls is optional - proceed with initialization
+        console.log('Three.js ready, initializing display...');
+        
+        // Wait a bit for DOM to update, then initialize
+        setTimeout(() => {
+            // Double check that subtab is still active
+            if (viewerSubtab.classList.contains('active')) {
+                console.log('Initializing Three.js display...');
+                initThreeJSDisplay();
+            } else {
+                console.log('3D Viewer subtab is not active, skipping initialization');
+            }
+        }, 200);
+    };
+    
+    checkThree();
+}
+
+// Store initialization function for OrbitControls module
+window.threejsDisplayReady = function() {
+    const viewerSubtab = document.getElementById('3d-viewer-subtab');
+    if (viewerSubtab && viewerSubtab.classList.contains('active')) {
+        console.log('OrbitControls ready, initializing 3D Viewer...');
+        initialize3DViewer();
+    }
+};
+
+// Initialize on page load if 3D Viewer is active
 window.addEventListener('load', () => {
     setTimeout(() => {
-        initThreeJSDisplay();
+        const viewerSubtab = document.getElementById('3d-viewer-subtab');
+        if (viewerSubtab && viewerSubtab.classList.contains('active')) {
+            initialize3DViewer();
+        }
     }, 500);
 });
 
 // Expose functions to global scope for onclick handlers
 window.initThreeJSDisplay = initThreeJSDisplay;
+window.initialize3DViewer = initialize3DViewer;
 window.selectDisplayTopics = selectDisplayTopics;
 window.closeDisplayTopicSelection = closeDisplayTopicSelection;
 window.confirmDisplayTopicSelection = confirmDisplayTopicSelection;
 window.moveRendererToActiveContainer = moveRendererToActiveContainer;
 
-console.log('Three.js Display script loaded');
+console.log('=== Three.js Display script loaded ===');
+console.log('Functions exposed:', {
+    initThreeJSDisplay: typeof initThreeJSDisplay,
+    initialize3DViewer: typeof initialize3DViewer,
+    selectDisplayTopics: typeof selectDisplayTopics
+});

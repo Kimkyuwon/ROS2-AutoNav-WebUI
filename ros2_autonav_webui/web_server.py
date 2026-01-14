@@ -48,6 +48,10 @@ except ImportError:
     SAVEMAP_AVAILABLE = False
     print("Warning: pose_graph_optimization SaveMap service not available. Map saving will be disabled.")
 
+# Global variables for signal handling
+_web_server = None
+_ros_node = None
+
 class WebGUINode(Node):
     def __init__(self):
         super().__init__('web_gui_node')
@@ -58,13 +62,9 @@ class WebGUINode(Node):
         self.slam_output = ""
         self.slam_status = "Ready"
         self.slam_process = None
-        self.slam_terminal_output = ""
-        self.slam_output_lock = threading.Lock()
 
         # Localization state
         self.localization_process = None
-        self.localization_terminal_output = ""
-        self.localization_output_lock = threading.Lock()
 
         # Bag Player state
         self.bag_path = ""
@@ -185,6 +185,63 @@ class WebGUINode(Node):
             self._ros_env = os.environ.copy()
             self.get_logger().error(f'Error setting up ROS2 environment: {str(e)}')
 
+        # Add DISPLAY and XAUTHORITY for GUI applications (rviz2)
+        # Try to get DISPLAY from environment or default to :0
+        if 'DISPLAY' in os.environ:
+            self._ros_env['DISPLAY'] = os.environ['DISPLAY']
+        else:
+            # Default to :0 if not set (common for local X server)
+            self._ros_env['DISPLAY'] = ':0'
+            self.get_logger().info('DISPLAY not set, defaulting to :0')
+        
+        # Try to get XAUTHORITY from environment or try common locations
+        if 'XAUTHORITY' in os.environ:
+            self._ros_env['XAUTHORITY'] = os.environ['XAUTHORITY']
+            self.get_logger().info(f'Using XAUTHORITY from environment: {os.environ["XAUTHORITY"]}')
+        else:
+            # Try common XAUTHORITY locations (including Wayland)
+            import glob
+            xauth_paths = [
+                os.path.expanduser('~/.Xauthority'),
+                '/run/user/{}/gdm/Xauthority'.format(os.getuid()),
+                '/run/user/{}/.mutter-Xwaylandauth.*'.format(os.getuid()),  # Wayland
+                '/var/run/gdm/auth-for-{}-*/database'.format(os.getenv('USER', 'root'))
+            ]
+            xauth_found = False
+            for xauth_pattern in xauth_paths:
+                # Handle glob patterns
+                if '*' in xauth_pattern:
+                    matches = glob.glob(xauth_pattern)
+                    if matches:
+                        xauth_path = matches[0]  # Use first match
+                        if os.path.exists(xauth_path):
+                            self._ros_env['XAUTHORITY'] = xauth_path
+                            self.get_logger().info(f'Found XAUTHORITY at: {xauth_path}')
+                            xauth_found = True
+                            break
+                else:
+                    if os.path.exists(xauth_pattern):
+                        self._ros_env['XAUTHORITY'] = xauth_pattern
+                        self.get_logger().info(f'Found XAUTHORITY at: {xauth_pattern}')
+                        xauth_found = True
+                        break
+            
+            if not xauth_found:
+                # Try to find any XAUTHORITY file in /run/user/
+                user_run_dir = f'/run/user/{os.getuid()}'
+                if os.path.exists(user_run_dir):
+                    wayland_auth_files = glob.glob(f'{user_run_dir}/.mutter-Xwaylandauth.*')
+                    if wayland_auth_files:
+                        self._ros_env['XAUTHORITY'] = wayland_auth_files[0]
+                        self.get_logger().info(f'Found Wayland XAUTHORITY at: {wayland_auth_files[0]}')
+                    else:
+                        # Fallback to user's home directory (even if it doesn't exist)
+                        self._ros_env['XAUTHORITY'] = os.path.expanduser('~/.Xauthority')
+                        self.get_logger().warn('XAUTHORITY not found, using ~/.Xauthority (may not exist)')
+                else:
+                    self._ros_env['XAUTHORITY'] = os.path.expanduser('~/.Xauthority')
+                    self.get_logger().warn('XAUTHORITY not found, using ~/.Xauthority (may not exist)')
+
     def _read_process_output(self, process, output_lock, output_attr_name, max_lines=10):
         """
         Thread function to read process output and store in terminal output buffer.
@@ -237,19 +294,20 @@ class WebGUINode(Node):
                     self.get_logger().info('Sent SIGINT to process group')
 
                     # Wait for process to terminate
+                    # Increase timeout for GUI applications like rviz2
                     try:
-                        process.wait(timeout=5)
+                        process.wait(timeout=8)  # Increased from 5 to 8 seconds
                         self.get_logger().info(f'{process_name} process terminated gracefully')
                     except subprocess.TimeoutExpired:
                         self.get_logger().warn('Process did not terminate with SIGINT, sending SIGTERM')
                         os.killpg(pgid, signal.SIGTERM)
                         try:
-                            process.wait(timeout=5)
+                            process.wait(timeout=8)  # Increased from 5 to 8 seconds
                             self.get_logger().info(f'{process_name} process terminated with SIGTERM')
                         except subprocess.TimeoutExpired:
                             self.get_logger().warn('Process did not terminate with SIGTERM, sending SIGKILL')
                             os.killpg(pgid, signal.SIGKILL)
-                            process.wait(timeout=2)
+                            process.wait(timeout=3)  # Increased from 2 to 3 seconds
                             self.get_logger().info(f'{process_name} process killed with SIGKILL')
 
                 except ProcessLookupError:
@@ -339,11 +397,7 @@ class WebGUINode(Node):
         self.kill_slam_processes()
         time.sleep(0.5)
 
-        # Clear terminal output
-        with self.slam_output_lock:
-            self.slam_terminal_output = ""
-
-        # Launch mapping and capture output
+        # Launch mapping without capturing terminal output
         try:
             # Create command with environment setup
             bash_cmd = (
@@ -352,29 +406,26 @@ class WebGUINode(Node):
                 'ros2 launch fast_lio mapping.launch.py'
             )
 
-            # Run command and capture output
+            # Run command
             cmd = ['bash', '-c', bash_cmd]
 
-            self.get_logger().info('Starting FAST_LIO mapping with output capture')
+            self.get_logger().info('Starting FAST_LIO mapping (no terminal capture)')
 
-            # Launch process and capture output
+            # Launch process - capture stderr to check for rviz2 errors
+            # Log DISPLAY and XAUTHORITY for debugging
+            self.get_logger().info(f'DISPLAY: {self._ros_env.get("DISPLAY", "NOT SET")}')
+            self.get_logger().info(f'XAUTHORITY: {self._ros_env.get("XAUTHORITY", "NOT SET")}')
+            
+            # Capture stderr to log rviz2 errors
+            stderr_file = open('/tmp/web_gui_slam_stderr.log', 'w')
             self.slam_process = subprocess.Popen(
                 cmd,
                 env=self._ros_env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
                 text=True,
-                bufsize=1,
                 start_new_session=True
             )
-
-            # Start thread to read output
-            output_thread = threading.Thread(
-                target=self._read_process_output,
-                args=(self.slam_process, self.slam_output_lock, 'slam_terminal_output'),
-                daemon=True
-            )
-            output_thread.start()
 
             self.get_logger().info('FAST_LIO mapping started with PID: {}'.format(self.slam_process.pid))
             return True
@@ -388,9 +439,7 @@ class WebGUINode(Node):
         """Stop SLAM mapping process (like Ctrl+C)"""
         result = self._stop_process(
             self.slam_process,
-            'SLAM',
-            self.slam_output_lock,
-            'slam_terminal_output'
+            'SLAM'
         )
         if result:
             self.slam_process = None
@@ -454,11 +503,7 @@ class WebGUINode(Node):
         self.kill_localization_processes()
         time.sleep(0.5)
 
-        # Clear terminal output
-        with self.localization_output_lock:
-            self.localization_terminal_output = ""
-
-        # Launch localization and capture output
+        # Launch localization without capturing terminal output
         try:
             # Create command with environment setup
             bash_cmd = (
@@ -467,29 +512,26 @@ class WebGUINode(Node):
                 'ros2 launch fast_lio localization.launch.py'
             )
 
-            # Run command and capture output
+            # Run command
             cmd = ['bash', '-c', bash_cmd]
 
-            self.get_logger().info('Starting FAST_LIO localization with output capture')
+            self.get_logger().info('Starting FAST_LIO localization (no terminal capture)')
 
-            # Launch process and capture output
+            # Launch process - capture stderr to check for rviz2 errors
+            # Log DISPLAY and XAUTHORITY for debugging
+            self.get_logger().info(f'DISPLAY: {self._ros_env.get("DISPLAY", "NOT SET")}')
+            self.get_logger().info(f'XAUTHORITY: {self._ros_env.get("XAUTHORITY", "NOT SET")}')
+            
+            # Capture stderr to log rviz2 errors
+            stderr_file = open('/tmp/web_gui_localization_stderr.log', 'w')
             self.localization_process = subprocess.Popen(
                 cmd,
                 env=self._ros_env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
                 text=True,
-                bufsize=1,
                 start_new_session=True
             )
-
-            # Start thread to read output
-            output_thread = threading.Thread(
-                target=self._read_process_output,
-                args=(self.localization_process, self.localization_output_lock, 'localization_terminal_output'),
-                daemon=True
-            )
-            output_thread.start()
 
             self.get_logger().info('FAST_LIO localization started with PID: {}'.format(self.localization_process.pid))
             return True
@@ -503,9 +545,7 @@ class WebGUINode(Node):
         """Stop Localization mapping process (like Ctrl+C)"""
         result = self._stop_process(
             self.localization_process,
-            'Localization',
-            self.localization_output_lock,
-            'localization_terminal_output'
+            'Localization'
         )
         if result:
             self.localization_process = None
@@ -606,11 +646,21 @@ class WebGUINode(Node):
             self.get_logger().info('Optimization completed successfully')
 
     def get_slam_state(self):
+        # Check if SLAM process is running
+        is_running = self.slam_process is not None and self.slam_process.poll() is None
         return {
             'map1': self.slam_map1,
             'map2': self.slam_map2,
             'output': self.slam_output,
-            'status': self.slam_status
+            'status': self.slam_status,
+            'is_running': is_running
+        }
+    
+    def get_localization_state(self):
+        # Check if Localization process is running
+        is_running = self.localization_process is not None and self.localization_process.poll() is None
+        return {
+            'is_running': is_running
         }
 
     # Bag Recorder Functions
@@ -1600,10 +1650,8 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed_path.path == '/api/slam/state':
             self.send_json_response(self.node.get_slam_state())
-        elif parsed_path.path == '/api/slam/get_terminal_output':
-            with self.node.slam_output_lock:
-                output = self.node.slam_terminal_output
-            self.send_json_response({'success': True, 'output': output})
+        elif parsed_path.path == '/api/localization/state':
+            self.send_json_response(self.node.get_localization_state())
         elif parsed_path.path == '/api/player/state':
             self.send_json_response(self.node.get_player_state())
         elif parsed_path.path == '/api/bag/state':
@@ -1625,6 +1673,27 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
         elif parsed_path.path == '/api/ping':
             # Simple ping endpoint for latency measurement
             self.send_json_response({'success': True, 'timestamp': time.time()})
+        elif parsed_path.path == '/api/ros_domain_id':
+            # Get ROS DOMAIN ID from environment
+            domain_id = os.environ.get('ROS_DOMAIN_ID', '0')
+            self.send_json_response({'success': True, 'domain_id': domain_id})
+        elif parsed_path.path == '/api/plot/get_topics':
+            # Get ROS2 topics for Plot
+            import json
+            import traceback
+            try:
+                topics = self.node.get_recorder_topics()  # 재사용
+                # #region agent log
+                with open('/home/kkw/localization_ws/src/web_gui/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({'location':'web_server.py:1677','message':'API /api/plot/get_topics called','data':{'topicsCount':len(topics)},'timestamp':int(time.time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'C'})+'\n')
+                # #endregion
+                self.send_json_response({'success': True, 'topics': topics})
+            except Exception as e:
+                # #region agent log
+                with open('/home/kkw/localization_ws/src/web_gui/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({'location':'web_server.py:1682','message':'API /api/plot/get_topics error','data':{'error':str(e)},'timestamp':int(time.time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'C'})+'\n')
+                # #endregion
+                self.send_json_response({'success': False, 'error': str(e)})
         else:
             # Serve static files
             if parsed_path.path == '/':
@@ -1670,11 +1739,6 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
         elif parsed_path.path == '/api/localization/stop_mapping':
             success = self.node.stop_localization_mapping()
             response = {'success': success, 'message': 'Localization mapping stopped' if success else 'Failed to stop Localization mapping'}
-        elif parsed_path.path == '/api/localization/get_terminal_output':
-            with self.node.localization_output_lock:
-                output = self.node.localization_terminal_output
-            response = {'success': True, 'output': output}
-
         # Bag Player API endpoints
         elif parsed_path.path == '/api/bag/load':
             path = data.get('path', '')
@@ -1966,7 +2030,7 @@ def run_web_server(node, port=8080):
     web_dir = None
     try:
         from ament_index_python.packages import get_package_share_directory
-        share_dir = get_package_share_directory('web_gui')
+        share_dir = get_package_share_directory('ros2_autonav_webui')
         web_dir = os.path.join(share_dir, 'web')
         node.get_logger().info(f'Using web directory: {web_dir}')
     except Exception as e:
@@ -1987,7 +2051,8 @@ def run_web_server(node, port=8080):
         return
 
     WebRequestHandler.web_dir = web_dir
-    server = HTTPServer(('0.0.0.0', port), WebRequestHandler)
+    global _web_server
+    _web_server = HTTPServer(('0.0.0.0', port), WebRequestHandler)
 
     # Get local IP for network access
     local_ip = get_local_ip()
@@ -1998,29 +2063,74 @@ def run_web_server(node, port=8080):
     node.get_logger().info(f'Network access: http://{local_ip}:{port}')
     node.get_logger().info(f'======================================')
 
-    server.serve_forever()
+    try:
+        _web_server.serve_forever()
+    except Exception as e:
+        node.get_logger().error(f'Web server error: {str(e)}')
+    finally:
+        _web_server.server_close()
 
+
+def signal_handler(signum, frame):
+    """Handle SIGTERM and SIGINT for graceful shutdown"""
+    global _web_server, _ros_node
+    
+    signal_name = signal.Signals(signum).name
+    logger_msg = f'Received {signal_name}, shutting down gracefully...'
+    if _ros_node:
+        _ros_node.get_logger().info(logger_msg)
+    else:
+        print(logger_msg)
+    
+    # Shutdown web server
+    if _web_server:
+        shutdown_msg = 'Shutting down web server...'
+        if _ros_node:
+            _ros_node.get_logger().info(shutdown_msg)
+        else:
+            print(shutdown_msg)
+        _web_server.shutdown()
+    
+    # Clean up ROS node
+    if _ros_node:
+        _ros_node.get_logger().info('Cleaning up processes...')
+        _ros_node.kill_slam_processes()
+        _ros_node.kill_localization_processes()
+        _ros_node.destroy_node()
+        rclpy.shutdown()
+    
+    # Exit
+    import sys
+    sys.exit(0)
 
 def main(args=None):
+    global _ros_node
+    
     rclpy.init(args=args)
 
-    node = WebGUINode()
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    _ros_node = WebGUINode()
 
     # Start web server in a separate thread
-    web_thread = threading.Thread(target=run_web_server, args=(node, 8080), daemon=True)
+    web_thread = threading.Thread(target=run_web_server, args=(_ros_node, 8080), daemon=True)
     web_thread.start()
 
     local_ip = get_local_ip()
-    node.get_logger().info(f'Web GUI is running with full ROS2 integration.')
-    node.get_logger().info(f'Open http://localhost:8080 or http://{local_ip}:8080 in your browser.')
+    _ros_node.get_logger().info(f'Web GUI is running with full ROS2 integration.')
+    _ros_node.get_logger().info(f'Open http://localhost:8080 or http://{local_ip}:8080 in your browser.')
 
     try:
-        rclpy.spin(node)
+        rclpy.spin(_ros_node)
     except KeyboardInterrupt:
-        pass
+        _ros_node.get_logger().info('Keyboard interrupt received')
     finally:
-        node.kill_slam_processes()
-        node.destroy_node()
+        _ros_node.get_logger().info('Cleaning up...')
+        _ros_node.kill_slam_processes()
+        _ros_node.kill_localization_processes()
+        _ros_node.destroy_node()
         rclpy.shutdown()
 
 

@@ -1,6 +1,6 @@
-# ROS2 Web GUI
+# ROS2 AUTONAV WEBUI
 
-A web-based graphical user interface for ROS2 robotics applications, providing intuitive control and visualization of SLAM, localization, and data recording/playback functionality through a modern web browser.
+A web-based graphical user interface for autonomous robot navigation with ROS2, providing intuitive control and visualization of SLAM, localization, navigation, and data recording/playback functionality through a modern web browser.
 
 ## Features
 
@@ -117,13 +117,13 @@ git clone https://github.com/Kimkyuwon/Web-based-GUI-for-ROS2-SLAM-and-File-Play
 
 ```bash
 cd ~/your_workspace
-colcon build --packages-select web_gui
+colcon build --packages-select ros2_autonav_webui
 source install/setup.bash
 ```
 
-**Important:** After modifying source files in `src/web_gui/`, you must rebuild:
+**Important:** After modifying source files in `src/ros2_autonav_webui/`, you must rebuild:
 ```bash
-colcon build --packages-select web_gui
+colcon build --packages-select ros2_autonav_webui
 ```
 
 For faster development iteration, use symlink install (one-time setup):
@@ -138,18 +138,18 @@ colcon build --symlink-install
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/your_workspace/install/setup.bash
-ros2 launch web_gui web_gui.launch.py
+ros2 launch ros2_autonav_webui ros2_autonav_webui.launch.py
 ```
 
 ### Access Web Interface
 
 Once the server starts, you'll see:
 ```
-[INFO] [web_gui_node]: ======================================
-[INFO] [web_gui_node]: Web server started on port 8080
-[INFO] [web_gui_node]: Local access:   http://localhost:8080
-[INFO] [web_gui_node]: Network access: http://YOUR_IP:8080
-[INFO] [web_gui_node]: ======================================
+[INFO] [ros2_autonav_webui_node]: ======================================
+[INFO] [ros2_autonav_webui_node]: Web server started on port 8080
+[INFO] [ros2_autonav_webui_node]: Local access:   http://localhost:8080
+[INFO] [ros2_autonav_webui_node]: Network access: http://YOUR_IP:8080
+[INFO] [ros2_autonav_webui_node]: ======================================
 ```
 
 Open the URL in your web browser.
@@ -206,7 +206,7 @@ Same workflow as SLAM, but uses `localization_config.yaml` and `localization.lau
 
 ### ROS2 Environment Variables
 
-The web_gui service automatically sets:
+The ros2_autonav_webui service automatically sets:
 ```bash
 ROS_DOMAIN_ID=0
 ROS_LOCALHOST_ONLY=1
@@ -233,7 +233,7 @@ sudo ufw reload
 
 ### Change Port (Optional)
 
-Edit `web_gui/web_server.py`:
+Edit `ros2_autonav_webui/web_server.py`:
 ```python
 # Change port number
 web_thread = threading.Thread(target=run_web_server, args=(node, 8080), daemon=True)
@@ -242,14 +242,14 @@ web_thread = threading.Thread(target=run_web_server, args=(node, 8080), daemon=T
 
 Then rebuild:
 ```bash
-colcon build --packages-select web_gui
+colcon build --packages-select ros2_autonav_webui
 ```
 
 ## Directory Structure
 
 ```
-web_gui/
-├── web_gui/
+ros2_autonav_webui/
+├── ros2_autonav_webui/
 │   ├── web_server.py          # Main Python backend (HTTP + ROS2)
 │   └── __init__.py
 ├── web/
@@ -259,7 +259,7 @@ web_gui/
 │       ├── style.css          # CSS styling
 │       └── threejs_display.js # Three.js 3D visualization
 ├── launch/
-│   └── web_gui.launch.py      # ROS2 launch file
+│   └── ros2_autonav_webui.launch.py # ROS2 launch file
 ├── resource/
 ├── package.xml
 ├── setup.py
@@ -298,20 +298,20 @@ web_gui/
 
 1. Stop the service:
 ```bash
-sudo systemctl stop web_gui
+sudo systemctl stop ros2_autonav_webui
 ```
 
-2. Edit source files in `src/web_gui/`
+2. Edit source files in `src/ros2_autonav_webui/`
 
 3. Rebuild:
 ```bash
 cd ~/your_workspace
-colcon build --packages-select web_gui
+colcon build --packages-select ros2_autonav_webui
 ```
 
 4. Restart the service:
 ```bash
-sudo systemctl start web_gui
+sudo systemctl start ros2_autonav_webui
 ```
 
 5. Hard refresh browser (`Ctrl + F5`)
@@ -319,7 +319,7 @@ sudo systemctl start web_gui
 ### Adding New Features
 
 **Backend (Python):**
-- Add functions to `web_gui/web_server.py`
+- Add functions to `ros2_autonav_webui/web_server.py`
 - Add API endpoints in `do_GET()` or `do_POST()`
 
 **Frontend (JavaScript):**

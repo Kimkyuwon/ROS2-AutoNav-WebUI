@@ -34,3 +34,8 @@ Thumbs.db
 *.pcd
 *.bag
 *.db3
+
+# Cursor & Claude code
+.claude/
+.cursor/
+*.mdc

@@ -1,9 +1,19 @@
-// Global state
-let currentBrowserPath = '/home';
-let browserCallback = null;
-let selectedTopics = [];
-let availableTopics = [];
-let bagDuration = 0.0;
+// Global state - grouped by functionality
+const fileBrowserState = {
+    currentPath: '/home',
+    callback: null
+};
+
+const bagPlayerState = {
+    selectedTopics: [],
+    availableTopics: [],
+    bagDuration: 0.0
+};
+
+const bagRecorderState = {
+    bagName: '',
+    selectedTopics: []
+};
 
 // Cached DOM elements
 const domCache = {
@@ -45,11 +55,8 @@ function openTab(tabId) {
     } else if (tabId === 'player-tab') {
         // Default to Bag Player sub-tab
         openSubTab('bag-player-subtab', true);
-        setTimeout(() => {
-            if (typeof initThreeJSDisplay === 'function') {
-                initThreeJSDisplay();
-            }
-        }, 100);
+    } else if (tabId === 'visualization-tab') {
+        openSubTab('plot-subtab', true);
     }
 }
 
@@ -87,13 +94,69 @@ function openSubTab(subtabId, skipEvent = false) {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    // Initialize or move 3D renderer to active container (for Bag Player/Recorder tabs)
-    if (subtabId === 'bag-player-subtab' || subtabId === 'bag-recorder-subtab') {
+    // Initialize Plot subtab
+    if (subtabId === 'plot-subtab') {
+        console.log('[openSubTab] Initializing Plot subtab');
+        initPlotSubtab();
+    }
+    
+    // Initialize 3D Viewer if switching to that subtab
+    if (subtabId === '3d-viewer-subtab') {
+        // Wait for DOM update, then initialize
         setTimeout(() => {
-            if (typeof initThreeJSDisplay === 'function') {
-                initThreeJSDisplay();
+            if (typeof initialize3DViewer === 'function') {
+                console.log('Calling initialize3DViewer from openSubTab');
+                initialize3DViewer();
+            } else {
+                console.warn('initialize3DViewer function not found');
             }
-        }, 100);
+        }, 300);
+    }
+}
+
+// Plot subtab 초기화
+function initPlotSubtab() {
+    if (!plotState.tree) {
+        console.log('[initPlotSubtab] Initializing PlotJugglerTree');
+        initPlotTree();
+        setupPlotDropZone();
+    }
+    
+    if (!plotState.ros) {
+        console.log('[initPlotSubtab] Connecting to rosbridge');
+        initRosbridge();
+    } else if (plotState.ros.isConnected && plotState.topics.length === 0) {
+        console.log('[initPlotSubtab] rosbridge already connected, loading topics');
+        loadPlotTopics();
+    }
+    
+    // 주기적으로 토픽 목록 갱신 시작
+    startTopicRefresh();
+}
+
+// 주기적으로 토픽 목록 갱신
+function startTopicRefresh() {
+    // 기존 인터벌이 있으면 정리
+    if (plotState.topicRefreshInterval) {
+        clearInterval(plotState.topicRefreshInterval);
+    }
+    
+    plotState.topicRefreshInterval = setInterval(() => {
+        if (plotState.ros && plotState.ros.isConnected) {
+            console.log('[startTopicRefresh] Refreshing topic list...');
+            loadPlotTopics();
+        }
+    }, plotState.topicRefreshRate);
+    
+    console.log(`[startTopicRefresh] Started topic refresh every ${plotState.topicRefreshRate}ms`);
+}
+
+// 토픽 갱신 중지
+function stopTopicRefresh() {
+    if (plotState.topicRefreshInterval) {
+        clearInterval(plotState.topicRefreshInterval);
+        plotState.topicRefreshInterval = null;
+        console.log('[stopTopicRefresh] Stopped topic refresh');
     }
 }
 
@@ -121,15 +184,15 @@ async function apiCall(endpoint, data = null) {
 
 // File Browser Functions
 async function openFileBrowser(callback, startPath = '/home') {
-    browserCallback = callback;
-    currentBrowserPath = startPath;
-    await loadDirectoryList(currentBrowserPath);
+    fileBrowserState.callback = callback;
+    fileBrowserState.currentPath = startPath;
+    await loadDirectoryList(fileBrowserState.currentPath);
     domCache.get('file-browser-modal').style.display = 'block';
 }
 
 function closeFileBrowser() {
     domCache.get('file-browser-modal').style.display = 'none';
-    browserCallback = null;
+    fileBrowserState.callback = null;
 }
 
 async function loadDirectoryList(path) {
@@ -138,7 +201,7 @@ async function loadDirectoryList(path) {
         const result = await response.json();
 
         if (result.success) {
-            currentBrowserPath = result.current_path;
+            fileBrowserState.currentPath = result.current_path;
             domCache.get('current-path-display').textContent = result.current_path;
 
             const listElement = domCache.get('directory-list');
@@ -170,15 +233,15 @@ async function loadDirectoryList(path) {
 }
 
 function selectFile(filePath) {
-    if (browserCallback) {
-        browserCallback(filePath);
+    if (fileBrowserState.callback) {
+        fileBrowserState.callback(filePath);
     }
     closeFileBrowser();
 }
 
 function selectCurrentDirectory() {
-    if (browserCallback) {
-        browserCallback(currentBrowserPath);
+    if (fileBrowserState.callback) {
+        fileBrowserState.callback(fileBrowserState.currentPath);
     }
     closeFileBrowser();
 }
@@ -244,7 +307,36 @@ async function updateSlamState() {
             outputField.value = state.output || '';
         }
 
+        // Update Multi-Session SLAM status
         updateSlamStatus(state.status || 'Ready');
+        
+        // Update LiDAR SLAM status (only if LiDAR SLAM tab is active)
+        const lidarSlamStatus = domCache.get('lidar-slam-status');
+        if (lidarSlamStatus) {
+            const lidarSlamTab = document.getElementById('lidar-slam-subtab');
+            if (lidarSlamTab && lidarSlamTab.classList.contains('active')) {
+                // Determine status based on SLAM state
+                let statusText = 'Ready';
+                if (state.is_running !== undefined) {
+                    if (state.is_running) {
+                        statusText = 'Running';
+                    } else {
+                        statusText = 'Ready';
+                    }
+                } else if (state.status && state.status !== 'Ready') {
+                    statusText = state.status;
+                }
+                lidarSlamStatus.textContent = 'Status: ' + statusText;
+                // Add red color for Stopping status
+                if (statusText.includes('Stopping')) {
+                    lidarSlamStatus.style.color = '#F44336'; // Red
+                } else {
+                    lidarSlamStatus.style.color = ''; // Reset to default
+                }
+            }
+        }
+        
+        // Update Localization status will be handled by updateLocalizationState()
     }
 }
 
@@ -256,20 +348,20 @@ async function loadBagFile() {
         if (result.success) {
             console.log('Bag file loaded successfully:', path);
             // Get topics and duration from result
-            availableTopics = result.topics || [];
-            selectedTopics = [...availableTopics];
-            bagDuration = result.duration || 0.0;
+            bagPlayerState.availableTopics = result.topics || [];
+            bagPlayerState.selectedTopics = [...bagPlayerState.availableTopics];
+            bagPlayerState.bagDuration = result.duration || 0.0;
 
-            console.log('Loaded topics:', availableTopics);
-            console.log('Duration:', bagDuration, 'seconds');
+            console.log('Loaded topics:', bagPlayerState.availableTopics);
+            console.log('Duration:', bagPlayerState.bagDuration, 'seconds');
 
             // Update time label
-            updateBagTimeLabel(0, bagDuration);
+            updateBagTimeLabel(0, bagPlayerState.bagDuration);
 
             // Update selected topics display
             updateSelectedTopicsDisplay();
 
-            if (availableTopics.length === 0) {
+            if (bagPlayerState.availableTopics.length === 0) {
                 alert('No topics found in the bag file. The bag might be empty or corrupted.');
             }
         } else {
@@ -296,7 +388,7 @@ async function selectTopics() {
         return;
     }
 
-    if (availableTopics.length === 0) {
+    if (bagPlayerState.availableTopics.length === 0) {
         alert('No topics found in the bag file');
         return;
     }
@@ -305,7 +397,7 @@ async function selectTopics() {
     const topicList = domCache.get('topic-list');
     topicList.innerHTML = '';
 
-    availableTopics.forEach(topic => {
+    bagPlayerState.availableTopics.forEach(topic => {
         const div = document.createElement('div');
         div.className = 'topic-item';
 
@@ -313,7 +405,7 @@ async function selectTopics() {
         checkbox.type = 'checkbox';
         checkbox.id = `topic-${topic}`;
         checkbox.value = topic;
-        checkbox.checked = selectedTopics.includes(topic);
+        checkbox.checked = bagPlayerState.selectedTopics.includes(topic);
 
         const label = document.createElement('label');
         label.htmlFor = `topic-${topic}`;
@@ -333,20 +425,20 @@ function closeTopicSelection() {
 
 function confirmTopicSelection() {
     // Get all checked topics
-    selectedTopics = [];
+    bagPlayerState.selectedTopics = [];
     const checkboxes = document.querySelectorAll('#topic-list input[type="checkbox"]:checked');
     checkboxes.forEach(checkbox => {
-        selectedTopics.push(checkbox.value);
+        bagPlayerState.selectedTopics.push(checkbox.value);
     });
 
-    console.log('Selected topics:', selectedTopics);
+    console.log('Selected topics:', bagPlayerState.selectedTopics);
 
     // Update display
     updateSelectedTopicsDisplay();
 
     closeTopicSelection();
 
-    if (selectedTopics.length === 0) {
+    if (bagPlayerState.selectedTopics.length === 0) {
         alert('Please select at least one topic');
     }
 }
@@ -355,10 +447,10 @@ function updateSelectedTopicsDisplay() {
     const display = domCache.get('bag-selected-topics-display');
     if (!display) return;
 
-    if (selectedTopics.length === 0) {
+    if (bagPlayerState.selectedTopics.length === 0) {
         display.innerHTML = '<span style="color: #888;">No topics selected</span>';
     } else {
-        const topicsHtml = selectedTopics.map(topic =>
+        const topicsHtml = bagPlayerState.selectedTopics.map(topic =>
             `<div style="display: inline-block; background: #2a5a8a; padding: 3px 8px; margin: 2px; border-radius: 3px; font-size: 0.9em;">${topic}</div>`
         ).join('');
         display.innerHTML = topicsHtml;
@@ -372,7 +464,7 @@ async function playBag() {
         return;
     }
 
-    const result = await apiCall('/api/bag/play', { topics: selectedTopics });
+    const result = await apiCall('/api/bag/play', { topics: bagPlayerState.selectedTopics });
     if (result.success) {
         const button = domCache.get('bag-play-button');
         button.textContent = result.playing ? 'Stop' : 'Play';
@@ -399,16 +491,16 @@ async function setBagPosition(position) {
 
     // Update time label
     const ratio = position / 10000.0;
-    const currentTime = ratio * bagDuration;
-    updateBagTimeLabel(currentTime, bagDuration);
+    const currentTime = ratio * bagPlayerState.bagDuration;
+    updateBagTimeLabel(currentTime, bagPlayerState.bagDuration);
 }
 
 async function updateBagState() {
     const state = await apiCall('/api/bag/state');
     if (state) {
         // Update slider position based on current time
-        if (bagDuration > 0 && state.current_time !== undefined) {
-            const ratio = state.current_time / bagDuration;
+        if (bagPlayerState.bagDuration > 0 && state.current_time !== undefined) {
+            const ratio = state.current_time / bagPlayerState.bagDuration;
             const sliderValue = Math.floor(ratio * 10000);
 
             // Only update slider if user is not dragging it
@@ -417,7 +509,7 @@ async function updateBagState() {
                 slider.value = sliderValue;
             }
 
-            updateBagTimeLabel(state.current_time, bagDuration);
+            updateBagTimeLabel(state.current_time, bagPlayerState.bagDuration);
         }
 
         // Update play button state
@@ -531,11 +623,7 @@ async function updatePlayerState() {
     }
 }
 
-// Display Topic Selection Functions are now in threejs_display.js
-
 // Bag Recorder Functions
-let recorderBagName = '';
-let recorderSelectedTopics = [];
 
 async function enterBagName() {
     const bagNameInput = domCache.get('recorder-bag-name');
@@ -546,8 +634,8 @@ async function enterBagName() {
         return;
     }
 
-    recorderBagName = bagName;
-    console.log('Bag name set:', recorderBagName);
+    bagRecorderState.bagName = bagName;
+    console.log('Bag name set:', bagRecorderState.bagName);
 
     const result = await apiCall('/api/recorder/set_bag_name', { bag_name: bagName });
     if (result.success) {
@@ -558,7 +646,7 @@ async function enterBagName() {
 }
 
 async function selectRecorderTopics() {
-    if (!recorderBagName) {
+    if (!bagRecorderState.bagName) {
         alert('Please enter bag name first');
         return;
     }
@@ -583,7 +671,7 @@ async function selectRecorderTopics() {
         checkbox.type = 'checkbox';
         checkbox.id = `recorder-topic-${topic}`;
         checkbox.value = topic;
-        checkbox.checked = recorderSelectedTopics.includes(topic);
+        checkbox.checked = bagRecorderState.selectedTopics.includes(topic);
 
         const label = document.createElement('label');
         label.htmlFor = `recorder-topic-${topic}`;
@@ -603,20 +691,20 @@ function closeRecorderTopicSelection() {
 
 function confirmRecorderTopicSelection() {
     // Get all checked topics
-    recorderSelectedTopics = [];
+    bagRecorderState.selectedTopics = [];
     const checkboxes = document.querySelectorAll('#recorder-topic-list input[type="checkbox"]:checked');
     checkboxes.forEach(checkbox => {
-        recorderSelectedTopics.push(checkbox.value);
+        bagRecorderState.selectedTopics.push(checkbox.value);
     });
 
-    console.log('Selected topics for recording:', recorderSelectedTopics);
+    console.log('Selected topics for recording:', bagRecorderState.selectedTopics);
 
     // Update display
     updateRecorderSelectedTopicsDisplay();
 
     closeRecorderTopicSelection();
 
-    if (recorderSelectedTopics.length === 0) {
+    if (bagRecorderState.selectedTopics.length === 0) {
         alert('Please select at least one topic');
     }
 }
@@ -625,10 +713,10 @@ function updateRecorderSelectedTopicsDisplay() {
     const display = domCache.get('recorder-selected-topics-display');
     if (!display) return;
 
-    if (recorderSelectedTopics.length === 0) {
+    if (bagRecorderState.selectedTopics.length === 0) {
         display.innerHTML = '<span style="color: #888;">No topics selected</span>';
     } else {
-        const topicsHtml = recorderSelectedTopics.map(topic =>
+        const topicsHtml = bagRecorderState.selectedTopics.map(topic =>
             `<div style="display: inline-block; background: #8a2a2a; padding: 3px 8px; margin: 2px; border-radius: 3px; font-size: 0.9em;">${topic}</div>`
         ).join('');
         display.innerHTML = topicsHtml;
@@ -636,24 +724,24 @@ function updateRecorderSelectedTopicsDisplay() {
 }
 
 async function recordBag() {
-    if (!recorderBagName) {
+    if (!bagRecorderState.bagName) {
         alert('Please enter bag name first');
         return;
     }
 
-    if (recorderSelectedTopics.length === 0) {
+    if (bagRecorderState.selectedTopics.length === 0) {
         alert('Please select topics to record');
         return;
     }
 
-    const result = await apiCall('/api/recorder/record', { topics: recorderSelectedTopics });
+    const result = await apiCall('/api/recorder/record', { topics: bagRecorderState.selectedTopics });
     if (result.success) {
         const button = domCache.get('recorder-record-button');
         button.textContent = result.recording ? 'Stop' : 'Record';
         console.log('Recording:', result.recording ? 'started' : 'stopped');
 
         if (result.recording) {
-            alert(`Recording started in /home/kkw/${recorderBagName}`);
+            alert(`Recording started in /home/kkw/${bagRecorderState.bagName}`);
         } else {
             alert('Recording stopped');
         }
@@ -1037,108 +1125,131 @@ async function confirmSaveMap() {
 }
 
 // ==============================================================
-// SLAM Terminal Functions
+// SLAM Start/Stop (terminal output removed)
 // ==============================================================
-let slamTerminalUpdateInterval = null;
-
 async function startSlamMapping() {
-    // Clear terminal output
-    const terminalOutput = domCache.get('slam-terminal-output');
-    terminalOutput.textContent = 'Starting SLAM mapping...\n';
-
+    // Immediately update status to Running
+    updateLidarSlamStatus('Running');
+    
     const result = await apiCall('/api/slam/start_mapping', {});
     if (result.success) {
         console.log('SLAM mapping started');
-
-        // Start polling for terminal output
-        if (slamTerminalUpdateInterval) {
-            clearInterval(slamTerminalUpdateInterval);
-        }
-        slamTerminalUpdateInterval = setInterval(updateSlamTerminalOutput, 500);
+        // Status will be updated by periodic updateSlamState() calls
     } else {
-        terminalOutput.textContent += '\nFailed to start SLAM mapping: ' + (result.message || 'Unknown error');
+        alert('Failed to start SLAM mapping: ' + (result.message || 'Unknown error'));
         console.error('Failed to start SLAM mapping');
-    }
-}
-
-async function updateSlamTerminalOutput() {
-    const result = await apiCall('/api/slam/get_terminal_output');
-    if (result.success && result.output) {
-        const terminalOutput = domCache.get('slam-terminal-output');
-        terminalOutput.textContent = result.output;
-
-        // Auto-scroll to bottom
-        terminalOutput.scrollTop = terminalOutput.scrollHeight;
+        updateLidarSlamStatus('Ready');
     }
 }
 
 async function stopSlamMapping() {
+    // Immediately update status to Stopping
+    updateLidarSlamStatus('Stopping...');
+    
     const result = await apiCall('/api/slam/stop_mapping', {});
     if (result.success) {
-        const terminalOutput = domCache.get('slam-terminal-output');
-        terminalOutput.textContent += '\n\n[SLAM process stopped]\n';
         console.log('SLAM mapping stopped');
-
-        // Stop polling for terminal output
-        if (slamTerminalUpdateInterval) {
-            clearInterval(slamTerminalUpdateInterval);
-            slamTerminalUpdateInterval = null;
-        }
+        // Wait a bit for process to fully stop, then update to Ready
+        setTimeout(() => {
+            updateLidarSlamStatus('Ready');
+        }, 500);
     } else {
         alert('Failed to stop SLAM mapping: ' + (result.message || 'Unknown error'));
         console.error('Failed to stop SLAM mapping');
+        updateLidarSlamStatus('Ready');
+    }
+}
+
+function updateLidarSlamStatus(status) {
+    const lidarSlamStatus = domCache.get('lidar-slam-status');
+    const lidarSlamTab = document.getElementById('lidar-slam-subtab');
+    if (lidarSlamStatus && lidarSlamTab && lidarSlamTab.classList.contains('active')) {
+        lidarSlamStatus.textContent = 'Status: ' + status;
+        // Add red color for Stopping status
+        if (status.includes('Stopping')) {
+            lidarSlamStatus.style.color = '#F44336'; // Red
+        } else {
+            lidarSlamStatus.style.color = ''; // Reset to default
+        }
+    }
+}
+
+function updateLocalizationStatus(status) {
+    const localizationStatus = domCache.get('localization-status');
+    const localizationTab = document.getElementById('localization-subtab');
+    if (localizationStatus && localizationTab && localizationTab.classList.contains('active')) {
+        localizationStatus.textContent = 'Status: ' + status;
+        // Add red color for Stopping status
+        if (status.includes('Stopping')) {
+            localizationStatus.style.color = '#F44336'; // Red
+        } else {
+            localizationStatus.style.color = ''; // Reset to default
+        }
+    }
+}
+
+async function updateLocalizationState() {
+    const state = await apiCall('/api/localization/state');
+    if (state) {
+        const localizationStatus = domCache.get('localization-status');
+        if (localizationStatus) {
+            const localizationTab = document.getElementById('localization-subtab');
+            if (localizationTab && localizationTab.classList.contains('active')) {
+                let statusText = 'Ready';
+                if (state.is_running !== undefined) {
+                    if (state.is_running) {
+                        statusText = 'Running';
+                    } else {
+                        statusText = 'Ready';
+                    }
+                }
+                localizationStatus.textContent = 'Status: ' + statusText;
+                // Add red color for Stopping status
+                if (statusText.includes('Stopping')) {
+                    localizationStatus.style.color = '#F44336'; // Red
+                } else {
+                    localizationStatus.style.color = ''; // Reset to default
+                }
+            }
+        }
     }
 }
 
 // ==============================================================
-// Localization Terminal Functions
+// Localization Start/Stop (terminal output removed)
 // ==============================================================
-let localizationTerminalUpdateInterval = null;
-
 async function startLocalizationMapping() {
-    // Clear terminal output
-    const terminalOutput = domCache.get('localization-terminal-output');
-    terminalOutput.textContent = 'Starting Localization mapping...\n';
-
+    // Immediately update status to Running
+    updateLocalizationStatus('Running');
+    
     const result = await apiCall('/api/localization/start_mapping', {});
     if (result.success) {
         console.log('Localization mapping started');
-
-        // Start polling for terminal output
-        if (localizationTerminalUpdateInterval) {
-            clearInterval(localizationTerminalUpdateInterval);
-        }
-        localizationTerminalUpdateInterval = setInterval(updateLocalizationTerminalOutput, 500);
+        // Status will be updated by periodic updateLocalizationState() calls if implemented
     } else {
         alert('Failed to start Localization mapping: ' + (result.message || 'Unknown error'));
-    }
-}
-
-async function updateLocalizationTerminalOutput() {
-    const result = await apiCall('/api/localization/get_terminal_output', {});
-
-    if (result.success) {
-        const terminalDiv = domCache.get('localization-terminal-output');
-        terminalDiv.textContent = result.output;
-        // Auto-scroll to bottom
-        terminalDiv.scrollTop = terminalDiv.scrollHeight;
+        console.error('Failed to start Localization mapping');
+        updateLocalizationStatus('Ready');
     }
 }
 
 async function stopLocalizationMapping() {
+    // Immediately update status to Stopping
+    updateLocalizationStatus('Stopping...');
+    
     console.log('Stopping Localization mapping...');
     const result = await apiCall('/api/localization/stop_mapping', {});
 
     if (result.success) {
         console.log('Localization mapping stopped');
-
-        // Stop polling for terminal output
-        if (localizationTerminalUpdateInterval) {
-            clearInterval(localizationTerminalUpdateInterval);
-            localizationTerminalUpdateInterval = null;
-        }
+        // Wait a bit for process to fully stop, then update to Ready
+        setTimeout(() => {
+            updateLocalizationStatus('Ready');
+        }, 500);
     } else {
         alert('Failed to stop Localization mapping: ' + (result.message || 'Unknown error'));
+        console.error('Failed to stop Localization mapping');
+        updateLocalizationStatus('Ready');
     }
 }
 
@@ -1195,7 +1306,7 @@ function showYamlErrorModal() {
 // Latency Measurement
 // ==============================================================
 async function measureLatency() {
-    const latencyElement = domCache.get('latency-indicator');
+    const latencyElement = document.getElementById('latency-indicator');
     if (!latencyElement) return;
 
     try {
@@ -1226,11 +1337,28 @@ async function measureLatency() {
 // ==============================================================
 // Initialize and periodic updates
 // ==============================================================
+// Update ROS DOMAIN ID display
+async function updateRosDomainId() {
+    try {
+        const result = await apiCall('/api/ros_domain_id');
+        if (result.success && result.domain_id !== undefined) {
+            const chip = domCache.get('ros-domain-chip');
+            if (chip) {
+                chip.textContent = `ROS DOMAIN ID: ${result.domain_id}`;
+            }
+        }
+    } catch (error) {
+        console.error('Failed to get ROS DOMAIN ID:', error);
+    }
+}
+
 window.addEventListener('load', () => {
     // Initial state update
     updateSlamState();
+    updateLocalizationState();
     updatePlayerState();
     updateBagState();
+    updateRosDomainId(); // Update ROS DOMAIN ID display
 
     // Load default configs on startup
     loadDefaultSlamConfig();
@@ -1245,7 +1373,7 @@ window.addEventListener('load', () => {
         const activeTab = document.querySelector('.tab-content.active');
         if (activeTab.id === 'slam-tab') {
             const activeSubTab = document.querySelector('.subtab-content.active');
-            if (activeSubTab && activeSubTab.id === 'multi-session-slam-subtab') {
+            if (activeSubTab && (activeSubTab.id === 'multi-session-slam-subtab' || activeSubTab.id === 'lidar-slam-subtab')) {
                 updateSlamState();
             }
         } else if (activeTab.id === 'player-tab') {
@@ -1255,15 +1383,21 @@ window.addEventListener('load', () => {
             } else if (activeSubTab && activeSubTab.id === 'file-player-subtab') {
                 updatePlayerState();
             }
+        } else if (activeTab.id === 'visualization-tab') {
+            // Visualization tab - no periodic updates needed
         }
     }, 500);
 });
 
+// Simple status banner updater
+// Simple status banner updater (deprecated - status banner removed)
+function setRunStatus(message, level = 'success') {
+    // Status banner removed - this function is kept for compatibility but does nothing
+}
 // Close modal when clicking outside
 window.onclick = function(event) {
     const fileBrowserModal = domCache.get('file-browser-modal');
     const topicSelectionModal = domCache.get('topic-selection-modal');
-    const displayTopicModal = domCache.get('display-topic-modal');
     const recorderTopicModal = domCache.get('recorder-topic-modal');
 
     if (event.target === fileBrowserModal) {
@@ -1272,10 +1406,889 @@ window.onclick = function(event) {
     if (event.target === topicSelectionModal) {
         closeTopicSelection();
     }
-    if (event.target === displayTopicModal) {
-        closeDisplayTopicSelection();
-    }
     if (event.target === recorderTopicModal) {
         closeRecorderTopicSelection();
     }
 }
+
+// ==============================================================
+// Plot 기능 관련 코드
+// ==============================================================
+
+// Plot 상태 관리
+const plotState = {
+    tree: null,
+    ros: null,
+    topics: [],
+    topicTypes: new Map(), // topic name -> message type (Map)
+    selectedTopics: new Set(), // 구독 중인 토픽들
+    subscribers: new Map(), // topic -> subscriber
+    messageTrees: new Map(), // topic -> message tree data
+    topicNodes: new Map(), // topic -> topic node element (최상위 노드)
+    topicRefreshInterval: null, // 토픽 목록 갱신 인터벌
+    topicRefreshRate: 1000, // 1초마다 토픽 목록 갱신
+    plotManager: null, // PlotlyPlotManager 인스턴스
+    plottedPaths: [], // 현재 Plot에 표시된 path들
+    isLoadingTopics: false // 토픽 로딩 중 플래그
+};
+
+// PlotJugglerTree 초기화 및 토픽 노드 생성
+function initPlotTree() {
+    if (!plotState.tree) {
+        plotState.tree = new PlotJugglerTree('plot-tree');
+        plotState.tree.init();
+        console.log('[initPlotTree] PlotJugglerTree initialized');
+    }
+}
+
+// 토픽 노드를 트리 최상위에 추가 (PlotJuggler 스타일)
+function createTopicNodes() {
+    initPlotTree();
+    
+    // 새로운 토픽과 기존 토픽 비교
+    const newTopics = new Set(plotState.topics);
+    const oldTopics = new Set(plotState.topicNodes.keys());
+    
+    // 삭제된 토픽 제거
+    oldTopics.forEach(topic => {
+        if (!newTopics.has(topic)) {
+            const node = plotState.topicNodes.get(topic);
+            if (node && node.parentElement) {
+                node.parentElement.removeChild(node);
+            }
+            plotState.topicNodes.delete(topic);
+            console.log(`[createTopicNodes] Removed topic node: ${topic}`);
+        }
+    });
+    
+    // 새로 추가된 토픽만 생성
+    plotState.topics.forEach(topic => {
+        if (!plotState.topicNodes.has(topic)) {
+            // 토픽 이름에서 /를 제거
+            const topicName = topic.startsWith('/') ? topic.substring(1) : topic;
+            
+            // 토픽 노드 생성 (비리프 노드)
+            const topicNode = plotState.tree.createNode(topic, topicName, false);
+            
+            // 토픽 노드 클릭 이벤트 (확장/구독)
+            topicNode.addEventListener('click', (e) => {
+                // 확장 아이콘 클릭은 제외
+                if (e.target.classList.contains('plot-tree-expand-icon')) {
+                    return;
+                }
+                
+                e.stopPropagation();
+                
+                // Ctrl+클릭: 복수 선택 (토글)
+                if (e.ctrlKey || e.metaKey) {
+                    console.log(`[createTopicNodes] Ctrl+click on topic: ${topic}`);
+                    if (plotState.selectedTopics.has(topic)) {
+                        unselectPlotTopic(topic);
+                    } else {
+                        selectPlotTopic(topic);
+                    }
+                } else {
+                    // 일반 클릭: 해당 토픽만 선택, 다른 토픽 선택 해제
+                    console.log(`[createTopicNodes] Normal click on topic: ${topic}`);
+                    
+                    // 이미 선택된 토픽이면 토글 (선택 해제)
+                    if (plotState.selectedTopics.has(topic) && plotState.selectedTopics.size === 1) {
+                        unselectPlotTopic(topic);
+                    } else {
+                        // 모든 토픽 선택 해제
+                        const selectedTopics = Array.from(plotState.selectedTopics);
+                        selectedTopics.forEach(t => unselectPlotTopic(t));
+                        
+                        // 해당 토픽만 선택
+                        selectPlotTopic(topic);
+                    }
+                }
+            });
+            
+            // 루트에 추가
+            plotState.tree.rootNode.childrenContainer.appendChild(topicNode);
+            plotState.topicNodes.set(topic, topicNode);
+            
+            console.log(`[createTopicNodes] Added new topic node: ${topic}`);
+        }
+    });
+    
+    const totalNodes = plotState.tree.rootNode.childrenContainer.children.length;
+    console.log(`[createTopicNodes] Total nodes in DOM: ${totalNodes}`);
+    
+    // DOM에 제대로 추가되었는지 확인
+    if (totalNodes > 0) {
+        console.log('[createTopicNodes] First node:', plotState.tree.rootNode.childrenContainer.children[0]);
+    } else {
+        console.error('[createTopicNodes] No nodes in DOM! Debug info:', {
+            rootNode: plotState.tree.rootNode,
+            childrenContainer: plotState.tree.rootNode.childrenContainer,
+            topics: plotState.topics
+        });
+    }
+}
+
+// rosbridge 연결
+function initRosbridge() {
+    if (typeof ROSLIB === 'undefined') {
+        console.error('ROSLIB not loaded');
+        return;
+    }
+
+    try {
+        plotState.ros = new ROSLIB.Ros({
+            url: 'ws://localhost:9090'
+        });
+
+        plotState.ros.on('connection', () => {
+            console.log('[rosbridge] Connected to rosbridge');
+            loadPlotTopics();
+        });
+
+        plotState.ros.on('error', (error) => {
+            console.error('[rosbridge] Connection error:', error);
+            // 연결 실패 메시지 표시
+            const container = domCache.get('plot-tree');
+            if (container) {
+                container.innerHTML = '<div style="color: var(--warning); padding: 12px; text-align: center;">rosbridge connection failed. Make sure rosbridge is running on port 9090.</div>';
+            }
+        });
+
+        plotState.ros.on('close', () => {
+            console.log('[rosbridge] Connection closed. Attempting to reconnect...');
+            // 연결 끊김 메시지 표시
+            const container = domCache.get('plot-tree');
+            if (container) {
+                container.innerHTML = '<div style="color: var(--muted); padding: 12px; text-align: center;">rosbridge disconnected. Reconnecting...</div>';
+            }
+            setTimeout(() => {
+                initRosbridge(); // 재연결 시도
+            }, 3000);
+        });
+    } catch (error) {
+        console.error('[rosbridge] Failed to initialize:', error);
+    }
+}
+
+// 토픽 목록 로드 (rosbridge 사용)
+async function loadPlotTopics() {
+    console.log('[loadPlotTopics] Loading topics...');
+    
+    if (!plotState.ros || !plotState.ros.isConnected) {
+        console.warn('[loadPlotTopics] rosbridge not connected');
+        const container = domCache.get('plot-tree');
+        if (container) {
+            container.innerHTML = '<div style="color: var(--warning); padding: 12px; text-align: center;">rosbridge not connected. Waiting for connection...</div>';
+        }
+        return;
+    }
+
+    // 이미 로딩 중이면 스킵
+    if (plotState.isLoadingTopics) {
+        console.log('[loadPlotTopics] Already loading topics, skipping...');
+        return;
+    }
+
+    plotState.isLoadingTopics = true;
+
+    try {
+        // 타임아웃 설정 (3초)
+        const timeout = 3000;
+        let timeoutId = null;
+        let completed = false;
+
+        // 타임아웃 Promise
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+                if (!completed) {
+                    reject(new Error('Topic loading timeout'));
+                }
+            }, timeout);
+        });
+
+        // getTopics Promise
+        const getTopicsPromise = new Promise((resolve, reject) => {
+            try {
+                plotState.ros.getTopics((result) => {
+                    completed = true;
+                    clearTimeout(timeoutId);
+                    resolve(result);
+                }, (error) => {
+                    completed = true;
+                    clearTimeout(timeoutId);
+                    reject(error);
+                });
+            } catch (error) {
+                completed = true;
+                clearTimeout(timeoutId);
+                reject(error);
+            }
+        });
+
+        // 경쟁: getTopics vs timeout
+        const result = await Promise.race([getTopicsPromise, timeoutPromise]);
+
+        const topics = result.topics || [];
+        const types = result.types || [];
+        
+        console.log('[loadPlotTopics] Received topics:', topics.length);
+        console.log('[loadPlotTopics] Topic list:', topics);
+        
+        // topics와 types를 Map으로 저장 (별도 저장)
+        const topicTypesMap = new Map();
+        topics.forEach((name, index) => {
+            topicTypesMap.set(name, types[index] || 'unknown');
+        });
+        plotState.topicTypes = topicTypesMap;
+        
+        // 이전 토픽 목록과 비교
+        const oldTopicsSet = new Set(plotState.topics);
+        const newTopicsSet = new Set(topics);
+        
+        // 추가된 토픽 찾기
+        const addedTopics = topics.filter(t => !oldTopicsSet.has(t));
+        if (addedTopics.length > 0) {
+            console.log('[loadPlotTopics] New topics detected:', addedTopics);
+        }
+        
+        // 제거된 토픽 찾기
+        const removedTopics = plotState.topics.filter(t => !newTopicsSet.has(t));
+        if (removedTopics.length > 0) {
+            console.log('[loadPlotTopics] Removed topics:', removedTopics);
+        }
+        
+        plotState.topics = topics;
+        
+        if (plotState.topics.length === 0) {
+            const container = domCache.get('plot-tree');
+            if (container) {
+                container.innerHTML = '<div style="color: var(--muted); padding: 12px; text-align: center;">No topics available. Start publishing topics to see them here.</div>';
+            }
+        } else {
+            displayTopicList();
+        }
+    } catch (error) {
+        console.error('[loadPlotTopics] Error:', error);
+        const container = domCache.get('plot-tree');
+        if (container) {
+            container.innerHTML = `<div style="color: var(--danger); padding: 12px; text-align: center;">Failed to load topics: ${error.message}</div>`;
+        }
+    } finally {
+        plotState.isLoadingTopics = false;
+    }
+}
+
+// 토픽 목록 표시 (PlotJuggler 스타일 - 통합 트리)
+function displayTopicList() {
+    const container = domCache.get('plot-tree');
+    if (!container) {
+        console.error('[displayTopicList] Container not found');
+        return;
+    }
+
+    if (plotState.topics.length === 0) {
+        container.innerHTML = '<div style="color: var(--muted); padding: 12px; text-align: center;">No topics available</div>';
+        return;
+    }
+
+    // 기존 에러 메시지나 임시 메시지 제거
+    const errorMsg = container.querySelector('div[style*="color"]');
+    if (errorMsg && !errorMsg.classList.contains('plot-tree-root')) {
+        errorMsg.remove();
+        console.log('[displayTopicList] Removed error/info message');
+    }
+
+    // 토픽 노드 생성
+    createTopicNodes();
+    console.log(`[displayTopicList] Created ${plotState.topics.length} topic nodes`);
+    console.log('[displayTopicList] Container:', container);
+    console.log('[displayTopicList] Root children:', plotState.tree.rootNode.childrenContainer.children.length);
+}
+
+// 토픽 선택 및 구독 (PlotJuggler 스타일)
+function selectPlotTopic(topic) {
+    // 이미 구독 중이면 무시
+    if (plotState.selectedTopics.has(topic)) {
+        console.log(`[selectPlotTopic] Topic already subscribed: ${topic}`);
+        return;
+    }
+
+    plotState.selectedTopics.add(topic);
+    console.log(`[selectPlotTopic] Subscribing to topic: ${topic}`);
+
+    // 토픽 노드 강조 표시 및 확장
+    const topicNode = plotState.topicNodes.get(topic);
+    if (topicNode) {
+        topicNode.classList.add('plot-tree-topic-subscribed');
+        
+        // 자동으로 토픽 노드 확장 (메시지 트리 보이도록)
+        if (!topicNode.classList.contains('plot-tree-expanded')) {
+            plotState.tree.toggleExpand(topicNode);
+        }
+    }
+
+    // 토픽 구독
+    subscribeToTopic(topic);
+}
+
+// 토픽 구독 해제
+function unselectPlotTopic(topic) {
+    if (!plotState.selectedTopics.has(topic)) {
+        return;
+    }
+
+    plotState.selectedTopics.delete(topic);
+    
+    // 구독 해제
+    if (plotState.subscribers.has(topic)) {
+        plotState.subscribers.get(topic).unsubscribe();
+        plotState.subscribers.delete(topic);
+    }
+    
+    // 토픽 노드 강조 해제
+    const topicNode = plotState.topicNodes.get(topic);
+    if (topicNode) {
+        topicNode.classList.remove('plot-tree-topic-subscribed');
+    }
+    
+    console.log(`[unselectPlotTopic] Unsubscribed from topic: ${topic}`);
+}
+
+// 토픽 구독
+function subscribeToTopic(topic) {
+    if (!plotState.ros || !plotState.ros.isConnected) {
+        console.error('[subscribeToTopic] rosbridge not connected');
+        return;
+    }
+
+    // 기존 구독 해제
+    if (plotState.subscribers.has(topic)) {
+        console.log(`[subscribeToTopic] Unsubscribing from existing: ${topic}`);
+        plotState.subscribers.get(topic).unsubscribe();
+        plotState.subscribers.delete(topic);
+    }
+
+    // 토픽 타입 조회 (plotState.topicTypes에서 가져오기)
+    const messageType = plotState.topicTypes.get(topic);
+    
+    if (!messageType) {
+        console.error(`[subscribeToTopic] Topic type not found for: ${topic}`);
+        console.log('[subscribeToTopic] Available types:', Array.from(plotState.topicTypes.keys()).slice(0, 5));
+        return;
+    }
+
+    console.log(`[subscribeToTopic] Subscribing to ${topic} (${messageType})`);
+
+    // 메시지 구독
+    const listener = new ROSLIB.Topic({
+        ros: plotState.ros,
+        name: topic,
+        messageType: messageType
+    });
+
+    listener.subscribe((message) => {
+        // 첫 메시지만 로그 출력
+        if (!plotState.messageTrees.has(topic)) {
+            console.log(`[subscribeToTopic] First message received for ${topic}`);
+        }
+        updateMessageTree(topic, message);
+    });
+
+    plotState.subscribers.set(topic, listener);
+    console.log(`[subscribeToTopic] Successfully subscribed to ${topic}`);
+}
+
+// 메시지 트리 업데이트 (PlotJuggler 스타일 - 토픽 하위에 추가)
+function updateMessageTree(topic, message) {
+    if (!plotState.tree) {
+        initPlotTree();
+    }
+
+    // 토픽 노드 가져오기
+    const topicNode = plotState.topicNodes.get(topic);
+    if (!topicNode) {
+        console.error(`[updateMessageTree] Topic node not found: ${topic}`);
+        return;
+    }
+
+    // PlotJuggler 스타일로 메시지를 재귀적으로 flatten
+    const flattenedData = new Map();
+    
+    function flattenMessage(obj, prefix = '') {
+        if (obj === null || obj === undefined) {
+            return;
+        }
+
+        if (Array.isArray(obj)) {
+            // 배열인 경우: 각 요소를 인덱스로 접근
+            if (obj.length > 0) {
+                if (typeof obj[0] === 'object' && obj[0] !== null) {
+                    // 객체 배열: 첫 번째 요소만 파싱 (PlotJuggler 스타일)
+                    flattenMessage(obj[0], prefix ? `${prefix}[0]` : '[0]');
+                } else {
+                    // 기본 타입 배열: 첫 번째 값만 표시
+                    flattenedData.set(prefix, obj[0]);
+                }
+            }
+        } else if (typeof obj === 'object') {
+            // 객체인 경우: 각 키를 재귀적으로 처리
+            Object.keys(obj).forEach(key => {
+                const value = obj[key];
+                const newPath = prefix ? `${prefix}/${key}` : key;
+                
+                if (value === null || value === undefined) {
+                    // null/undefined는 건너뛰기
+                    return;
+                } else if (Array.isArray(value)) {
+                    // 배열 필드
+                    if (value.length > 0) {
+                        if (typeof value[0] === 'object' && value[0] !== null) {
+                            // 객체 배열: 첫 번째 요소만 파싱
+                            flattenMessage(value[0], `${newPath}[0]`);
+                        } else {
+                            // 기본 타입 배열: 첫 번째 값만 표시 (리프 노드)
+                            flattenedData.set(newPath, value[0]);
+                        }
+                    } else {
+                        // 빈 배열은 건너뛰기
+                        return;
+                    }
+                } else if (typeof value === 'object') {
+                    // 중첩 객체: 재귀적으로 처리
+                    flattenMessage(value, newPath);
+                } else {
+                    // 리프 노드 (기본 타입: number, string, boolean)
+                    flattenedData.set(newPath, value);
+                }
+            });
+        } else {
+            // 기본 타입 (number, string, boolean)
+            flattenedData.set(prefix, obj);
+        }
+    }
+
+    // 메시지 flatten (prefix는 빈 문자열로 시작, 나중에 토픽 이름 추가)
+    const topicName = topic.startsWith('/') ? topic.substring(1) : topic;
+    flattenMessage(message, '');
+
+    console.log(`[updateMessageTree] Topic: ${topic}, Flattened items: ${flattenedData.size}`);
+    if (flattenedData.size === 0) {
+        console.warn(`[updateMessageTree] No flattened data for topic: ${topic}`);
+        return;
+    }
+
+    // 트리 재구성 (첫 메시지인 경우에만)
+    const isFirstMessage = plotState.messageTrees.get(topic) === undefined;
+    
+    if (isFirstMessage) {
+        // 첫 메시지: 트리 구조 생성 (토픽 노드 하위에 추가)
+        console.log(`[updateMessageTree] First message for ${topic}, building tree structure...`);
+        
+        flattenedData.forEach((value, path) => {
+            // 전체 경로: topic/path
+            const fullPath = `${topicName}/${path}`;
+            
+            // 경로를 /로 분리
+            const parts = path.split('/').filter(p => p.length > 0);
+            let currentParent = topicNode;
+            let currentPath = topicName;
+
+            for (let i = 0; i < parts.length; i++) {
+                const part = parts[i];
+                const isLeaf = (i === parts.length - 1);
+                currentPath = `${currentPath}/${part}`;
+
+                let child = plotState.tree.findChildByName(currentParent, part);
+
+                if (!child) {
+                    child = plotState.tree.createNode(part, currentPath, isLeaf);
+                    currentParent.childrenContainer.appendChild(child);
+                }
+
+                currentParent = child;
+            }
+
+            // 리프 노드인 경우 값 업데이트
+            if (currentParent && currentParent.valueElement) {
+                plotState.tree.updateValue(currentPath, value);
+            }
+        });
+        
+        plotState.messageTrees.set(topic, true);
+        
+        // 토픽 노드 자동 확장
+        if (topicNode.childrenContainer.style.display === 'none' || topicNode.childrenContainer.style.display === '') {
+            plotState.tree.toggleExpand(topicNode);
+        }
+        
+        // 디버깅: 트리 상태 확인
+        console.log(`[updateMessageTree] First message processed for ${topic}`);
+    } else {
+        // 이후 메시지: 값만 업데이트
+        flattenedData.forEach((value, path) => {
+            const fullPath = `${topicName}/${path}`;
+            plotState.tree.updateValue(fullPath, value);
+        });
+    }
+    
+    const leafNodeCount = Array.from(plotState.tree.nodeMap.values()).filter(n => n.dataset.isLeaf === 'true').length;
+    console.log(`[updateMessageTree] Tree update complete. Total leaf nodes: ${leafNodeCount}`);
+}
+
+// 트리 전체 확장
+function expandAllPlotTree() {
+    if (plotState.tree) {
+        plotState.tree.expandAll();
+        console.log('[expandAllPlotTree] All nodes expanded');
+    }
+}
+
+// 트리 전체 축소
+function collapseAllPlotTree() {
+    if (plotState.tree) {
+        plotState.tree.collapseAll();
+        console.log('[collapseAllPlotTree] All nodes collapsed');
+    }
+}
+
+// 트리 필터링 (검색)
+
+function filterPlotTree(searchText) {
+    if (!plotState.tree) {
+        return;
+    }
+    
+    const lowerSearch = searchText.toLowerCase();
+    
+    // 모든 노드를 확인하여 필터링
+    plotState.tree.nodeMap.forEach((node, path) => {
+        const nodeName = node.querySelector('.plot-tree-label')?.textContent || '';
+        const isMatch = nodeName.toLowerCase().includes(lowerSearch) || path.toLowerCase().includes(lowerSearch);
+        
+        if (searchText === '') {
+            // 검색어가 없으면 모두 표시
+            node.style.display = '';
+        } else if (isMatch) {
+            // 매칭되면 표시 및 부모 노드들도 표시
+            node.style.display = '';
+            
+            // 부모 노드들 표시
+            let parent = node.parentElement;
+            while (parent && parent.classList.contains('plot-tree-children')) {
+                parent.style.display = 'block';
+                parent = parent.parentElement?.parentElement; // children -> node -> children
+            }
+        } else {
+            // 매칭되지 않으면 숨김
+            node.style.display = 'none';
+        }
+    });
+    
+    console.log(`[filterPlotTree] Filtered with: "${searchText}"`);
+}
+
+// 버퍼 시간 업데이트
+function updateBufferTime(seconds) {
+    const bufferTime = parseFloat(seconds);
+    
+    // 유효성 검사
+    if (isNaN(bufferTime) || bufferTime < 1 || bufferTime > 300) {
+        console.error('[updateBufferTime] Invalid buffer time:', seconds);
+        alert('Buffer time must be between 1 and 300 seconds');
+        // 기본값으로 복원
+        document.getElementById('buffer-time-input').value = 5;
+        return;
+    }
+    
+    console.log(`[updateBufferTime] Setting buffer time to ${bufferTime} seconds`);
+    
+    // PlotManager가 초기화되어 있으면 버퍼 시간 업데이트
+    if (plotState.plotManager && plotState.plotManager.isInitialized) {
+        plotState.plotManager.setBufferTime(bufferTime);
+    }
+}
+
+// Plot 영역 드롭 이벤트 처리
+let isPlotDropZoneSetup = false;  // 중복 등록 방지 플래그
+
+function setupPlotDropZone() {
+    const plotArea = domCache.get('plot-area');
+    if (!plotArea) {
+        console.warn('plot-area element not found');
+        return;
+    }
+
+    // 이미 설정되었으면 스킵
+    if (isPlotDropZoneSetup) {
+        console.log('[setupPlotDropZone] Already setup, skipping...');
+        return;
+    }
+
+    console.log('[setupPlotDropZone] Setting up drop zone...');
+    isPlotDropZoneSetup = true;
+
+    plotArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        plotArea.style.backgroundColor = 'rgba(74, 214, 255, 0.1)';
+        plotArea.style.border = '2px dashed rgba(74, 214, 255, 0.5)';
+    });
+
+    plotArea.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // plot-area 내부의 자식 요소로 이동한 경우는 제외
+        if (!plotArea.contains(e.relatedTarget)) {
+            plotArea.style.backgroundColor = 'rgba(0, 0, 0, 0.2)';
+            plotArea.style.border = 'none';
+        }
+    });
+
+    plotArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        plotArea.style.backgroundColor = 'rgba(0, 0, 0, 0.2)';
+        plotArea.style.border = 'none';
+
+        try {
+            const data = e.dataTransfer.getData('text/plain');
+            if (!data) {
+                console.warn('No data in drop event');
+                return;
+            }
+
+            // JSON 배열로 파싱 시도
+            let paths = [];
+            try {
+                paths = JSON.parse(data);
+                if (!Array.isArray(paths)) {
+                    paths = [paths]; // 단일 값인 경우 배열로 변환
+                }
+            } catch (parseError) {
+                // JSON이 아닌 경우 단일 문자열로 처리
+                paths = [data];
+            }
+
+            console.log('[setupPlotDropZone] Dropped paths:', paths);
+            console.log('[setupPlotDropZone] Current plotState.plottedPaths BEFORE:', plotState.plottedPaths);
+
+            if (paths.length === 0) {
+                console.warn('[setupPlotDropZone] No paths to plot');
+                return;
+            }
+
+            // PlotlyPlotManager 생성 또는 재사용
+            if (!plotState.plotManager) {
+                plotState.plotManager = new PlotlyPlotManager('plot-area', 1000);
+            }
+
+            // Plot 생성 (모든 paths 전달 - createPlot이 내부에서 중복 처리)
+            const success = plotState.plotManager.createPlot(paths);
+            if (success) {
+                // 기존 paths에 새로운 paths만 추가 (중복 제거)
+                const newPaths = paths.filter(p => !plotState.plottedPaths.includes(p));
+                console.log('[setupPlotDropZone] New paths to add:', newPaths);
+                console.log('[setupPlotDropZone] Filtered out (already exists):', paths.filter(p => plotState.plottedPaths.includes(p)));
+                
+                plotState.plottedPaths = plotState.plottedPaths.concat(newPaths);
+                console.log('[setupPlotDropZone] Plot created/updated. Total paths AFTER:', plotState.plottedPaths);
+                
+                // 새로운 path에 대해서만 실시간 데이터 업데이트 설정
+                newPaths.forEach(path => {
+                    // 이미 구독 중인지 확인
+                    if (!plotState.subscribers.has(path)) {
+                        setupPlotDataUpdate(path);
+                    } else {
+                        console.log(`[setupPlotDropZone] Already subscribed to: ${path}`);
+                    }
+                });
+            } else {
+                console.error('[setupPlotDropZone] Failed to create plot');
+                plotArea.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align: center;">
+                    Failed to create plot. Check console for errors.
+                </div>`;
+            }
+        } catch (error) {
+            console.error('[setupPlotDropZone] Error handling drop event:', error);
+            plotArea.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align: center;">
+                Error: ${error.message}
+            </div>`;
+        }
+    });
+}
+
+// Plot 데이터 실시간 업데이트 설정
+function setupPlotDataUpdate(fullPath) {
+    console.log('[setupPlotDataUpdate] Setting up data update for:', fullPath);
+    
+    // fullPath에서 토픽과 필드 경로 분리
+    // 토픽 목록에서 가장 긴 매칭을 찾음 (예: "imu/data/orientation/x" -> topic: "/imu/data", field: "orientation/x")
+    const parts = fullPath.split('/').filter(p => p.length > 0);
+    if (parts.length < 2) {
+        console.warn('[setupPlotDataUpdate] Invalid path:', fullPath);
+        return;
+    }
+    
+    // 토픽 목록에서 path와 매칭되는 가장 긴 토픽 찾기
+    let topic = null;
+    let fieldPath = null;
+    let maxMatchLength = 0;
+    
+    for (const [topicName, topicType] of plotState.topicTypes.entries()) {
+        // 토픽 이름에서 / 제거하여 비교
+        const topicNameWithoutSlash = topicName.startsWith('/') ? topicName.substring(1) : topicName;
+        
+        // fullPath가 topicNameWithoutSlash로 시작하는지 확인
+        if (fullPath.startsWith(topicNameWithoutSlash + '/') || fullPath === topicNameWithoutSlash) {
+            const matchLength = topicNameWithoutSlash.length;
+            if (matchLength > maxMatchLength) {
+                maxMatchLength = matchLength;
+                topic = topicName;
+                fieldPath = fullPath.substring(matchLength + 1); // +1 for the '/'
+            }
+        }
+    }
+    
+    if (!topic) {
+        console.error('[setupPlotDataUpdate] No matching topic found for path:', fullPath);
+        console.log('[setupPlotDataUpdate] Available topics:', Array.from(plotState.topicTypes.keys()));
+        return;
+    }
+    
+    console.log('[setupPlotDataUpdate] Topic:', topic, 'Field path:', fieldPath);
+    
+    // Plot 전용 subscriber 키
+    const plotSubscriberKey = `${topic}_plot_${fieldPath.replace(/\//g, '_')}`;
+    
+    if (plotState.subscribers.has(plotSubscriberKey)) {
+        console.log('[setupPlotDataUpdate] Plot subscriber already exists for:', plotSubscriberKey);
+        return;
+    }
+    
+    // Topic 정보 조회 (메시지 타입 확인)
+    const topicType = plotState.topicTypes.get(topic);
+    if (!topicType) {
+        console.error('[setupPlotDataUpdate] Topic type not found:', topic);
+        console.log('[setupPlotDataUpdate] Available topics:', Array.from(plotState.topicTypes.keys()));
+        return;
+    }
+    
+    console.log('[setupPlotDataUpdate] Creating subscriber for topic:', topic, 'type:', topicType);
+    
+    // Plot 전용 subscriber 생성
+    const plotSubscriber = new window.ROSLIB.Topic({
+        ros: plotState.ros,
+        name: topic,
+        messageType: topicType
+    });
+    
+    let messageCount = 0;
+    
+    // Subscribe 전에 연결 상태 확인
+    console.log(`[setupPlotDataUpdate] Subscribing to ${topic}... Waiting for messages...`);
+    
+    plotSubscriber.subscribe((message) => {
+        messageCount++;
+        
+        // 처음 메시지 수신 시 알림
+        if (messageCount === 1) {
+            console.log(`✅ [setupPlotDataUpdate] First message received from ${topic}!`);
+        }
+        
+        // 필드 경로를 따라가서 값 추출
+        const value = extractFieldValue(message, fieldPath);
+        
+        if (messageCount <= 5) {
+            console.log(`[setupPlotDataUpdate] Message #${messageCount} for ${topic}:`, message);
+            console.log(`[setupPlotDataUpdate] Extracted value for ${fieldPath}:`, value);
+        }
+        
+        if (value === undefined || value === null) {
+            if (messageCount <= 5) {
+                console.warn('[setupPlotDataUpdate] Failed to extract value from message');
+            }
+            return;
+        }
+        
+        // timestamp 추출 (header.stamp 또는 현재 시간)
+        let timestamp = Date.now() / 1000.0; // 기본값: 현재 시간 (초 단위)
+        
+        if (message.header && message.header.stamp) {
+            timestamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9;
+        }
+        
+        if (messageCount <= 5) {
+            console.log(`[setupPlotDataUpdate] Timestamp:`, timestamp, 'Value:', value);
+        }
+        
+        // PlotlyPlotManager 업데이트
+        if (plotState.plotManager) {
+            if (messageCount <= 5) {
+                console.log(`[setupPlotDataUpdate] Calling updatePlot("${fullPath}", ${timestamp}, ${value})`);
+            }
+            plotState.plotManager.updatePlot(fullPath, timestamp, value);
+        } else {
+            console.warn('[setupPlotDataUpdate] plotManager is null!');
+        }
+    });
+    
+    plotState.subscribers.set(plotSubscriberKey, plotSubscriber);
+    console.log('[setupPlotDataUpdate] Plot subscriber created successfully:', plotSubscriberKey);
+}
+
+// 필드 경로를 따라가서 값 추출
+function extractFieldValue(obj, fieldPath) {
+    const fields = fieldPath.split('/');
+    let value = obj;
+    
+    for (const field of fields) {
+        if (value === null || value === undefined) {
+            return undefined;
+        }
+        
+        // 배열 인덱스 처리 (예: "covariance[0]")
+        const arrayMatch = field.match(/^(\w+)\[(\d+)\]$/);
+        if (arrayMatch) {
+            const arrayName = arrayMatch[1];
+            const index = parseInt(arrayMatch[2], 10);
+            value = value[arrayName];
+            if (Array.isArray(value)) {
+                value = value[index];
+            } else {
+                return undefined;
+            }
+        } else {
+            value = value[field];
+        }
+    }
+    
+    // 숫자 값만 반환 (Plot에 표시 가능)
+    if (typeof value === 'number') {
+        return value;
+    } else if (typeof value === 'boolean') {
+        return value ? 1 : 0;
+    } else {
+        console.warn('[extractFieldValue] Non-numeric value:', value);
+        return undefined;
+    }
+}
+
+// ==============================================================
+// 페이지 로드 시 초기화
+// ==============================================================
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('[DOMContentLoaded] Page loaded');
+    
+    // Visualization 탭의 Plot subtab이 기본 활성화되어 있으면 초기화
+    setTimeout(() => {
+        const visualizationTab = domCache.get('visualization-tab');
+        const plotSubtab = domCache.get('plot-subtab');
+        
+        if (visualizationTab && visualizationTab.classList.contains('active') &&
+            plotSubtab && plotSubtab.classList.contains('active')) {
+            console.log('[DOMContentLoaded] Plot subtab is active, initializing');
+            initPlotSubtab();
+        }
+    }, 300);
+});
