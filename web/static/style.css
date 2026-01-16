@@ -92,6 +92,11 @@ body {
     margin-bottom: 16px;
 }
 
+/* Plot subtab의 section card만 높이 조정 */
+#plot-subtab .section.card {
+    min-height: 750px;
+}
+
 h2 {
     font-size: 18px;
     margin-bottom: 14px;
@@ -446,7 +451,8 @@ h3 {
     display: grid;
     grid-template-columns: 300px 1fr;
     gap: 16px;
-    height: 600px;
+    height: 700px;
+    min-height: 700px;
 }
 
 .plot-display-panel {

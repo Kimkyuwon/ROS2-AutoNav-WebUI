@@ -1972,11 +1972,31 @@ function filterPlotTree(searchText) {
             // 매칭되면 표시 및 부모 노드들도 표시
             node.style.display = '';
             
-            // 부모 노드들 표시
+            // 토픽 노드 자체가 매칭된 경우: 하위 노드 확장
+            if (plotState.topicNodes && plotState.topicNodes.has(path)) {
+                const topicNode = plotState.topicNodes.get(path);
+                if (topicNode && topicNode.childrenContainer && 
+                    (topicNode.childrenContainer.style.display === 'none' || topicNode.childrenContainer.style.display === '')) {
+                    plotState.tree.toggleExpand(topicNode);
+                }
+            }
+            
+            // 부모 노드들 표시 및 확장
             let parent = node.parentElement;
             while (parent && parent.classList.contains('plot-tree-children')) {
                 parent.style.display = 'block';
-                parent = parent.parentElement?.parentElement; // children -> node -> children
+                // 부모 노드를 찾아서 표시 및 확장 (children -> node)
+                const parentNode = parent.parentElement;
+                if (parentNode && parentNode.classList.contains('plot-tree-node')) {
+                    // 부모 노드도 표시
+                    parentNode.style.display = '';
+                    // 부모 노드가 확장되지 않았으면 확장
+                    if (parentNode.childrenContainer && 
+                        (parentNode.childrenContainer.style.display === 'none' || parentNode.childrenContainer.style.display === '')) {
+                        plotState.tree.toggleExpand(parentNode);
+                    }
+                }
+                parent = parentNode?.parentElement; // node -> children
             }
         } else {
             // 매칭되지 않으면 숨김

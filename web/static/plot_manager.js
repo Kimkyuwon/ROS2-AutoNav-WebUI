@@ -851,6 +851,18 @@ class PlotlyPlotManager {
     }
 
     clear() {
+        // 모든 이벤트 리스너 제거
+        this.eventListeners.forEach(listener => {
+            listener.element.removeEventListener(listener.event, listener.handler);
+        });
+        this.eventListeners = [];
+        
+        // legendHoverTimeout 취소 (향후 setupLegendHover() 추가 시 사용)
+        if (this.legendHoverTimeout !== null) {
+            clearTimeout(this.legendHoverTimeout);
+            this.legendHoverTimeout = null;
+        }
+        
         this.dataBuffers.clear();
         this.traces = [];
         this.isInitialized = false;
