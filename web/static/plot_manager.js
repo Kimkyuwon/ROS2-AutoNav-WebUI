@@ -67,7 +67,7 @@ class PlotlyPlotManager {
         this.lastUpdateTime = 0;
         this.pendingUpdate = false;
         this.firstTimestamp = null;    // 첫 데이터 포인트의 timestamp (t0 기준)
-        this.t0Mode = false;           // t0 모드 (상대 시간 표시)
+        this.t0Mode = true;            // t0 모드 (상대 시간 표시) - 디폴트 true로 변경
         this.isPaused = false;         // 일시정지 상태
         this.autoScaleRange = null;    // 오토 스케일 범위 (줌 제한용)
         this.panMode = false;          // Pan 모드 활성화 여부
@@ -156,7 +156,7 @@ class PlotlyPlotManager {
             },
             xaxis: {
                 title: {
-                    text: 'Time (seconds)',
+                    text: 'Time (seconds, relative to t0)',  // 디폴트로 상대 시간 표시
                     font: { color: '#000000' }
                 },
                 showgrid: true,
@@ -237,7 +237,7 @@ class PlotlyPlotManager {
                     }
                 },
                 {
-                    name: 't0 (Relative Time)',
+                    name: 'ROS Time (Absolute Time)',  // 버튼 이름 변경 (t0 모드가 기본이므로)
                     icon: {
                         width: 1000,
                         height: 1000,
@@ -820,7 +820,7 @@ class PlotlyPlotManager {
                 return;
             }
             
-            // 중간 버튼이고 일시정지 상태일 때만 처리
+            // 중간 버튼이고 일시정지 상태일 때만 처리 (줌 모드에서도 작동)
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
@@ -828,6 +828,8 @@ class PlotlyPlotManager {
             // Plotly의 dragmode를 false로 설정하여 모든 드래그 동작 차단
             const currentDragmode = plotDiv.layout.dragmode || 'zoom';
             this.savedDragmode = currentDragmode;
+            
+            console.log(`[PlotlyPlotManager] Middle button pan started (saved dragmode: ${currentDragmode})`);
             
             // panStartPos를 설정 (globalDragBlockers가 이미 등록되어 있으므로 즉시 차단 시작)
             this.panStartPos = {
@@ -1117,7 +1119,37 @@ class PlotlyPlotManager {
             // 일시정지 상태에서는 기본 줌 동작 허용
         }, { passive: false, capture: true });
         
-        console.log('[PlotlyPlotManager] Wheel control setup (paused mode only)');
+        // 오른쪽 클릭 시 줌 방지 (일시정지 상태에서 줌 버튼이 활성화되어 있을 때)
+        plotDiv.addEventListener('contextmenu', (e) => {
+            // 일시정지 상태에서 dragmode가 zoom이면 오른쪽 클릭 차단
+            if (this.isPaused && plotDiv.layout && plotDiv.layout.dragmode === 'zoom') {
+                // Plotly의 오른쪽 클릭 줌 방지
+                // 하지만 contextmenu는 허용 (setupContextMenu에서 처리)
+                // 여기서는 Plotly의 내부 줌 핸들러만 차단
+                const target = e.target;
+                const isPlotArea = target.closest('.plot-container') && !target.closest('.modebar');
+                
+                if (isPlotArea) {
+                    // Plotly의 오른쪽 클릭 줌 핸들러를 차단하기 위해
+                    // mousedown 이벤트에서 차단하는 것이 더 효과적
+                    // 여기서는 contextmenu만 통과시키고 Plotly 내부 줌은 차단
+                }
+            }
+        }, { passive: false, capture: true });
+        
+        // mousedown 이벤트에서 오른쪽 클릭 줌 차단
+        plotDiv.addEventListener('mousedown', (e) => {
+            // 오른쪽 버튼 (button === 2) 및 일시정지 상태에서 zoom 모드인 경우
+            if (e.button === 2 && this.isPaused && plotDiv.layout && plotDiv.layout.dragmode === 'zoom') {
+                // Plotly의 줌 핸들러 차단
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                // contextmenu는 허용하기 위해 preventDefault는 호출하지 않음
+                console.log('[PlotlyPlotManager] Right-click zoom blocked (zoom mode)');
+            }
+        }, { passive: false, capture: true });
+        
+        console.log('[PlotlyPlotManager] Wheel control setup (paused mode only, right-click zoom blocked)');
     }
 
     _isZoomPanModeBarButtonTitle(title) {
@@ -1592,15 +1624,15 @@ class PlotlyPlotManager {
 
     toggleT0Mode() {
         this.t0Mode = !this.t0Mode;
-        console.log(`[PlotlyPlotManager] t0 mode: ${this.t0Mode ? 'ON' : 'OFF'}`);
+        console.log(`[PlotlyPlotManager] t0 mode: ${this.t0Mode ? 'ON (Relative)' : 'OFF (Absolute ROS time)'}`);
         
         if (this.t0Mode && this.firstTimestamp === null) {
             console.warn('[PlotlyPlotManager] No data yet, t0 mode will activate when data arrives');
             return;
         }
         
-        // X축 라벨 변경
-        const xAxisTitle = this.t0Mode ? 'Time (seconds, relative to t0)' : 'Time (seconds)';
+        // X축 라벨 변경 (t0 모드가 디폴트이므로)
+        const xAxisTitle = this.t0Mode ? 'Time (seconds, relative to t0)' : 'Time (seconds, ROS time)';
         
         const plotDiv = document.getElementById(this.containerId);
         const layout = plotDiv && plotDiv.layout ? plotDiv.layout : null;
@@ -1651,7 +1683,39 @@ class PlotlyPlotManager {
             this._updatePlotly();
         }
         
+        // 버튼 이름 업데이트 (디폴트가 t0 모드이므로 버튼 이름 반대로)
+        this.updateT0ButtonName();
+        
         console.log(`[PlotlyPlotManager] t0 mode toggled, X-axis ${this.t0Mode ? 'relative' : 'absolute'}`);
+    }
+
+    updateT0ButtonName() {
+        const plotDiv = document.getElementById(this.containerId);
+        const modeBar = plotDiv ? plotDiv.querySelector('.modebar') : null;
+        
+        if (modeBar) {
+            // 모든 버튼을 순회하여 t0/ROS Time 버튼 찾기
+            const buttons = modeBar.querySelectorAll('[data-title]');
+            let t0Button = null;
+            
+            for (const btn of buttons) {
+                const title = btn.getAttribute('data-title');
+                if (title && (title.includes('ROS Time') || title.includes('t0') || title.includes('Relative Time'))) {
+                    t0Button = btn;
+                    break;
+                }
+            }
+            
+            if (t0Button) {
+                // t0 모드 ON: 버튼 이름을 "ROS Time (Absolute Time)"으로
+                // t0 모드 OFF: 버튼 이름을 "t0 (Relative Time)"으로
+                const newTitle = this.t0Mode ? 'ROS Time (Absolute Time)' : 't0 (Relative Time)';
+                t0Button.setAttribute('data-title', newTitle);
+                console.log(`[PlotlyPlotManager] t0 button title changed to: ${newTitle}`);
+            } else {
+                console.warn('[PlotlyPlotManager] t0/ROS Time button not found');
+            }
+        }
     }
 
     togglePause() {
