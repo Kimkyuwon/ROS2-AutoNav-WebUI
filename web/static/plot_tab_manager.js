@@ -1,0 +1,559 @@
+// PlotTabManager 클래스 - 브라우저 스타일 Plot 탭 관리
+class PlotTabManager {
+    constructor(tabBarContainerId, plotAreaContainerId, bufferTime = 5.0) {
+        this.tabBarContainerId = tabBarContainerId;
+        this.plotAreaContainerId = plotAreaContainerId;
+        this.tabBarContainer = null;
+        this.plotAreaContainer = null;
+        this.bufferTime = bufferTime;
+        
+        this.tabs = [];  // { id, title, plotManager, plotDiv }
+        this.activeTabId = null;
+        this.nextTabId = 1;
+        
+        console.log('[PlotTabManager] Constructor called');
+    }
+
+    init() {
+        this.tabBarContainer = document.getElementById(this.tabBarContainerId);
+        this.plotAreaContainer = document.getElementById(this.plotAreaContainerId);
+        
+        if (!this.tabBarContainer || !this.plotAreaContainer) {
+            console.error('[PlotTabManager] Required containers not found');
+            return false;
+        }
+        
+        // 탭 바 UI 생성
+        this.createTabBar();
+        
+        // 저장된 상태 복원 시도
+        const stateLoaded = this.loadState();
+        
+        // 저장된 상태가 없으면 디폴트 탭 1개 생성
+        if (!stateLoaded) {
+            this.createTab();
+            console.log('[PlotTabManager] Initialized with default tab');
+        } else {
+            console.log('[PlotTabManager] Initialized with restored state');
+            
+            // 복원된 탭들의 paths 복원 (rosbridge 연결 후)
+            // 이는 setupPlotDataUpdate가 호출된 후에 실행되어야 함
+            // 따라서 여기서는 savedPaths를 보관만 하고, 나중에 복원
+        }
+        
+        return true;
+    }
+
+    createTabBar() {
+        // 탭 바 레이아웃: 왼쪽에 탭 목록, 오른쪽에 + 버튼
+        this.tabBarContainer.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 8px;">
+                <div id="plot-tab-list" style="display: flex; align-items: center; gap: 4px; flex: 1; overflow-x: auto;"></div>
+                <button id="plot-tab-add-btn" 
+                        style="padding: 6px 12px; background: rgba(74, 214, 255, 0.15); border: 1px solid var(--primary); border-radius: 4px; color: var(--primary); font-size: 14px; cursor: pointer; min-width: 30px;"
+                        title="Add new plot tab">+</button>
+            </div>
+        `;
+        
+        // + 버튼 이벤트 리스너
+        document.getElementById('plot-tab-add-btn').addEventListener('click', () => {
+            this.createTab();
+        });
+    }
+
+    createTab(title = null) {
+        const tabId = `tab-${this.nextTabId++}`;
+        const defaultTitle = title || `Plot ${this.nextTabId - 1}`;
+        
+        // Plot div 생성 (각 탭별 독립적인 div)
+        const plotDivId = `plot-area-${tabId}`;
+        const plotDiv = document.createElement('div');
+        plotDiv.id = plotDivId;
+        plotDiv.style.width = '100%';
+        plotDiv.style.height = '100%';
+        plotDiv.style.display = 'none';  // 초기에는 숨김
+        plotDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.2)';
+        plotDiv.style.borderRadius = '8px';
+        this.plotAreaContainer.appendChild(plotDiv);
+        
+        // PlotlyPlotManager 인스턴스 생성
+        const plotManager = new PlotlyPlotManager(plotDivId, this.bufferTime);
+        
+        // 탭 객체 생성
+        const tab = {
+            id: tabId,
+            title: defaultTitle,
+            plotManager: plotManager,
+            plotDiv: plotDiv,
+            plotDivId: plotDivId
+        };
+        
+        this.tabs.push(tab);
+        
+        // 탭 UI 생성
+        this.renderTabUI(tab);
+        
+        // 새 탭을 즉시 활성화
+        this.switchTab(tabId);
+        
+        // 상태 저장
+        this.saveState();
+        
+        console.log(`[PlotTabManager] Created tab: ${tabId} (${defaultTitle})`);
+        return tab;
+    }
+
+    renderTabUI(tab) {
+        const tabList = document.getElementById('plot-tab-list');
+        if (!tabList) return;
+        
+        const tabElement = document.createElement('div');
+        tabElement.id = `plot-tab-ui-${tab.id}`;
+        tabElement.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border);
+            border-radius: 4px 4px 0 0;
+            cursor: pointer;
+            position: relative;
+            min-width: 100px;
+            max-width: 200px;
+        `;
+        
+        // 탭 제목
+        const titleSpan = document.createElement('span');
+        titleSpan.id = `plot-tab-title-${tab.id}`;
+        titleSpan.textContent = tab.title;
+        titleSpan.style.cssText = `
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 13px;
+            color: var(--text);
+        `;
+        
+        // 탭 제목 더블클릭 이벤트 (편집 모드)
+        titleSpan.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            this.editTabTitle(tab.id);
+        });
+        
+        tabElement.appendChild(titleSpan);
+        
+        // 닫기 버튼 (탭이 2개 이상일 때만 표시)
+        if (this.tabs.length > 1 || this.tabs.length === 0) {  // 렌더링 시점에는 아직 추가 전이므로 조건 확인
+            const closeBtn = document.createElement('button');
+            closeBtn.id = `plot-tab-close-${tab.id}`;
+            closeBtn.textContent = '×';
+            closeBtn.style.cssText = `
+                padding: 0;
+                width: 20px;
+                height: 20px;
+                background: transparent;
+                border: none;
+                color: var(--text);
+                font-size: 18px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 3px;
+            `;
+            closeBtn.title = 'Close tab';
+            
+            closeBtn.addEventListener('mouseenter', () => {
+                closeBtn.style.background = 'rgba(255, 0, 0, 0.3)';
+            });
+            closeBtn.addEventListener('mouseleave', () => {
+                closeBtn.style.background = 'transparent';
+            });
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.closeTab(tab.id);
+            });
+            
+            tabElement.appendChild(closeBtn);
+        }
+        
+        // 탭 클릭 이벤트 (전환)
+        tabElement.addEventListener('click', () => {
+            this.switchTab(tab.id);
+        });
+        
+        // 탭 호버 이벤트
+        tabElement.addEventListener('mouseenter', () => {
+            if (this.activeTabId !== tab.id) {
+                tabElement.style.background = 'rgba(74, 214, 255, 0.1)';
+            }
+        });
+        tabElement.addEventListener('mouseleave', () => {
+            if (this.activeTabId !== tab.id) {
+                tabElement.style.background = 'rgba(0, 0, 0, 0.3)';
+            }
+        });
+        
+        tabList.appendChild(tabElement);
+        
+        // 닫기 버튼 표시/숨기기 업데이트
+        this.updateCloseButtons();
+    }
+
+    switchTab(tabId) {
+        const tab = this.tabs.find(t => t.id === tabId);
+        if (!tab) {
+            console.warn(`[PlotTabManager] Tab not found: ${tabId}`);
+            return;
+        }
+        
+        // 이전 활성 탭 숨기기
+        if (this.activeTabId) {
+            const prevTab = this.tabs.find(t => t.id === this.activeTabId);
+            if (prevTab) {
+                prevTab.plotDiv.style.display = 'none';
+                const prevTabUI = document.getElementById(`plot-tab-ui-${prevTab.id}`);
+                if (prevTabUI) {
+                    prevTabUI.style.background = 'rgba(0, 0, 0, 0.3)';
+                    prevTabUI.style.borderBottom = 'none';
+                }
+            }
+        }
+        
+        // 새 활성 탭 표시
+        this.activeTabId = tabId;
+        tab.plotDiv.style.display = 'block';
+        
+        const tabUI = document.getElementById(`plot-tab-ui-${tabId}`);
+        if (tabUI) {
+            tabUI.style.background = 'rgba(74, 214, 255, 0.2)';
+            tabUI.style.borderBottom = '2px solid var(--primary)';
+        }
+        
+        // 상태 저장
+        this.saveState();
+        
+        console.log(`[PlotTabManager] Switched to tab: ${tabId}`);
+    }
+
+    closeTab(tabId) {
+        if (this.tabs.length === 1) {
+            console.warn('[PlotTabManager] Cannot close the last tab');
+            return;
+        }
+        
+        const tabIndex = this.tabs.findIndex(t => t.id === tabId);
+        if (tabIndex === -1) {
+            console.warn(`[PlotTabManager] Tab not found: ${tabId}`);
+            return;
+        }
+        
+        const tab = this.tabs[tabIndex];
+        
+        // PlotlyPlotManager 정리
+        if (tab.plotManager) {
+            // 메모리 해제 로직 (필요시 구현)
+            console.log(`[PlotTabManager] Cleaning up PlotlyPlotManager for tab: ${tabId}`);
+        }
+        
+        // Plot div 제거
+        if (tab.plotDiv && tab.plotDiv.parentNode) {
+            tab.plotDiv.parentNode.removeChild(tab.plotDiv);
+        }
+        
+        // 탭 UI 제거
+        const tabUI = document.getElementById(`plot-tab-ui-${tabId}`);
+        if (tabUI && tabUI.parentNode) {
+            tabUI.parentNode.removeChild(tabUI);
+        }
+        
+        // 탭 배열에서 제거
+        this.tabs.splice(tabIndex, 1);
+        
+        // 삭제된 탭이 활성 탭이었으면 다른 탭 활성화
+        if (this.activeTabId === tabId) {
+            // 이전 탭 또는 다음 탭 활성화
+            const nextTabIndex = Math.max(0, tabIndex - 1);
+            if (this.tabs.length > 0) {
+                this.switchTab(this.tabs[nextTabIndex].id);
+            }
+        }
+        
+        // 닫기 버튼 표시/숨기기 업데이트
+        this.updateCloseButtons();
+        
+        // 상태 저장
+        this.saveState();
+        
+        console.log(`[PlotTabManager] Closed tab: ${tabId}`);
+    }
+
+    editTabTitle(tabId) {
+        const tab = this.tabs.find(t => t.id === tabId);
+        if (!tab) return;
+        
+        const titleSpan = document.getElementById(`plot-tab-title-${tabId}`);
+        if (!titleSpan) return;
+        
+        const currentTitle = tab.title;
+        
+        // 인라인 편집 UI 생성
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = currentTitle;
+        input.style.cssText = `
+            flex: 1;
+            padding: 2px 4px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--primary);
+            border-radius: 3px;
+            color: var(--text);
+            font-size: 13px;
+            outline: none;
+        `;
+        
+        // Enter 키 또는 포커스 아웃 시 저장
+        const saveTitle = () => {
+            const newTitle = input.value.trim();
+            if (newTitle === '') {
+                // 빈 제목은 디폴트 제목으로 복원
+                tab.title = `Plot ${tabId.replace('tab-', '')}`;
+            } else {
+                tab.title = newTitle;
+            }
+            
+            // 원래 span으로 복원
+            titleSpan.textContent = tab.title;
+            titleSpan.style.display = 'block';
+            input.remove();
+            
+            // 상태 저장
+            this.saveState();
+            
+            console.log(`[PlotTabManager] Tab title updated: ${tabId} -> ${tab.title}`);
+        };
+        
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                saveTitle();
+            } else if (e.key === 'Escape') {
+                // ESC 키 시 취소
+                titleSpan.style.display = 'block';
+                input.remove();
+            }
+        });
+        
+        input.addEventListener('blur', saveTitle);
+        
+        // Span 숨기고 input 추가
+        titleSpan.style.display = 'none';
+        titleSpan.parentNode.insertBefore(input, titleSpan.nextSibling);
+        input.focus();
+        input.select();
+    }
+
+    updateCloseButtons() {
+        // 탭이 2개 이상일 때만 닫기 버튼 표시
+        this.tabs.forEach(tab => {
+            const closeBtn = document.getElementById(`plot-tab-close-${tab.id}`);
+            if (closeBtn) {
+                closeBtn.style.display = this.tabs.length > 1 ? 'flex' : 'none';
+            } else if (this.tabs.length > 1) {
+                // 닫기 버튼이 없으면 추가 (재렌더링)
+                const tabUI = document.getElementById(`plot-tab-ui-${tab.id}`);
+                if (tabUI) {
+                    // 기존 UI 제거 후 재생성
+                    tabUI.remove();
+                    this.renderTabUI(tab);
+                }
+            }
+        });
+    }
+
+    getActiveTab() {
+        return this.tabs.find(t => t.id === this.activeTabId);
+    }
+
+    getActivePlotManager() {
+        const tab = this.getActiveTab();
+        return tab ? tab.plotManager : null;
+    }
+
+    setBufferTime(bufferTime) {
+        this.bufferTime = bufferTime;
+        // 모든 탭의 PlotlyPlotManager에 버퍼 시간 설정
+        this.tabs.forEach(tab => {
+            if (tab.plotManager) {
+                tab.plotManager.setBufferTime(bufferTime);
+            }
+        });
+        console.log(`[PlotTabManager] Buffer time updated: ${bufferTime}s`);
+    }
+
+    // 탭 상태 저장 (LocalStorage)
+    saveState() {
+        try {
+            const state = {
+                activeTabId: this.activeTabId,
+                nextTabId: this.nextTabId,
+                bufferTime: this.bufferTime,
+                tabs: this.tabs.map(tab => {
+                    const plottedPaths = tab.plotManager && tab.plotManager.dataBuffers 
+                        ? Array.from(tab.plotManager.dataBuffers.keys()) 
+                        : [];
+                    console.log(`[PlotTabManager.saveState] Tab ${tab.id} has ${plottedPaths.length} path(s):`, plottedPaths);
+                    return {
+                        id: tab.id,
+                        title: tab.title,
+                        plottedPaths: plottedPaths
+                    };
+                })
+            };
+            
+            localStorage.setItem('plotTabManagerState', JSON.stringify(state));
+            console.log('[PlotTabManager.saveState] State saved:', state);
+        } catch (error) {
+            console.error('[PlotTabManager.saveState] Failed to save state:', error);
+        }
+    }
+
+    // 탭 상태 복원 (LocalStorage)
+    loadState() {
+        try {
+            const savedState = localStorage.getItem('plotTabManagerState');
+            if (!savedState) {
+                console.log('[PlotTabManager] No saved state found');
+                return false;
+            }
+
+            const state = JSON.parse(savedState);
+            console.log('[PlotTabManager] Loading saved state:', state);
+
+            // nextTabId 복원
+            this.nextTabId = state.nextTabId || 1;
+            this.bufferTime = state.bufferTime || 5.0;
+
+            // 기존 탭 제거 (디폴트 탭)
+            this.tabs.forEach(tab => {
+                if (tab.plotDiv && tab.plotDiv.parentNode) {
+                    tab.plotDiv.parentNode.removeChild(tab.plotDiv);
+                }
+                const tabUI = document.getElementById(`plot-tab-ui-${tab.id}`);
+                if (tabUI && tabUI.parentNode) {
+                    tabUI.parentNode.removeChild(tabUI);
+                }
+            });
+            this.tabs = [];
+
+            // 저장된 탭 복원
+            if (state.tabs && state.tabs.length > 0) {
+                state.tabs.forEach(tabInfo => {
+                    const tab = this.createTabFromState(tabInfo);
+                    // 탭 생성 시 saveState 호출을 방지하기 위해 직접 추가
+                });
+
+                // 활성 탭 복원
+                if (state.activeTabId) {
+                    this.switchTab(state.activeTabId);
+                } else if (this.tabs.length > 0) {
+                    this.switchTab(this.tabs[0].id);
+                }
+
+                console.log(`[PlotTabManager] Restored ${this.tabs.length} tab(s)`);
+                return true;
+            }
+
+            return false;
+        } catch (error) {
+            console.error('[PlotTabManager] Failed to load state:', error);
+            return false;
+        }
+    }
+
+    // 저장된 상태에서 탭 생성
+    createTabFromState(tabInfo) {
+        const tabId = tabInfo.id;
+        const title = tabInfo.title;
+        
+        // Plot div 생성
+        const plotDivId = `plot-area-${tabId}`;
+        const plotDiv = document.createElement('div');
+        plotDiv.id = plotDivId;
+        plotDiv.style.width = '100%';
+        plotDiv.style.height = '100%';
+        plotDiv.style.display = 'none';
+        plotDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.2)';
+        plotDiv.style.borderRadius = '8px';
+        this.plotAreaContainer.appendChild(plotDiv);
+        
+        // PlotlyPlotManager 인스턴스 생성
+        const plotManager = new PlotlyPlotManager(plotDivId, this.bufferTime);
+        
+        // 탭 객체 생성
+        const tab = {
+            id: tabId,
+            title: title,
+            plotManager: plotManager,
+            plotDiv: plotDiv,
+            plotDivId: plotDivId,
+            savedPaths: tabInfo.plottedPaths || []  // 저장된 paths (나중에 복원)
+        };
+        
+        this.tabs.push(tab);
+        
+        // 탭 UI 생성
+        this.renderTabUI(tab);
+        
+        console.log(`[PlotTabManager] Restored tab: ${tabId} (${title})`);
+        return tab;
+    }
+
+    // 저장된 paths를 활성 탭에 복원 (드래그 앤 드롭 시뮬레이션)
+    restorePlottedPaths(tabId) {
+        const tab = this.tabs.find(t => t.id === tabId);
+        if (!tab || !tab.savedPaths || tab.savedPaths.length === 0) {
+            console.log(`[PlotTabManager.restorePlottedPaths] No saved paths for tab ${tabId}`);
+            return;
+        }
+
+        console.log(`[PlotTabManager.restorePlottedPaths] Restoring ${tab.savedPaths.length} path(s) for tab ${tabId}:`, tab.savedPaths);
+        
+        // PlotlyPlotManager에 paths 추가 (createPlot 호출)
+        if (tab.plotManager) {
+            const success = tab.plotManager.createPlot(tab.savedPaths);
+            console.log(`[PlotTabManager.restorePlottedPaths] createPlot success:`, success);
+            
+            // plotState.plottedPaths에도 추가 (중복 제거)
+            if (window.plotState) {
+                const newPaths = tab.savedPaths.filter(p => !window.plotState.plottedPaths.includes(p));
+                window.plotState.plottedPaths = window.plotState.plottedPaths.concat(newPaths);
+                console.log(`[PlotTabManager.restorePlottedPaths] Added ${newPaths.length} new paths to global plottedPaths`);
+                
+                // 각 path에 대해 실시간 데이터 업데이트 설정
+                newPaths.forEach(path => {
+                    if (window.setupPlotDataUpdate) {
+                        console.log(`[PlotTabManager.restorePlottedPaths] Setting up data update for path: ${path}`);
+                        window.setupPlotDataUpdate(path);
+                    }
+                });
+            }
+        } else {
+            console.error(`[PlotTabManager.restorePlottedPaths] plotManager is null for tab ${tabId}`);
+        }
+        
+        // savedPaths 제거 (이미 복원됨)
+        delete tab.savedPaths;
+    }
+
+    // 상태 초기화 (LocalStorage 삭제)
+    clearState() {
+        try {
+            localStorage.removeItem('plotTabManagerState');
+            console.log('[PlotTabManager] State cleared');
+        } catch (error) {
+            console.error('[PlotTabManager] Failed to clear state:', error);
+        }
+    }
+}

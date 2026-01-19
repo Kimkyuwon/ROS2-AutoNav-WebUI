@@ -317,10 +317,9 @@
                                     <span style="font-size: 12px; color: var(--muted);">sec</span>
                                 </div>
                             </div>
-                            <div id="plot-area">
-                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted);">
-                                    Drag items from the tree to create plots
-                                </div>
+                            <div id="plot-tab-bar-container"></div>
+                            <div id="plot-area-container" style="position: relative; width: 100%; height: 550px;">
+                                <!-- plot-area-tab-1, plot-area-tab-2, ... dynamically generated -->
                             </div>
                         </div>
                     </div>
@@ -464,8 +463,8 @@
     <!-- PlotJugglerTree -->
     <script src="static/plot_tree.js"></script>
     
-    <!-- Plot Panel Manager (PlotPanelManager) -->
-    <script src="static/plot_panel_manager.js"></script>
+    <!-- Plot Tab Manager (PlotTabManager) -->
+    <script src="static/plot_tab_manager.js"></script>
     
     <!-- Plot Manager (DataBuffer, PlotlyPlotManager) -->
     <script src="static/plot_manager.js"></script>

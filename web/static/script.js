@@ -119,6 +119,15 @@ function initPlotSubtab() {
     if (!plotState.tree) {
         console.log('[initPlotSubtab] Initializing PlotJugglerTree');
         initPlotTree();
+    }
+    
+    // PlotTabManager 초기화 (처음 한 번만)
+    if (!plotState.plotTabManager) {
+        console.log('[initPlotSubtab] Initializing PlotTabManager');
+        plotState.plotTabManager = new PlotTabManager('plot-tab-bar-container', 'plot-area-container', 5.0);
+        plotState.plotTabManager.init();
+        
+        // 드롭 존 설정 (PlotTabManager 초기화 후)
         setupPlotDropZone();
     }
     
@@ -132,185 +141,6 @@ function initPlotSubtab() {
     
     // 주기적으로 토픽 목록 갱신 시작
     startTopicRefresh();
-    
-    // PlotlyPlotManager 초기화 및 빈 plot 표시
-    if (!plotState.plotManager) {
-        console.log('[initPlotSubtab] Initializing PlotlyPlotManager with empty plot');
-        initEmptyPlot();
-    }
-}
-
-// 빈 plot 초기화 (처음 plot 탭 진입 시)
-function initEmptyPlot() {
-    // PlotArea의 안내 메시지 제거
-    const plotArea = document.getElementById('plot-area');
-    if (plotArea) {
-        plotArea.innerHTML = '';
-    }
-    
-    // PlotlyPlotManager 생성 (기본 5초 버퍼)
-    plotState.plotManager = new PlotlyPlotManager('plot-area', 5);
-    
-    // 빈 plot 생성 (더미 데이터로 초기화)
-    if (plotState.plotManager.init()) {
-        // 빈 trace로 plot 생성
-        const dummyPath = '_empty_plot_';
-        plotState.plotManager.createPlot([dummyPath]);
-        
-        // 즉시 더미 buffer 제거 (UI만 표시)
-        plotState.plotManager.dataBuffers.delete(dummyPath);
-        plotState.plotManager.traces = [];
-        
-        // 빈 plot으로 다시 렌더링
-        const plotDiv = document.getElementById('plot-area');
-        const layout = {
-            title: {
-                text: 'Plot Area (Drag and drop data from left panel)',
-                font: {
-                    color: '#000000',
-                    size: 14
-                }
-            },
-            xaxis: {
-                title: {
-                    text: 'Time (seconds, relative to t0)',  // 디폴트로 상대 시간 표시
-                    font: { color: '#000000' }
-                },
-                showgrid: true,
-                gridcolor: '#cccccc',
-                gridwidth: 1,
-                zeroline: true,
-                zerolinecolor: '#000000',
-                zerolinewidth: 1,
-                tickfont: { color: '#000000' },
-                exponentformat: 'e',
-                showexponent: 'all'
-            },
-            yaxis: {
-                title: {
-                    text: 'Value',
-                    font: { color: '#000000' }
-                },
-                showgrid: true,
-                gridcolor: '#cccccc',
-                gridwidth: 1,
-                zeroline: true,
-                zerolinecolor: '#000000',
-                zerolinewidth: 1,
-                tickfont: { color: '#000000' },
-                exponentformat: 'e',
-                showexponent: 'all'
-            },
-            showlegend: true,
-            legend: {
-                x: 1,
-                xanchor: 'right',
-                y: 1,
-                yanchor: 'top',
-                bgcolor: 'rgba(255, 255, 255, 0.9)',
-                bordercolor: '#000000',
-                borderwidth: 1,
-                font: { color: '#000000' }
-            },
-            margin: {
-                l: 60,
-                r: 120,
-                b: 50,
-                t: 50
-            },
-            paper_bgcolor: '#ffffff',
-            plot_bgcolor: '#ffffff',
-            font: {
-                color: '#000000',
-                family: 'Arial, sans-serif'
-            }
-        };
-        
-        const config = {
-            responsive: true,
-            displayModeBar: true,
-            modeBarButtonsToRemove: ['lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
-            displaylogo: false,
-            scrollZoom: false,  // 처음에는 줌 비활성화
-            hovermode: 'closest',
-            hoverlabel: {
-                bgcolor: 'rgba(255, 255, 255, 0.9)',
-                bordercolor: '#000',
-                font: { color: '#000', size: 12 }
-            },
-            modeBarButtonsToAdd: [
-                {
-                    name: 'Pause/Play',
-                    icon: {
-                        width: 1000,
-                        height: 1000,
-                        path: 'M300,200 L300,800 L400,800 L400,200 Z M600,200 L600,800 L700,800 L700,200 Z',
-                        transform: 'matrix(1 0 0 -1 0 1000)'
-                    },
-                    click: (gd) => {
-                        plotState.plotManager.togglePause();
-                    }
-                },
-                {
-                    name: 'ROS Time (Absolute Time)',  // 버튼 이름 변경 (t0 모드가 기본이므로)
-                    icon: {
-                        width: 1000,
-                        height: 1000,
-                        path: 'M500,100 A400,400 0 1,1 500,900 A400,400 0 1,1 500,100 M500,300 L500,500 L650,650',
-                        transform: 'matrix(1 0 0 -1 0 1000)'
-                    },
-                    click: (gd) => {
-                        plotState.plotManager.toggleT0Mode();
-                    }
-                },
-                {
-                    name: 'Zoom Out (Auto Scale)',
-                    icon: {
-                        width: 1000,
-                        height: 1000,
-                        path: 'M450,200 A250,250 0 1,1 450,700 A250,250 0 1,1 450,200 M350,450 L550,450 M600,650 L800,850',
-                        transform: 'matrix(1 0 0 -1 0 1000)'
-                    },
-                    click: (gd) => {
-                        plotState.plotManager.zoomOutAutoScale();
-                    }
-                },
-                {
-                    name: 'Clear Plot (Reset)',
-                    icon: {
-                        width: 1000,
-                        height: 1000,
-                        path: 'M300,200 L300,800 L700,800 L700,200 Z M250,200 L750,200 M350,150 L650,150 M400,350 L400,700 M500,350 L500,700 M600,350 L600,700',
-                        transform: 'matrix(1 0 0 -1 0 1000)'
-                    },
-                    click: (gd) => {
-                        plotState.plotManager.clearPlot();
-                    }
-                }
-            ]
-        };
-        
-        Plotly.newPlot('plot-area', [], layout, config);
-        plotState.plotManager.isInitialized = true;
-        
-        // 초기 상태 설정: 재생 중이면 dragmode를 false로 설정 (줌/팬 비활성화)
-        if (!plotState.plotManager.isPaused) {
-            Plotly.relayout('plot-area', { dragmode: false });
-            console.log('[initEmptyPlot] Initial dragmode set to false (playing mode)');
-        }
-        
-        // 타이틀 더블클릭, contextmenu, zoom limiter 등 설정
-        plotState.plotManager.setupTitleEditor();
-        plotState.plotManager.setupContextMenu();
-        plotState.plotManager.setupZoomLimiter();
-        plotState.plotManager.setupWheelControl();
-        plotState.plotManager.setupModeBarGuards();
-        setTimeout(() => plotState.plotManager.updateModeBarButtonStates(), 200);
-        plotState.plotManager.setupCustomHover();
-        plotState.plotManager.setupPlotDeletion();
-        
-        console.log('[initEmptyPlot] Empty plot created successfully');
-    }
 }
 
 // 주기적으로 토픽 목록 갱신
@@ -1606,9 +1436,10 @@ const plotState = {
     topicNodes: new Map(), // topic -> topic node element (최상위 노드)
     topicRefreshInterval: null, // 토픽 목록 갱신 인터벌
     topicRefreshRate: 1000, // 1초마다 토픽 목록 갱신
-    plotManager: null, // PlotlyPlotManager 인스턴스
-    plottedPaths: [], // 현재 Plot에 표시된 path들
-    isLoadingTopics: false // 토픽 로딩 중 플래그
+    plotTabManager: null, // PlotTabManager 인스턴스 (탭 관리)
+    plottedPaths: [], // 현재 Plot에 표시된 path들 (모든 탭 공유)
+    isLoadingTopics: false, // 토픽 로딩 중 플래그
+    pathsRestored: false // 저장된 paths 복원 여부 (최초 1회만)
 };
 
 // PlotJugglerTree 초기화 및 토픽 노드 생성
@@ -1854,6 +1685,68 @@ async function loadPlotTopics() {
         }
     } finally {
         plotState.isLoadingTopics = false;
+        
+        // 토픽 로딩 완료 후 저장된 paths 복원 (최초 1회만)
+        if (plotState.plotTabManager && !plotState.pathsRestored) {
+            console.log('[loadPlotTopics] Restoring saved paths...');
+            restoreSavedPaths();
+            plotState.pathsRestored = true;
+        }
+    }
+}
+
+// 저장된 paths 복원 (페이지 새로고침 후)
+function restoreSavedPaths() {
+    if (!plotState.plotTabManager || !plotState.plotTabManager.tabs) {
+        console.warn('[restoreSavedPaths] PlotTabManager not initialized');
+        return;
+    }
+
+    console.log('[restoreSavedPaths] Restoring saved paths for all tabs...');
+    
+    // 각 탭의 savedPaths 복원
+    plotState.plotTabManager.tabs.forEach((tab, tabIndex) => {
+        if (tab.savedPaths && tab.savedPaths.length > 0) {
+            console.log(`[restoreSavedPaths] Restoring ${tab.savedPaths.length} path(s) for tab ${tab.id}:`, tab.savedPaths);
+            
+            // 탭을 활성화 (plot 생성을 위해)
+            plotState.plotTabManager.switchTab(tab.id);
+            
+            // Plot 생성
+            const success = tab.plotManager.createPlot(tab.savedPaths);
+            if (success) {
+                console.log(`[restoreSavedPaths] Plot created for tab ${tab.id}`);
+                
+                // 전역 plottedPaths에 추가 (중복 제거)
+                const newPaths = tab.savedPaths.filter(p => !plotState.plottedPaths.includes(p));
+                plotState.plottedPaths = plotState.plottedPaths.concat(newPaths);
+                console.log(`[restoreSavedPaths] Added ${newPaths.length} new path(s) to global plottedPaths`);
+                
+                // 각 path에 대해 실시간 데이터 업데이트 설정
+                tab.savedPaths.forEach(path => {
+                    // 이미 구독 중인지 확인
+                    const plotSubscriberKey = `${path}_plot`;
+                    if (!plotState.subscribers.has(plotSubscriberKey)) {
+                        console.log(`[restoreSavedPaths] Setting up data update for: ${path}`);
+                        setupPlotDataUpdate(path);
+                    } else {
+                        console.log(`[restoreSavedPaths] Already subscribed to: ${path}`);
+                    }
+                });
+            } else {
+                console.error(`[restoreSavedPaths] Failed to create plot for tab ${tab.id}`);
+            }
+            
+            // savedPaths 제거 (이미 복원됨)
+            delete tab.savedPaths;
+        }
+    });
+    
+    // 첫 번째 탭으로 전환 (또는 활성 탭 복원)
+    if (plotState.plotTabManager.tabs.length > 0) {
+        const activeTabId = plotState.plotTabManager.activeTabId || plotState.plotTabManager.tabs[0].id;
+        plotState.plotTabManager.switchTab(activeTabId);
+        console.log(`[restoreSavedPaths] Switched to active tab: ${activeTabId}`);
     }
 }
 
@@ -2201,9 +2094,9 @@ function updateBufferTime(seconds) {
     
     console.log(`[updateBufferTime] Setting buffer time to ${bufferTime} seconds`);
     
-    // PlotManager가 초기화되어 있으면 버퍼 시간 업데이트
-    if (plotState.plotManager && plotState.plotManager.isInitialized) {
-        plotState.plotManager.setBufferTime(bufferTime);
+    // PlotTabManager가 초기화되어 있으면 모든 탭의 버퍼 시간 업데이트
+    if (plotState.plotTabManager) {
+        plotState.plotTabManager.setBufferTime(bufferTime);
     }
 }
 
@@ -2211,9 +2104,9 @@ function updateBufferTime(seconds) {
 let isPlotDropZoneSetup = false;  // 중복 등록 방지 플래그
 
 function setupPlotDropZone() {
-    const plotArea = domCache.get('plot-area');
-    if (!plotArea) {
-        console.warn('plot-area element not found');
+    const plotAreaContainer = document.getElementById('plot-area-container');
+    if (!plotAreaContainer) {
+        console.warn('plot-area-container element not found');
         return;
     }
 
@@ -2226,29 +2119,29 @@ function setupPlotDropZone() {
     console.log('[setupPlotDropZone] Setting up drop zone...');
     isPlotDropZoneSetup = true;
 
-    plotArea.addEventListener('dragover', (e) => {
+    plotAreaContainer.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = 'move';
-        plotArea.style.backgroundColor = 'rgba(74, 214, 255, 0.1)';
-        plotArea.style.border = '2px dashed rgba(74, 214, 255, 0.5)';
+        plotAreaContainer.style.backgroundColor = 'rgba(74, 214, 255, 0.1)';
+        plotAreaContainer.style.border = '2px dashed rgba(74, 214, 255, 0.5)';
     });
 
-    plotArea.addEventListener('dragleave', (e) => {
+    plotAreaContainer.addEventListener('dragleave', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        // plot-area 내부의 자식 요소로 이동한 경우는 제외
-        if (!plotArea.contains(e.relatedTarget)) {
-            plotArea.style.backgroundColor = 'rgba(0, 0, 0, 0.2)';
-            plotArea.style.border = 'none';
+        // plot-area-container 내부의 자식 요소로 이동한 경우는 제외
+        if (!plotAreaContainer.contains(e.relatedTarget)) {
+            plotAreaContainer.style.backgroundColor = 'transparent';
+            plotAreaContainer.style.border = 'none';
         }
     });
 
-    plotArea.addEventListener('drop', (e) => {
+    plotAreaContainer.addEventListener('drop', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        plotArea.style.backgroundColor = 'rgba(0, 0, 0, 0.2)';
-        plotArea.style.border = 'none';
+        plotAreaContainer.style.backgroundColor = 'transparent';
+        plotAreaContainer.style.border = 'none';
 
         try {
             const data = e.dataTransfer.getData('text/plain');
@@ -2277,13 +2170,21 @@ function setupPlotDropZone() {
                 return;
             }
 
-            // PlotlyPlotManager 생성 또는 재사용
-            if (!plotState.plotManager) {
-                plotState.plotManager = new PlotlyPlotManager('plot-area', 5);  // 기본 5초 (HTML input의 기본값과 일치)
+            // PlotTabManager가 초기화되어 있는지 확인
+            if (!plotState.plotTabManager) {
+                console.error('[setupPlotDropZone] PlotTabManager not initialized');
+                return;
+            }
+
+            // 활성 탭의 PlotlyPlotManager 가져오기
+            const plotManager = plotState.plotTabManager.getActivePlotManager();
+            if (!plotManager) {
+                console.error('[setupPlotDropZone] No active plot manager');
+                return;
             }
 
             // Plot 생성 (모든 paths 전달 - createPlot이 내부에서 중복 처리)
-            const success = plotState.plotManager.createPlot(paths);
+            const success = plotManager.createPlot(paths);
             if (success) {
                 // 기존 paths에 새로운 paths만 추가 (중복 제거)
                 const newPaths = paths.filter(p => !plotState.plottedPaths.includes(p));
@@ -2302,17 +2203,16 @@ function setupPlotDropZone() {
                         console.log(`[setupPlotDropZone] Already subscribed to: ${path}`);
                     }
                 });
+                
+                // 탭 상태 저장
+                if (plotState.plotTabManager) {
+                    plotState.plotTabManager.saveState();
+                }
             } else {
                 console.error('[setupPlotDropZone] Failed to create plot');
-                plotArea.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align: center;">
-                    Failed to create plot. Check console for errors.
-                </div>`;
             }
         } catch (error) {
             console.error('[setupPlotDropZone] Error handling drop event:', error);
-            plotArea.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align: center;">
-                Error: ${error.message}
-            </div>`;
         }
     });
 }
@@ -2421,14 +2321,22 @@ function setupPlotDataUpdate(fullPath) {
             console.log(`[setupPlotDataUpdate] Timestamp:`, timestamp, 'Value:', value);
         }
         
-        // PlotlyPlotManager 업데이트
-        if (plotState.plotManager) {
+        // PlotlyPlotManager 업데이트 (모든 탭에 전달)
+        if (plotState.plotTabManager && plotState.plotTabManager.tabs.length > 0) {
             if (messageCount <= 5) {
-                console.log(`[setupPlotDataUpdate] Calling updatePlot("${fullPath}", ${timestamp}, ${value})`);
+                console.log(`[setupPlotDataUpdate] Calling updatePlot("${fullPath}", ${timestamp}, ${value}) on all tabs`);
             }
-            plotState.plotManager.updatePlot(fullPath, timestamp, value);
+            
+            // 모든 탭의 plotManager에 데이터 추가
+            plotState.plotTabManager.tabs.forEach(tab => {
+                if (tab.plotManager && tab.plotManager.dataBuffers.has(fullPath)) {
+                    tab.plotManager.updatePlot(fullPath, timestamp, value);
+                }
+            });
         } else {
-            console.warn('[setupPlotDataUpdate] plotManager is null!');
+            if (messageCount === 1) {
+                console.warn('[setupPlotDataUpdate] plotTabManager is null or has no tabs!');
+            }
         }
     });
     
