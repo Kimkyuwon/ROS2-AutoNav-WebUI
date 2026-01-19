@@ -311,9 +311,10 @@
                                 <h3 style="margin: 0;">Plot Area</h3>
                                 <div style="display: flex; align-items: center; gap: 8px;">
                                     <label for="buffer-time-input" style="font-size: 12px; color: var(--text);">Buffer:</label>
-                                    <input type="number" id="buffer-time-input" min="1" max="300" value="5" step="1"
+                                    <input type="number" id="buffer-time-input" min="1" max="100" value="5" step="1"
                                            style="width: 60px; padding: 4px 8px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 12px;"
-                                           onchange="updateBufferTime(this.value)">
+                                           onchange="updateBufferTime(this.value)"
+                                           title="일시정지 시 모든 데이터를 표시합니다. 고주파 센서(100Hz+)는 60초 이하 권장.">
                                     <span style="font-size: 12px; color: var(--muted);">sec</span>
                                 </div>
                             </div>

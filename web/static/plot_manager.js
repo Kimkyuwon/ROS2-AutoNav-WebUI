@@ -37,6 +37,54 @@ class DataBuffer {
         };
     }
 
+    /**
+     * 다운샘플링된 데이터 반환 (성능 최적화)
+     * @param {number} maxPoints - 최대 포인트 수 (기본: 500, 10ms 이하 지연)
+     * @param {boolean} forceFullData - 강제로 모든 데이터 반환 (일시정지 시)
+     * @returns {object} - {timestamps, values}
+     */
+    getDownsampledData(maxPoints = 500, forceFullData = false) {
+        const length = this.timestamps.length;
+        
+        // 강제 전체 데이터 모드 (일시정지 시)
+        if (forceFullData) {
+            return {
+                timestamps: this.timestamps,  // 모든 데이터 직접 참조
+                values: this.values
+            };
+        }
+        
+        // 데이터가 maxPoints 이하면 복사 없이 직접 반환
+        if (length <= maxPoints) {
+            return {
+                timestamps: this.timestamps,  // 복사 없이 직접 참조
+                values: this.values
+            };
+        }
+        
+        // Uniform downsampling (균등 샘플링)
+        const step = length / maxPoints;
+        const downsampledTimestamps = [];
+        const downsampledValues = [];
+        
+        for (let i = 0; i < maxPoints; i++) {
+            const index = Math.floor(i * step);
+            downsampledTimestamps.push(this.timestamps[index]);
+            downsampledValues.push(this.values[index]);
+        }
+        
+        // 마지막 포인트는 항상 포함 (최신 데이터)
+        if (downsampledTimestamps[downsampledTimestamps.length - 1] !== this.timestamps[length - 1]) {
+            downsampledTimestamps.push(this.timestamps[length - 1]);
+            downsampledValues.push(this.values[length - 1]);
+        }
+        
+        return {
+            timestamps: downsampledTimestamps,
+            values: downsampledValues
+        };
+    }
+
     getLength() {
         return this.timestamps.length;
     }
@@ -151,12 +199,12 @@ class PlotlyPlotManager {
                 name: path,
                 type: 'scatter',
                 line: {
-                    width: 1.5,
+                    width: 2,       // 선 두께 증가 (1.5 → 2)
                     shape: 'linear'
                 },
                 marker: {
-                    size: 2,
-                    opacity: 0.6
+                    size: 4,        // 마커 크기 증가 (2 → 4, 더 잘 보임)
+                    opacity: 0.8    // 마커 투명도 증가 (0.6 → 0.8, 더 선명)
                 },
                 connectgaps: false,  // gap이 있으면 선 끊기
                 hovertemplate: '%{y:.6f}<extra></extra>'  // Y값만 표시 (시간 제거)
@@ -1474,18 +1522,31 @@ class PlotlyPlotManager {
             };
 
             let totalPoints = 0;
+            const t0 = this.firstTimestamp;  // t0 값을 미리 저장 (반복 참조 최소화)
+            
+            // 🎯 일시정지 시: 모든 데이터 표시, 재생 중: 강력한 다운샘플링 (최대 500 포인트, 10ms 이하 지연)
+            const forceFullData = this.isPaused;
+            const maxPoints = forceFullData ? Infinity : 500;  // 재생: 500, 일시정지: 모든 데이터
+            
             this.traces.forEach((trace, index) => {
                 // trace.name을 사용하여 올바른 buffer 찾기 (인덱스 매칭 대신)
                 const path = trace.name;
                 const buffer = this.dataBuffers.get(path);
                 
                 if (buffer && !buffer.isEmpty()) {
-                    const data = buffer.getData();
+                    // 🚀 하이브리드 전략: 일시정지 시 모든 데이터, 재생 중 강력한 다운샘플링
+                    const data = buffer.getDownsampledData(maxPoints, forceFullData);
                     
                     // t0 모드: 첫 timestamp를 0으로 만들어 상대 시간 표시
                     let timestamps = data.timestamps;
-                    if (this.t0Mode && this.firstTimestamp !== null) {
-                        timestamps = data.timestamps.map(t => t - this.firstTimestamp);
+                    if (this.t0Mode && t0 !== null) {
+                        // 배열 크기만큼 변환
+                        const length = timestamps.length;
+                        const converted = new Array(length);
+                        for (let i = 0; i < length; i++) {
+                            converted[i] = timestamps[i] - t0;
+                        }
+                        timestamps = converted;
                     }
                     
                     updateData.x.push(timestamps);
@@ -1498,17 +1559,21 @@ class PlotlyPlotManager {
                 }
             });
 
-            // Plotly update - restyle 사용 (더 안전)
-            // update 대신 각 trace별로 x, y 데이터 업데이트
-            updateData.x.forEach((xData, index) => {
-                Plotly.restyle(this.containerId, {
-                    x: [xData],
-                    y: [updateData.y[index]]
-                }, [index]);
-            });
+            // 🚀 최적화: 모든 trace를 한 번에 업데이트 (개별 restyle 대신 Plotly.update 사용)
+            Plotly.update(this.containerId, {
+                x: updateData.x,
+                y: updateData.y
+            }, {});
 
             // 오토스케일 범위 업데이트 (줌 제한을 위해 데이터 범위 저장)
             this._updateAutoScaleRange(updateData);
+            
+            // 디버깅: 첫 10번만 로그 (성능 확인용)
+            if (this.updateCount === undefined) this.updateCount = 0;
+            if (this.updateCount < 10) {
+                console.log(`[PlotlyPlotManager] Update #${this.updateCount}: isPaused=${this.isPaused}, totalPoints=${totalPoints}, forceFullData=${forceFullData}`);
+                this.updateCount++;
+            }
 
         } catch (error) {
             console.error('[PlotlyPlotManager] Failed to update plot:', error);
@@ -1525,18 +1590,19 @@ class PlotlyPlotManager {
             if (!xArr || xArr.length === 0) return;
             const yArr = updateData.y[i];
             
+            // 🚀 최적화: spread operator 대신 반복문 사용 (메모리 효율)
             // X 범위
-            const xMinLocal = Math.min(...xArr);
-            const xMaxLocal = Math.max(...xArr);
-            if (xMinLocal < minX) minX = xMinLocal;
-            if (xMaxLocal > maxX) maxX = xMaxLocal;
+            for (let j = 0; j < xArr.length; j++) {
+                if (xArr[j] < minX) minX = xArr[j];
+                if (xArr[j] > maxX) maxX = xArr[j];
+            }
 
             // Y 범위
             if (yArr && yArr.length > 0) {
-                const yMinLocal = Math.min(...yArr);
-                const yMaxLocal = Math.max(...yArr);
-                if (yMinLocal < minY) minY = yMinLocal;
-                if (yMaxLocal > maxY) maxY = yMaxLocal;
+                for (let j = 0; j < yArr.length; j++) {
+                    if (yArr[j] < minY) minY = yArr[j];
+                    if (yArr[j] > maxY) maxY = yArr[j];
+                }
             }
         });
 
@@ -1600,12 +1666,12 @@ class PlotlyPlotManager {
                 name: path,
                 type: 'scatter',
                 line: {
-                    width: 1.5,
+                    width: 2,       // 선 두께 증가 (1.5 → 2)
                     shape: 'linear'
                 },
                 marker: {
-                    size: 2,
-                    opacity: 0.6
+                    size: 4,        // 마커 크기 증가 (2 → 4, 더 잘 보임)
+                    opacity: 0.8    // 마커 투명도 증가 (0.6 → 0.8, 더 선명)
                 },
                 connectgaps: false,  // gap이 있으면 선 끊기
                 hovertemplate: '%{y:.6f}<extra></extra>'  // Y값만 표시 (시간 제거)
@@ -1770,6 +1836,10 @@ class PlotlyPlotManager {
             
             // Pan 컨트롤 활성화
             this.setupPanControl();
+            
+            // 🎯 일시정지 시 즉시 모든 데이터를 표시
+            console.log('[PlotlyPlotManager] Paused: Loading full data for detailed analysis...');
+            this._updatePlotly();
             
             console.log('[PlotlyPlotManager] Zoom/Pan enabled (paused mode)');
         } else {
