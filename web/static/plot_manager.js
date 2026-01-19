@@ -4,9 +4,19 @@ class DataBuffer {
         this.bufferTime = bufferTime;  // 버퍼 시간 (초 단위)
         this.timestamps = [];          // X축 데이터 (ROS time)
         this.values = [];              // Y축 데이터
+        this.lastTimestamp = null;     // 마지막 timestamp (시간 역행 감지용)
     }
 
     addData(timestamp, value) {
+        // 시간 역행 감지: 새로운 timestamp가 이전보다 1초 이상 작으면 버퍼 초기화
+        // (작은 시간 오차는 무시, bag 파일 재시작 등 큰 역행만 감지)
+        if (this.lastTimestamp !== null && timestamp < this.lastTimestamp - 1.0) {
+            console.warn(`[DataBuffer] Time reversal detected: ${this.lastTimestamp.toFixed(3)} -> ${timestamp.toFixed(3)} (diff: ${(timestamp - this.lastTimestamp).toFixed(3)}s)`);
+            this.clear();
+            return { timeReversal: true };
+        }
+        
+        this.lastTimestamp = timestamp;
         this.timestamps.push(timestamp);
         this.values.push(value);
 
@@ -16,6 +26,8 @@ class DataBuffer {
             this.timestamps.shift();
             this.values.shift();
         }
+        
+        return { timeReversal: false };
     }
 
     getData() {
@@ -32,6 +44,7 @@ class DataBuffer {
     clear() {
         this.timestamps = [];
         this.values = [];
+        this.lastTimestamp = null;
     }
 
     isEmpty() {
@@ -63,8 +76,8 @@ class PlotlyPlotManager {
         this.dataBuffers = new Map();  // path -> DataBuffer 매핑
         this.traces = [];              // Plotly traces
         this.isInitialized = false;
-        this.updateThrottleMs = 100;   // 10Hz throttling
-        this.lastUpdateTime = 0;
+        this.updateThrottleInterval = 0.1;  // 10Hz throttling (ROS time 기준, 초 단위)
+        this.lastUpdateRosTime = null;      // ROS time 기준 마지막 업데이트 시간
         this.pendingUpdate = false;
         this.firstTimestamp = null;    // 첫 데이터 포인트의 timestamp (t0 기준)
         this.t0Mode = true;            // t0 모드 (상대 시간 표시) - 디폴트 true로 변경
@@ -134,12 +147,18 @@ class PlotlyPlotManager {
             const trace = {
                 x: [],
                 y: [],
-                mode: 'lines',
+                mode: 'lines+markers',
                 name: path,
                 type: 'scatter',
                 line: {
-                    width: 2
+                    width: 1.5,
+                    shape: 'linear'
                 },
+                marker: {
+                    size: 2,
+                    opacity: 0.6
+                },
+                connectgaps: false,  // gap이 있으면 선 끊기
                 hovertemplate: '%{y:.6f}<extra></extra>'  // Y값만 표시 (시간 제거)
             };
             this.traces.push(trace);
@@ -1384,7 +1403,7 @@ class PlotlyPlotManager {
             return;
         }
 
-        // DataBuffer에 데이터 추가
+        // DataBuffer에 데이터 추가 (항상 추가, ROS time 기준)
         const buffer = this.dataBuffers.get(path);
         if (!buffer) {
             console.warn(`[PlotlyPlotManager] Buffer not found for path: ${path}`);
@@ -1392,7 +1411,26 @@ class PlotlyPlotManager {
             return;
         }
 
-        buffer.addData(timestamp, value);
+        // buffer.addData()에서 시간 역행 감지
+        const result = buffer.addData(timestamp, value);
+        
+        // 시간 역행이 감지되면 전체 plot 초기화
+        if (result && result.timeReversal) {
+            console.warn(`[PlotlyPlotManager] ⚠️ Time reversal detected for ${path}! Clearing ALL plots and restarting...`);
+            this.clearPlot();
+            // 시간 역행 후 ROS time 리셋
+            this.lastUpdateRosTime = null;
+            this.firstTimestamp = null;
+            // clearPlot()이 모든 버퍼를 초기화했으므로 현재 데이터 다시 추가
+            buffer.addData(timestamp, value);
+            console.log(`[PlotlyPlotManager] ✓ Plot cleared and restarted with new data.`);
+            // 첫 timestamp 저장
+            this.firstTimestamp = timestamp;
+            // 즉시 업데이트
+            this.lastUpdateRosTime = timestamp;
+            this._updatePlotly();
+            return;
+        }
         
         // 첫 timestamp 저장 (t0 기준)
         if (this.firstTimestamp === null) {
@@ -1402,30 +1440,24 @@ class PlotlyPlotManager {
         
         // 첫 10개 데이터만 로그
         if (buffer.getLength() <= 10) {
-            console.log(`[PlotlyPlotManager] Data added for ${path}: t=${timestamp}, v=${value}, buffer size=${buffer.getLength()}`);
+            console.log(`[PlotlyPlotManager] Data added for ${path}: t=${timestamp.toFixed(3)}, v=${value.toFixed(3)}, buffer size=${buffer.getLength()}`);
         }
 
-        // 일시정지 상태면 plot 업데이트 하지 않음 (데이터는 버퍼에 계속 저장됨)
+        // 일시정지 상태면 화면 업데이트만 스킵 (데이터는 버퍼에 저장됨)
         if (this.isPaused) {
             return;
         }
 
-        // Throttling: 10Hz로 업데이트 제한
-        const now = Date.now();
-        if (now - this.lastUpdateTime < this.updateThrottleMs) {
-            // 이미 pending update가 있으면 스킵
-            if (!this.pendingUpdate) {
-                this.pendingUpdate = true;
-                setTimeout(() => {
-                    if (!this.isPaused) {  // 일시정지 상태 재확인
-                        this._updatePlotly();
-                    }
-                    this.pendingUpdate = false;
-                }, this.updateThrottleMs - (now - this.lastUpdateTime));
-            }
+        // Throttling: ROS time 기준 10Hz로 업데이트 제한
+        if (this.lastUpdateRosTime !== null && 
+            timestamp - this.lastUpdateRosTime < this.updateThrottleInterval) {
+            // ROS time 기준으로 throttling (메시지가 너무 빠르게 들어올 때)
             return;
         }
 
+        // 마지막 업데이트 시간 기록 (ROS time)
+        this.lastUpdateRosTime = timestamp;
+        
         this._updatePlotly();
     }
 
@@ -1466,18 +1498,6 @@ class PlotlyPlotManager {
                 }
             });
 
-            // 첫 5번만 상세 로그
-            if (this.lastUpdateTime === 0 || Date.now() - this.lastUpdateTime > 5000) {
-                console.log(`[PlotlyPlotManager] Updating plot: ${totalPoints} total points`);
-                console.log('[PlotlyPlotManager] Update data:', {
-                    traces: this.traces.length,
-                    xArrays: updateData.x.length,
-                    yArrays: updateData.y.length,
-                    firstXSample: updateData.x[0] ? updateData.x[0].slice(0, 3) : [],
-                    firstYSample: updateData.y[0] ? updateData.y[0].slice(0, 3) : []
-                });
-            }
-
             // Plotly update - restyle 사용 (더 안전)
             // update 대신 각 trace별로 x, y 데이터 업데이트
             updateData.x.forEach((xData, index) => {
@@ -1486,8 +1506,6 @@ class PlotlyPlotManager {
                     y: [updateData.y[index]]
                 }, [index]);
             });
-            
-            this.lastUpdateTime = Date.now();
 
             // 오토스케일 범위 업데이트 (줌 제한을 위해 데이터 범위 저장)
             this._updateAutoScaleRange(updateData);
@@ -1538,8 +1556,9 @@ class PlotlyPlotManager {
         this.dataBuffers.clear();
         this.traces = [];
         this.isInitialized = false;
-        this.lastUpdateTime = 0;
+        this.lastUpdateRosTime = null;
         this.pendingUpdate = false;
+        this.firstTimestamp = null;
 
         if (this.container) {
             this.container.innerHTML = '';
@@ -1577,12 +1596,18 @@ class PlotlyPlotManager {
             const trace = {
                 x: [],
                 y: [],
-                mode: 'lines',
+                mode: 'lines+markers',
                 name: path,
                 type: 'scatter',
                 line: {
-                    width: 2
+                    width: 1.5,
+                    shape: 'linear'
                 },
+                marker: {
+                    size: 2,
+                    opacity: 0.6
+                },
+                connectgaps: false,  // gap이 있으면 선 끊기
                 hovertemplate: '%{y:.6f}<extra></extra>'  // Y값만 표시 (시간 제거)
             };
             // this.traces에는 나중에 추가 (Plotly.addTraces 성공 후)
@@ -1725,8 +1750,14 @@ class PlotlyPlotManager {
         }
     }
 
-    togglePause() {
-        this.isPaused = !this.isPaused;
+    togglePause(forceState = null) {
+        // forceState: true=일시정지, false=재생, null=토글
+        if (forceState !== null) {
+            this.isPaused = forceState;
+        } else {
+            this.isPaused = !this.isPaused;
+        }
+        
         console.log(`[PlotlyPlotManager] Plot ${this.isPaused ? 'PAUSED' : 'RESUMED'}`);
         
         const plotDiv = document.getElementById(this.containerId);
@@ -1815,10 +1846,14 @@ class PlotlyPlotManager {
     clearPlot() {
         console.log('[PlotlyPlotManager] Clearing plot data...');
         
+        if (!this.isInitialized) {
+            console.warn('[PlotlyPlotManager] Plot not initialized, skipping clear');
+            return;
+        }
+        
         // 모든 버퍼 초기화 (버퍼 객체는 유지, 데이터만 삭제)
         this.dataBuffers.forEach((buffer, path) => {
             buffer.clear();
-            console.log(`[PlotlyPlotManager] Cleared buffer for: ${path}`);
         });
         
         // firstTimestamp 리셋
@@ -1826,16 +1861,23 @@ class PlotlyPlotManager {
         
         // t0 모드는 유지 (사용자 요청)
         
-        // Plot 리셋 (autoscale)
-        Plotly.relayout(this.containerId, {
-            'xaxis.autorange': true,
-            'yaxis.autorange': true
-        });
-        
-        // 즉시 plot 업데이트 (빈 데이터로)
-        this._updatePlotly();
-        
-        console.log('[PlotlyPlotManager] Plot cleared. New messages will be plotted from now on. t0 mode preserved.');
+        // 즉시 모든 trace를 빈 데이터로 업데이트 (화면에서 즉시 사라짐)
+        try {
+            // 모든 trace를 한 번에 업데이트 (더 빠름)
+            const emptyData = {
+                x: this.traces.map(() => []),
+                y: this.traces.map(() => [])
+            };
+            
+            Plotly.update(this.containerId, emptyData, {
+                'xaxis.autorange': true,
+                'yaxis.autorange': true
+            });
+            
+            console.log('[PlotlyPlotManager] Plot immediately cleared.');
+        } catch (error) {
+            console.error('[PlotlyPlotManager] Failed to clear plot:', error);
+        }
     }
 
     setBufferTime(seconds) {
