@@ -1442,6 +1442,42 @@ const plotState = {
     pathsRestored: false // 저장된 paths 복원 여부 (최초 1회만)
 };
 
+// Plot subscriber 키 생성 헬퍼 함수 (setupPlotDataUpdate와 동일한 형식)
+function getPlotSubscriberKey(fullPath) {
+    // plotState가 초기화되지 않았거나 topicTypes가 없으면 null 반환
+    if (!plotState || !plotState.topicTypes) {
+        return null;
+    }
+    
+    // 토픽 목록에서 path와 매칭되는 가장 긴 토픽 찾기
+    let topic = null;
+    let fieldPath = null;
+    let maxMatchLength = 0;
+    
+    for (const [topicName, topicType] of plotState.topicTypes.entries()) {
+        // 토픽 이름에서 / 제거하여 비교
+        const topicNameWithoutSlash = topicName.startsWith('/') ? topicName.substring(1) : topicName;
+        
+        // fullPath가 topicNameWithoutSlash로 시작하는지 확인
+        if (fullPath.startsWith(topicNameWithoutSlash + '/') || fullPath === topicNameWithoutSlash) {
+            const matchLength = topicNameWithoutSlash.length;
+            if (matchLength > maxMatchLength) {
+                maxMatchLength = matchLength;
+                topic = topicName;
+                fieldPath = fullPath.substring(matchLength + 1); // +1 for the '/'
+            }
+        }
+    }
+    
+    if (!topic) {
+        // topic을 찾지 못한 경우 null 반환 (setupPlotDataUpdate에서 처리)
+        return null;
+    }
+    
+    // setupPlotDataUpdate와 동일한 형식으로 키 생성
+    return `${topic}_plot_${fieldPath.replace(/\//g, '_')}`;
+}
+
 // PlotJugglerTree 초기화 및 토픽 노드 생성
 function initPlotTree() {
     if (!plotState.tree) {
@@ -1724,9 +1760,9 @@ function restoreSavedPaths() {
                 
                 // 각 path에 대해 실시간 데이터 업데이트 설정
                 tab.savedPaths.forEach(path => {
-                    // 이미 구독 중인지 확인
-                    const plotSubscriberKey = `${path}_plot`;
-                    if (!plotState.subscribers.has(plotSubscriberKey)) {
+                    // 이미 구독 중인지 확인 (setupPlotDataUpdate와 동일한 키 형식 사용)
+                    const plotSubscriberKey = getPlotSubscriberKey(path);
+                    if (!plotSubscriberKey || !plotState.subscribers.has(plotSubscriberKey)) {
                         console.log(`[restoreSavedPaths] Setting up data update for: ${path}`);
                         setupPlotDataUpdate(path);
                     } else {
@@ -2084,9 +2120,9 @@ function updateBufferTime(seconds) {
     const bufferTime = parseFloat(seconds);
     
     // 유효성 검사
-    if (isNaN(bufferTime) || bufferTime < 1 || bufferTime > 300) {
+    if (isNaN(bufferTime) || bufferTime < 1 || bufferTime > 100) {
         console.error('[updateBufferTime] Invalid buffer time:', seconds);
-        alert('Buffer time must be between 1 and 300 seconds');
+        alert('Buffer time must be between 1 and 100 seconds');
         // 기본값으로 복원
         document.getElementById('buffer-time-input').value = 5;
         return;
@@ -2196,8 +2232,9 @@ function setupPlotDropZone() {
                 
                 // 새로운 path에 대해서만 실시간 데이터 업데이트 설정
                 newPaths.forEach(path => {
-                    // 이미 구독 중인지 확인
-                    if (!plotState.subscribers.has(path)) {
+                    // 이미 구독 중인지 확인 (setupPlotDataUpdate와 동일한 키 형식 사용)
+                    const plotSubscriberKey = getPlotSubscriberKey(path);
+                    if (!plotSubscriberKey || !plotState.subscribers.has(plotSubscriberKey)) {
                         setupPlotDataUpdate(path);
                     } else {
                         console.log(`[setupPlotDropZone] Already subscribed to: ${path}`);

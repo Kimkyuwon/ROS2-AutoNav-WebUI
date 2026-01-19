@@ -2,9 +2,10 @@
 class DataBuffer {
     constructor(bufferTime = 5.0) {
         this.bufferTime = bufferTime;  // 버퍼 시간 (초 단위)
-        this.timestamps = [];          // X축 데이터 (ROS time)
+        this.timestamps = [];          // X축 데이터 (ROS time, offset 적용 전)
         this.values = [];              // Y축 데이터
         this.lastTimestamp = null;     // 마지막 timestamp (시간 역행 감지용)
+        this.timestampContinuityOffset = 0;  // timestamp 연속성 offset (bag 일시정지 후 재생 시)
     }
 
     addData(timestamp, value) {
@@ -16,12 +17,25 @@ class DataBuffer {
             return { timeReversal: true };
         }
         
+        // bag 일시정지 후 재생 감지: 큰 시간 gap (1.0초 이상, 시간 역행은 아님)
+        // 이 경우 timestamp continuity offset을 적용하여 연속적으로 보이게 함
+        if (this.lastTimestamp !== null && timestamp > this.lastTimestamp + 1.0) {
+            const gap = timestamp - this.lastTimestamp;
+            console.log(`[DataBuffer] Large time gap detected: ${gap.toFixed(3)}s (likely bag pause/resume)`);
+            console.log(`[DataBuffer] Applying continuity offset to maintain plot continuity`);
+            // offset 누적: 현재 gap만큼 빼서 연속적으로 보이게 함
+            this.timestampContinuityOffset += gap;
+            console.log(`[DataBuffer] Cumulative continuity offset: ${this.timestampContinuityOffset.toFixed(3)}s`);
+        }
+        
         this.lastTimestamp = timestamp;
-        this.timestamps.push(timestamp);
+        // offset을 적용한 timestamp 저장 (연속성 유지)
+        const adjustedTimestamp = timestamp - this.timestampContinuityOffset;
+        this.timestamps.push(adjustedTimestamp);
         this.values.push(value);
 
-        // ROS time 기준: 현재 timestamp - bufferTime보다 오래된 데이터 삭제
-        const cutoffTime = timestamp - this.bufferTime;
+        // ROS time 기준: 현재 adjustedTimestamp - bufferTime보다 오래된 데이터 삭제
+        const cutoffTime = adjustedTimestamp - this.bufferTime;
         while (this.timestamps.length > 0 && this.timestamps[0] < cutoffTime) {
             this.timestamps.shift();
             this.values.shift();
@@ -39,6 +53,7 @@ class DataBuffer {
 
     /**
      * 다운샘플링된 데이터 반환 (성능 최적화)
+     * 최대/최소 값을 항상 포함하여 스케일 안정성 유지
      * @param {number} maxPoints - 최대 포인트 수 (기본: 500, 10ms 이하 지연)
      * @param {boolean} forceFullData - 강제로 모든 데이터 반환 (일시정지 시)
      * @returns {object} - {timestamps, values}
@@ -62,22 +77,47 @@ class DataBuffer {
             };
         }
         
-        // Uniform downsampling (균등 샘플링)
+        // 🎯 최대/최소 값 찾기 (스케일 안정성 위해)
+        let minIndex = 0;
+        let maxIndex = 0;
+        let minValue = this.values[0];
+        let maxValue = this.values[0];
+        
+        for (let i = 1; i < length; i++) {
+            if (this.values[i] < minValue) {
+                minValue = this.values[i];
+                minIndex = i;
+            }
+            if (this.values[i] > maxValue) {
+                maxValue = this.values[i];
+                maxIndex = i;
+            }
+        }
+        
+        // Uniform downsampling (균등 샘플링) + 최대/최소 값 포함
         const step = length / maxPoints;
-        const downsampledTimestamps = [];
-        const downsampledValues = [];
+        const downsampledIndices = new Set();  // 중복 방지
         
-        for (let i = 0; i < maxPoints; i++) {
+        // 첫 번째 포인트
+        downsampledIndices.add(0);
+        
+        // 최대/최소 값 (항상 포함)
+        downsampledIndices.add(minIndex);
+        downsampledIndices.add(maxIndex);
+        
+        // Uniform sampling
+        for (let i = 1; i < maxPoints - 1; i++) {
             const index = Math.floor(i * step);
-            downsampledTimestamps.push(this.timestamps[index]);
-            downsampledValues.push(this.values[index]);
+            downsampledIndices.add(index);
         }
         
-        // 마지막 포인트는 항상 포함 (최신 데이터)
-        if (downsampledTimestamps[downsampledTimestamps.length - 1] !== this.timestamps[length - 1]) {
-            downsampledTimestamps.push(this.timestamps[length - 1]);
-            downsampledValues.push(this.values[length - 1]);
-        }
+        // 마지막 포인트 (최신 데이터)
+        downsampledIndices.add(length - 1);
+        
+        // 인덱스 정렬 후 데이터 추출 (시간 순서 유지)
+        const sortedIndices = Array.from(downsampledIndices).sort((a, b) => a - b);
+        const downsampledTimestamps = sortedIndices.map(i => this.timestamps[i]);
+        const downsampledValues = sortedIndices.map(i => this.values[i]);
         
         return {
             timestamps: downsampledTimestamps,
@@ -93,6 +133,7 @@ class DataBuffer {
         this.timestamps = [];
         this.values = [];
         this.lastTimestamp = null;
+        this.timestampContinuityOffset = 0;  // offset도 리셋
     }
 
     isEmpty() {
