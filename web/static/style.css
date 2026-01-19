@@ -460,7 +460,10 @@ h3 {
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px;
-    overflow-y: auto;
+    overflow-y: visible;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
 }
 
 .plot-display-panel h3 {
@@ -472,6 +475,15 @@ h3 {
 .plot-tree-container {
     font-size: 13px;
     color: var(--text);
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+
+.plot-tree-root {
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
 }
 
 .plot-tree-node {
@@ -608,4 +620,125 @@ h3 {
 .topic-list-item.active {
     background: rgba(74, 214, 255, 0.15);
     border-left: 3px solid var(--accent);
+}
+
+/* Plot 탭 바 */
+.plot-tab-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 12px;
+    padding: 8px 8px 0 8px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+/* 개별 탭 */
+.plot-tab {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    position: relative;
+    top: 1px;
+}
+
+.plot-tab:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.plot-tab.active {
+    background: rgba(74, 214, 255, 0.15);
+    border-color: var(--accent);
+    font-weight: 600;
+}
+
+/* 탭 제목 */
+.plot-tab-title {
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.plot-tab.active .plot-tab-title {
+    color: var(--accent);
+}
+
+/* 탭 제목 편집 input */
+.plot-tab-title-input {
+    font-size: 13px;
+    padding: 2px 4px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text);
+    max-width: 150px;
+}
+
+/* 탭 닫기 버튼 */
+.plot-tab-close {
+    font-size: 14px;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+
+.plot-tab-close:hover {
+    background: rgba(255, 95, 109, 0.2);
+    color: #ff5f6d;
+}
+
+/* 탭 추가 버튼 */
+.plot-tab-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    margin-left: auto;
+}
+
+.plot-tab-add:hover {
+    background: rgba(74, 214, 255, 0.15);
+    border-color: var(--accent);
+}
+
+/* Plot Area 컨테이너 */
+#plot-area-container {
+    width: 100%;
+    height: 550px;
+    position: relative;
+}
+
+/* 각 탭의 Plot Area */
+.plot-tab-area {
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 8px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: none;
+}
+
+.plot-tab-area.active {
+    display: block;
 }

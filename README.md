@@ -1,143 +1,108 @@
 # ROS2 AUTONAV WEBUI
 
-A web-based graphical user interface for autonomous robot navigation with ROS2, providing intuitive control and visualization of SLAM, localization, navigation, and data recording/playback functionality through a modern web browser.
+> **A modern, browser-based control center for autonomous robot navigation with ROS2**
 
-## Features
+Web-based graphical user interface providing intuitive control and real-time visualization of SLAM, localization, navigation, and data management for ROS2-based autonomous robots. Access everything from any device with a web browser.
 
-### SLAM and Localization
-- **LiDAR SLAM**
-  - YAML configuration management with live parameter editing
-  - Real-time terminal output monitoring (latest 10 lines)
-  - Start/Stop SLAM processes with single click
-  - Automatic map saving via pose graph optimization
-  - Compatible with FAST-LIO mapping
+[![ROS2](https://img.shields.io/badge/ROS2-Jazzy-blue.svg)](https://docs.ros.org/en/jazzy/)
+[![Python](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg)](LICENSE)
 
-- **Localization**
-  - YAML configuration management
-  - Real-time localization process control
-  - Terminal output monitoring
-  - Compatible with FAST-LIO localization
+---
 
-- **Multi-Session SLAM**
-  - Load and merge multiple SLAM maps
-  - Run optimization in separate terminal window
-  - Crash-isolated execution
+## 🌟 Key Features
 
-### Data Management
+### 🗺️ SLAM & Localization
+- **LiDAR SLAM** with FAST-LIO integration
+- **Real-time Localization** with live parameter tuning
+- **Multi-Session SLAM** for map merging and optimization
+- Live YAML configuration editing with instant apply
+- Real-time terminal output monitoring
+- One-click start/stop control
+
+### 📊 Advanced Data Visualization
+- **PlotJuggler-style Real-time Plotting**
+  - Interactive time-series data visualization
+  - Multi-tab interface for organizing plots
+  - Drag-and-drop topic selection from tree view
+  - Auto-save/restore plot configurations
+  - Zoom, pan, play/pause controls
+  - Export plots (PNG, CSV) _(coming soon)_
+  
+- **3D Visualization** _(in development)_
+  - Real-time PointCloud2 rendering
+  - Path and odometry display
+  - Interactive camera controls
+  - WebSocket-based low-latency updates
+
+### 💾 Data Management
 - **Bag Player**
-  - Play ROS2 bag files with topic selection
+  - Play ROS2 bag files with topic filtering
   - Timeline control with play/pause
-  - 3D visualization support
+  - Variable playback speed
+  - Integration with 3D visualization
 
 - **Bag Recorder**
   - Record live ROS2 topics to bag files
   - Selective topic recording
-  - Real-time recording status display
+  - Real-time recording status
+  - Auto-saved configurations
 
-- **File Player (ConPR Format)**
-  - Play CSV-based trajectory data (pose, IMU)
-  - Based on [ConPR](https://github.com/dongjae0107/ConPR) dataset format
+- **File Player** (ConPR Format)
+  - Play CSV-based trajectory data (pose, IMU, LiDAR)
   - Variable playback speed (0.01x ~ 20.0x)
   - Convert to ROS2 bag format
   - Support for Livox LiDAR and camera data
 
-### Visualization
-- **3D Display (Three.js)**
-  - Real-time PointCloud2 visualization
-  - Path and Odometry display
-  - Interactive camera control
-  - WebSocket-based low-latency rendering
+### 🌐 Network Tools
+- **Latency Monitor** for real-time network performance tracking
+- **Remote Access** via web browser from any device on network
 
-## Demo
+---
 
-**Web Interface:**
-- Clean, modern UI with tabbed navigation
-- Sticky navigation for easy access
-- Real-time status updates
-- Mobile-friendly responsive design
+## 📸 Screenshots
 
-**Access:**
-- Local: `http://localhost:8080`
-- Network: `http://<YOUR_IP>:8080`
+_Coming soon: Web interface screenshots and demo videos_
 
-## Prerequisites
+---
 
-### 1. Ubuntu and ROS2
+## 🚀 Quick Start
 
-**Ubuntu:** >= 22.04
+### Prerequisites
 
-**ROS2:** >= Jazzy. [ROS2 Installation](https://docs.ros.org/en/jazzy/Installation.html)
+- **Ubuntu**: 22.04 or later
+- **ROS2**: Jazzy or later ([Installation Guide](https://docs.ros.org/en/jazzy/Installation.html))
+- **Python**: 3.10+ (included with ROS2)
+- **rosbridge_server**: For 3D visualization and plot features
 
-For ROS2 Jazzy Desktop Full, all core dependencies are included.
+### Installation
 
-### 2. Python Dependencies
+1. **Install rosbridge_server**
+   ```bash
+   sudo apt install ros-jazzy-rosbridge-server
+   ```
 
-All required Python packages are included in ROS2 Desktop Full:
-- `rclpy` - ROS2 Python library
-- `std_msgs`, `sensor_msgs`, `geometry_msgs` - Standard message types
-- `rosbag2_py` - Bag file handling
-- `cv_bridge` - OpenCV-ROS bridge (optional, for camera support)
+2. **Clone the repository**
+   ```bash
+   cd ~/your_workspace/src
+   git clone https://github.com/Kimkyuwon/Web-based-GUI-for-ROS2-SLAM-and-File-Player.git ros2_autonav_webui
+   ```
 
-### 3. rosbridge_server (For 3D Visualization)
+3. **Build the package**
+   ```bash
+   cd ~/your_workspace
+   colcon build --packages-select ros2_autonav_webui
+   source install/setup.bash
+   ```
 
-```bash
-sudo apt install ros-jazzy-rosbridge-server
-```
-
-### 4. Optional Dependencies
-
-**livox_ros_driver2** (for Livox LiDAR data playback):
-```bash
-cd ~/your_workspace/src
-git clone https://github.com/Livox-SDK/livox_ros_driver2.git
-cd ~/your_workspace
-colcon build --packages-select livox_ros_driver2
-```
-
-**FAST-LIO** (for SLAM/Localization features):
-```bash
-cd ~/your_workspace/src
-git clone https://github.com/hku-mars/FAST_LIO.git
-cd FAST_LIO
-git submodule update --init
-cd ~/your_workspace
-colcon build --packages-select fast_lio
-```
-
-## Installation
-
-### Clone the Repository
+### Launch
 
 ```bash
-cd ~/your_workspace/src
-git clone https://github.com/Kimkyuwon/Web-based-GUI-for-ROS2-SLAM-and-File-Player.git
-```
-
-### Build
-
-```bash
-cd ~/your_workspace
-colcon build --packages-select ros2_autonav_webui
-source install/setup.bash
-```
-
-**Important:** After modifying source files in `src/ros2_autonav_webui/`, you must rebuild:
-```bash
-colcon build --packages-select ros2_autonav_webui
-```
-
-For faster development iteration, use symlink install (one-time setup):
-```bash
-colcon build --symlink-install
-```
-
-## Run
-
-### ROS2 Launch (Recommended)
-
-```bash
+# Source ROS2 environment
 source /opt/ros/jazzy/setup.bash
 source ~/your_workspace/install/setup.bash
+
+# Launch the web server
 ros2 launch ros2_autonav_webui ros2_autonav_webui.launch.py
 ```
 
@@ -154,59 +119,118 @@ Once the server starts, you'll see:
 
 Open the URL in your web browser.
 
-## Usage
+---
 
-### LiDAR SLAM
+## 📖 Detailed Feature Guide
+
+### 🗺️ LiDAR SLAM
 
 1. **Load Configuration**
-   - Click "Config Load" to open file browser
-   - Default: `/path/to/FAST_LIO_ROS2/config/mapping_config.yaml`
-   - Edit parameters in real-time
+   - Click "Config Load" to browse for your SLAM config file
+   - Default location: `/path/to/FAST_LIO_ROS2/config/mapping_config.yaml`
+   - Edit parameters in real-time using the web interface
 
-2. **Save Configuration**
-   - Click "Set Config File" to save changes
-   - Configuration is saved with comments preserved
-
-3. **Start SLAM**
+2. **Start SLAM**
    - Click "Start SLAM" button
-   - Monitor real-time terminal output
+   - Monitor real-time terminal output in the web UI
    - Green status indicator shows running state
+
+3. **Save Map**
+   - Click "Save Map" to trigger pose graph optimization
+   - Map is automatically saved to configured output directory
 
 4. **Stop SLAM**
    - Click "Stop SLAM" button
    - Process terminates gracefully (SIGINT → SIGTERM → SIGKILL)
 
-5. **Save Map**
-   - Click "Save Map" to trigger pose graph optimization
-   - Map is saved to configured output directory
+### 📊 Real-time Plotting
 
-### Localization
+The Plot feature provides PlotJuggler-style visualization directly in your browser:
 
-Same workflow as SLAM, but uses `localization_config.yaml` and `localization.launch.py`.
+1. **Navigate to Plot Tab**
+   - Click "Visualization" → "Plot" in the main navigation
 
-### Bag Recorder
+2. **Browse Topics**
+   - Topics are displayed in a tree view (topic → message fields)
+   - Search topics by name using the search box
+   - Click to expand/collapse message fields
 
-1. Enter bag name in "Bag Name" field
-2. Click "Enter Bag Name"
-3. Click "Select Topic" to choose topics
-4. Click "Record" to start recording
-5. Click "Stop" to finish recording
+3. **Create Plots**
+   - Drag leaf nodes (data fields) from tree to plot area
+   - Each drag creates a new trace in the plot
+   - Multiple traces can be added to a single plot
 
-### 3D Visualization
+4. **Manage Tabs**
+   - Click "+" to create new plot tabs
+   - Double-click tab title to rename
+   - Click "×" to close tabs (minimum 1 tab)
+   - Each tab maintains independent plots
 
-1. Click "Select Topics" button
-2. Choose PointCloud2, Path, or Odometry topics
-3. Click "Confirm"
-4. Use mouse to interact:
-   - **Drag**: Rotate camera
-   - **Scroll**: Zoom in/out
-   - **Right-click drag**: Pan
+5. **Plot Controls**
+   - **Play/Pause**: Toggle real-time data updates
+   - **t0 Mode**: Show relative time (starts from 0 seconds)
+   - **Zoom Out**: Auto-scale to fit all data
+   - **Clear Plot**: Reset plot (keeps current subscriptions)
+   - **Buffer Time**: Adjust visible time window (1-300 seconds)
 
-## Configuration
+6. **Interact with Plots**
+   - **Zoom**: Scroll wheel (when paused)
+   - **Pan**: Middle mouse button drag (when paused)
+   - **Delete Plot**: Right-click on trace or legend → "Delete plot"
+   - **Auto-save**: Plot configurations save automatically
+   - **Auto-restore**: Plots restore after page refresh
+
+### 🎥 Bag Recorder
+
+1. **Enter Bag Name**
+   - Type desired bag name in "Bag Name" field
+   - Click "Enter Bag Name" to confirm
+
+2. **Select Topics**
+   - Click "Select Topic" button
+   - Choose topics to record from the list
+   - Click "Confirm"
+
+3. **Record**
+   - Click "Record" to start recording
+   - Status indicator shows recording state
+   - Click "Stop" to finish recording
+   - Bag file is saved to `/home/user/dataset/[bag_name]/`
+
+### 🎮 Bag Player
+
+1. **Load Bag**
+   - Click "Load Bag File" to browse for bag directory
+   - ROS2 bags are stored as directories
+
+2. **Select Topics**
+   - Click "Select Topic" to filter which topics to play
+   - All topics are played by default if none selected
+
+3. **Playback**
+   - Click "Play" to start playback
+   - Use timeline slider for seeking
+   - Click "Stop" to stop playback
+
+### 🌐 3D Visualization
+
+1. **Select Display Topics**
+   - Click "Select PointCloud2 Topics" button
+   - Choose PointCloud2, Path, or Odometry topics
+   - Click "Confirm" to start visualization
+
+2. **Camera Controls**
+   - **Rotate**: Left mouse drag
+   - **Zoom**: Mouse scroll wheel
+   - **Pan**: Right mouse drag
+
+---
+
+## 🔧 Configuration
 
 ### ROS2 Environment Variables
 
-The ros2_autonav_webui service automatically sets:
+The service automatically sets:
 ```bash
 ROS_DOMAIN_ID=0
 ROS_LOCALHOST_ONLY=1
@@ -219,7 +243,7 @@ export ROS_LOCALHOST_ONLY=1
 source /opt/ros/jazzy/setup.bash
 ```
 
-### Firewall Settings (for Network Access)
+### Network Access Configuration
 
 **Ubuntu/Linux:**
 ```bash
@@ -231,13 +255,12 @@ sudo ufw reload
 - Windows Defender Firewall → Advanced Settings → Inbound Rules
 - New Rule → Port → TCP 8080 → Allow
 
-### Change Port (Optional)
+### Change Server Port
 
 Edit `ros2_autonav_webui/web_server.py`:
 ```python
-# Change port number
-web_thread = threading.Thread(target=run_web_server, args=(node, 8080), daemon=True)
-# Change 8080 to your desired port
+# Change port number (default: 8080)
+web_thread = threading.Thread(target=run_web_server, args=(node, 9090), daemon=True)
 ```
 
 Then rebuild:
@@ -245,109 +268,306 @@ Then rebuild:
 colcon build --packages-select ros2_autonav_webui
 ```
 
-## Directory Structure
+---
+
+## 📦 Dependencies
+
+### Required
+
+- **ROS2 Jazzy** (Desktop Full)
+  - `rclpy` - ROS2 Python library
+  - `std_msgs`, `sensor_msgs`, `geometry_msgs` - Standard message types
+  - `rosbag2_py` - Bag file handling
+
+- **rosbridge_server** - WebSocket bridge for browser communication
+  ```bash
+  sudo apt install ros-jazzy-rosbridge-server
+  ```
+
+### Optional
+
+**FAST-LIO** (for SLAM/Localization features):
+```bash
+cd ~/your_workspace/src
+git clone https://github.com/hku-mars/FAST_LIO.git
+cd FAST_LIO
+git submodule update --init
+cd ~/your_workspace
+colcon build --packages-select fast_lio
+```
+
+**livox_ros_driver2** (for Livox LiDAR data):
+```bash
+cd ~/your_workspace/src
+git clone https://github.com/Livox-SDK/livox_ros_driver2.git
+cd ~/your_workspace
+colcon build --packages-select livox_ros_driver2
+```
+
+---
+
+## 🏗️ Project Structure
 
 ```
 ros2_autonav_webui/
 ├── ros2_autonav_webui/
-│   ├── web_server.py          # Main Python backend (HTTP + ROS2)
+│   ├── web_server.py              # Main HTTP server & ROS2 node
 │   └── __init__.py
 ├── web/
-│   ├── index.html             # Main HTML page
+│   ├── index.html                 # Main web interface
 │   └── static/
-│       ├── script.js          # JavaScript (UI logic, API calls)
-│       ├── style.css          # CSS styling
-│       └── threejs_display.js # Three.js 3D visualization
+│       ├── script.js              # Main UI logic & API calls
+│       ├── plot_manager.js        # Plotly.js plot management
+│       ├── plot_tab_manager.js    # Plot tab management
+│       ├── plot_tree.js           # PlotJuggler-style tree view
+│       ├── threejs_display.js     # Three.js 3D visualization
+│       └── style.css              # UI styling
 ├── launch/
-│   └── ros2_autonav_webui.launch.py # ROS2 launch file
-├── resource/
-├── package.xml
-├── setup.py
-├── README.md                  # This file
-└── Project.md                 # Detailed project documentation
+│   └── ros2_autonav_webui.launch.py  # ROS2 launch configuration
+├── package.xml                    # ROS2 package manifest
+├── setup.py                       # Python package setup
+├── README.md                      # This file
+├── Project.md                     # Detailed project documentation
+└── LICENSE                        # Apache 2.0 License
 ```
 
-## API Endpoints
+---
 
-### SLAM
-- `POST /api/slam/load_config_file` - Load SLAM config
-- `POST /api/slam/save_config_file` - Save SLAM config
-- `POST /api/slam/start_mapping` - Start SLAM
-- `POST /api/slam/stop_mapping` - Stop SLAM
-- `GET /api/slam/get_terminal_output` - Get terminal output
+## 🔌 API Reference
 
-### Localization
+### SLAM Endpoints
+- `POST /api/slam/load_config_file` - Load SLAM configuration
+- `POST /api/slam/save_config_file` - Save SLAM configuration
+- `POST /api/slam/start_mapping` - Start SLAM process
+- `POST /api/slam/stop_mapping` - Stop SLAM process
+- `POST /api/slam/save_map` - Trigger map save
+- `GET /api/slam/get_terminal_output` - Get real-time terminal output
+
+### Localization Endpoints
 - `POST /api/localization/load_config_file` - Load localization config
 - `POST /api/localization/save_config_file` - Save localization config
 - `POST /api/localization/start_mapping` - Start localization
 - `POST /api/localization/stop_mapping` - Stop localization
 - `GET /api/localization/get_terminal_output` - Get terminal output
 
-### Bag Recorder
-- `POST /api/recorder/set_bag_name` - Set bag name
+### Data Management Endpoints
+- `POST /api/recorder/set_bag_name` - Set recording bag name
 - `GET /api/recorder/get_topics` - Get available topics
 - `POST /api/recorder/record` - Start/stop recording
 - `GET /api/recorder/state` - Get recorder state
+- `POST /api/player/load_bag` - Load bag file for playback
+- `POST /api/player/play` - Start playback
+- `POST /api/player/stop` - Stop playback
 
-### Network
+### Network Endpoints
 - `GET /api/ping` - Ping server for latency measurement
 
-## Development
+---
 
-### Code Modification Workflow
+## 🛠️ Development
 
-1. Stop the service:
+### Development Workflow
+
+1. **For Python backend changes:**
+   ```bash
+   # Edit files in ros2_autonav_webui/
+   colcon build --packages-select ros2_autonav_webui
+   source install/setup.bash
+   # Restart the server
+   ```
+
+2. **For web frontend changes:**
+   ```bash
+   # Edit files in web/static/
+   colcon build --packages-select ros2_autonav_webui
+   # Hard refresh browser (Ctrl + F5)
+   ```
+
+3. **For faster iteration (one-time setup):**
+   ```bash
+   colcon build --symlink-install --packages-select ros2_autonav_webui
+   # Now Python and web file changes don't require rebuild
+   ```
+
+### Code Organization
+
+**Backend (Python):**
+- Add API endpoints in `ros2_autonav_webui/web_server.py`
+- Use `do_GET()` for GET requests, `do_POST()` for POST requests
+- Follow existing patterns for error handling and responses
+
+**Frontend (JavaScript):**
+- Main UI logic: `web/static/script.js`
+- Plot management: `web/static/plot_manager.js`
+- Tab management: `web/static/plot_tab_manager.js`
+- Tree view: `web/static/plot_tree.js`
+- Use `apiCall(endpoint, data)` for backend communication
+
+**UI (HTML/CSS):**
+- Layout: `web/index.html`
+- Styling: `web/static/style.css`
+- Follow existing CSS variable conventions for theming
+
+---
+
+## 🐛 Troubleshooting
+
+### Web Server Won't Start
+
+**Issue**: Port 8080 already in use
 ```bash
-sudo systemctl stop ros2_autonav_webui
+# Check what's using port 8080
+sudo lsof -i :8080
+# Kill the process or change port in web_server.py
 ```
 
-2. Edit source files in `src/ros2_autonav_webui/`
+### rosbridge Connection Failed
 
-3. Rebuild:
+**Issue**: Plot or 3D viewer not working
 ```bash
-cd ~/your_workspace
+# Ensure rosbridge is installed
+sudo apt install ros-jazzy-rosbridge-server
+
+# Check if rosbridge is running (it starts automatically with the launch file)
+ros2 node list | grep rosbridge
+```
+
+### Topics Not Appearing
+
+**Issue**: No topics in plot tree or bag recorder
+```bash
+# Check ROS2 environment variables
+echo $ROS_DOMAIN_ID      # Should be 0
+echo $ROS_LOCALHOST_ONLY # Should be 1
+
+# List topics manually
+ros2 topic list
+```
+
+### Page Refresh Loses Data
+
+**Issue**: Plot configurations not restoring
+- Check browser console (F12) for JavaScript errors
+- Clear browser cache and LocalStorage if corrupted:
+  ```javascript
+  // In browser console
+  localStorage.clear();
+  location.reload();
+  ```
+
+### Build Errors
+
+**Issue**: `colcon build` fails
+```bash
+# Clean build artifacts
+rm -rf build/ install/ log/
+
+# Rebuild from scratch
 colcon build --packages-select ros2_autonav_webui
 ```
 
-4. Restart the service:
-```bash
-sudo systemctl start ros2_autonav_webui
-```
+---
 
-5. Hard refresh browser (`Ctrl + F5`)
+## 🗺️ Roadmap
 
-### Adding New Features
+### Current (Phase 1.3 - Complete ✅)
+- [x] PlotJuggler-style real-time plotting
+- [x] Multi-tab plot management
+- [x] Plot state save/restore
+- [x] SLAM/Localization control
+- [x] Bag Player/Recorder
 
-**Backend (Python):**
-- Add functions to `ros2_autonav_webui/web_server.py`
-- Add API endpoints in `do_GET()` or `do_POST()`
+### Upcoming (Phase 1.4-2)
+- [ ] XY Plot functionality
+- [ ] Plot export (PNG, CSV)
+- [ ] 3D Viewer completion
+  - [ ] PointCloud2 rainbow coloring
+  - [ ] Path/Odometry visualization
+  - [ ] TF tree visualization
+- [ ] Navigation control (Phase 4)
 
-**Frontend (JavaScript):**
-- Add functions to `web/static/script.js`
-- Use `apiCall(endpoint, data)` for backend communication
+### Future Enhancements
+- [ ] Multi-robot support
+- [ ] Map editor
+- [ ] Parameter tuning wizard
+- [ ] Mobile app companion
+- [ ] Cloud deployment support
 
-**UI (HTML):**
-- Add elements to `web/index.html`
-- Style in `web/static/style.css`
+---
 
-## Related Works
+## 🤝 Contributing
 
-### SLAM
+Contributions are welcome! Please follow these guidelines:
+
+1. **Fork the repository**
+2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
+3. **Follow code conventions** (see `.cursor/rules/01.developerules.mdc`)
+4. **Test thoroughly** (build, run, browser test)
+5. **Commit with clear messages** (see existing commit history)
+6. **Push to your branch** (`git push origin feature/amazing-feature`)
+7. **Open a Pull Request**
+
+### Development Guidelines
+
+- Follow ROS2 naming conventions
+- Use ES6+ JavaScript features
+- Add JSDoc comments for functions
+- Test on both Chrome and Firefox
+- Update documentation for new features
+
+---
+
+## 📚 Related Projects
+
+### SLAM & Localization
 - [FAST-LIO](https://github.com/hku-mars/FAST_LIO) - Fast LiDAR-Inertial Odometry
+- [FAST_LIO_ROS2](https://github.com/Ericsii/FAST_LIO_ROS2) - ROS2 port of FAST-LIO
 
-### Dataset
-- [ConPR](https://github.com/dongjae0107/ConPR) - ConPR dataset format for trajectory data
+### Dataset & Tools
+- [ConPR](https://github.com/dongjae0107/ConPR) - ConPR dataset format
+- [PlotJuggler](https://github.com/facontidavide/PlotJuggler) - Inspiration for plot UI
 
 ### Visualization
 - [Three.js](https://threejs.org/) - 3D graphics library
+- [Plotly.js](https://plotly.com/javascript/) - Interactive plotting library
 - [rosbridge_suite](https://github.com/RobotWebTools/rosbridge_suite) - WebSocket interface to ROS
 
-## Acknowledgments
+---
 
-Thanks to the developers of:
-- [FAST-LIO](https://github.com/hku-mars/FAST_LIO) for robust SLAM algorithms
-- [ConPR](https://github.com/dongjae0107/ConPR) for the dataset format used in File Player
+## 📄 License
 
-## License
+This project is licensed under the **Apache License 2.0** - see the [LICENSE](LICENSE) file for details.
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+### Third-Party Licenses
+- **Three.js**: MIT License
+- **Plotly.js**: MIT License
+- **rosbridge_suite**: BSD License
+
+---
+
+## 🙏 Acknowledgments
+
+Special thanks to:
+- **FAST-LIO developers** for robust SLAM algorithms
+- **ConPR team** for the dataset format
+- **PlotJuggler** for UI inspiration
+- **ROS2 community** for excellent documentation
+- All contributors and users of this project
+
+---
+
+## 📧 Contact & Support
+
+- **Issues**: [GitHub Issues](https://github.com/Kimkyuwon/Web-based-GUI-for-ROS2-SLAM-and-File-Player/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/Kimkyuwon/Web-based-GUI-for-ROS2-SLAM-and-File-Player/discussions)
+- **Email**: Contact repository owner via GitHub profile
+
+---
+
+## ⭐ Star History
+
+If you find this project useful, please consider giving it a star! ⭐
+
+---
+
+**Made with ❤️ for the ROS2 community**
