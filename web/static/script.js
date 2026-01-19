@@ -1435,7 +1435,7 @@ const plotState = {
     messageTrees: new Map(), // topic -> message tree data
     topicNodes: new Map(), // topic -> topic node element (최상위 노드)
     topicRefreshInterval: null, // 토픽 목록 갱신 인터벌
-    topicRefreshRate: 1000, // 1초마다 토픽 목록 갱신
+    topicRefreshRate: 5000, // 5초마다 토픽 목록 갱신 (타임아웃 방지)
     plotTabManager: null, // PlotTabManager 인스턴스 (탭 관리)
     plottedPaths: [], // 현재 Plot에 표시된 path들 (모든 탭 공유)
     isLoadingTopics: false, // 토픽 로딩 중 플래그
@@ -1638,8 +1638,8 @@ async function loadPlotTopics() {
     plotState.isLoadingTopics = true;
 
     try {
-        // 타임아웃 설정 (3초)
-        const timeout = 3000;
+        // 타임아웃 설정 (10초로 증가)
+        const timeout = 10000;
         let timeoutId = null;
         let completed = false;
 
@@ -1715,6 +1715,15 @@ async function loadPlotTopics() {
         }
     } catch (error) {
         console.error('[loadPlotTopics] Error:', error);
+        
+        // 타임아웃이 발생했지만 이미 토픽 목록이 있는 경우 (기존 플롯이 동작 중)
+        if (plotState.topics && plotState.topics.length > 0) {
+            console.warn('[loadPlotTopics] Timeout occurred, but keeping existing topics');
+            // 기존 UI 유지, 에러 메시지는 콘솔에만 출력
+            return;
+        }
+        
+        // 토픽 목록이 없는 경우에만 에러 메시지 표시
         const container = domCache.get('plot-tree');
         if (container) {
             container.innerHTML = `<div style="color: var(--danger); padding: 12px; text-align: center;">Failed to load topics: ${error.message}</div>`;
@@ -2417,6 +2426,251 @@ function extractFieldValue(obj, fieldPath) {
         return undefined;
     }
 }
+
+// XY Plot 생성 함수 (PlotJugglerTree 컨텍스트 메뉴에서 호출)
+function createXYPlot(xPath, yPath) {
+    console.log('[createXYPlot] Creating XY Plot:', xPath, 'vs', yPath);
+    
+    // PlotTabManager가 초기화되어 있는지 확인
+    if (!plotState.plotTabManager) {
+        console.error('[createXYPlot] PlotTabManager not initialized');
+        return;
+    }
+    
+    // 활성 탭의 PlotlyPlotManager 가져오기
+    const plotManager = plotState.plotTabManager.getActivePlotManager();
+    if (!plotManager) {
+        console.error('[createXYPlot] No active plot manager');
+        return;
+    }
+    
+    // XY Plot 생성
+    const success = plotManager.createXYPlot(xPath, yPath);
+    if (success) {
+        console.log('[createXYPlot] XY Plot created successfully');
+        
+        // 전역 plottedPaths에 추가 (중복 제거)
+        const paths = [xPath, yPath];
+        const newPaths = paths.filter(p => !plotState.plottedPaths.includes(p));
+        plotState.plottedPaths = plotState.plottedPaths.concat(newPaths);
+        
+        // 실시간 데이터 업데이트 설정
+        paths.forEach(path => {
+            const plotSubscriberKey = getPlotSubscriberKey(path);
+            if (!plotSubscriberKey || !plotState.subscribers.has(plotSubscriberKey)) {
+                setupPlotDataUpdate(path);
+            }
+        });
+        
+        // 탭 상태 저장
+        plotState.plotTabManager.saveState();
+    } else {
+        console.error('[createXYPlot] Failed to create XY Plot');
+    }
+}
+
+// ==============================================================
+// Plot Settings 관련 전역 함수들
+// ==============================================================
+let currentPlotSettingsPlotId = null;
+
+// Plot Settings 모달 열기
+window.openPlotSettings = function(plotId) {
+    console.log('[openPlotSettings] Opening settings for plot:', plotId);
+    
+    currentPlotSettingsPlotId = plotId;
+    
+    // 현재 플롯의 PlotlyPlotManager 가져오기
+    const plotManager = plotState.plotTabManager.getPlotManager(plotId);
+    if (!plotManager || !plotManager.isInitialized) {
+        console.error('[openPlotSettings] Plot manager not found or not initialized:', plotId);
+        return;
+    }
+    
+    // Trace 선택 드롭다운 채우기
+    const traceSelect = domCache.get('plot-settings-trace-select');
+    if (!traceSelect) {
+        console.error('[openPlotSettings] Trace select element not found');
+        return;
+    }
+    
+    traceSelect.innerHTML = '';
+    plotManager.traces.forEach((trace, index) => {
+        const option = document.createElement('option');
+        option.value = index;
+        option.textContent = trace.name || `Trace ${index + 1}`;
+        traceSelect.appendChild(option);
+    });
+    
+    // 첫 번째 trace가 있으면 선택
+    if (plotManager.traces.length > 0) {
+        traceSelect.value = 0;
+        loadTraceSettings(plotManager, 0);
+    }
+    
+    // Trace 선택 변경 시 현재 설정 로드
+    traceSelect.onchange = () => {
+        const selectedIndex = parseInt(traceSelect.value);
+        loadTraceSettings(plotManager, selectedIndex);
+    };
+    
+    // 슬라이더 값 업데이트 이벤트
+    const lineWidthSlider = domCache.get('plot-settings-line-width');
+    const lineWidthValue = domCache.get('plot-settings-line-width-value');
+    if (lineWidthSlider && lineWidthValue) {
+        lineWidthSlider.oninput = () => {
+            lineWidthValue.textContent = lineWidthSlider.value;
+        };
+    }
+    
+    const markerSizeSlider = domCache.get('plot-settings-marker-size');
+    const markerSizeValue = domCache.get('plot-settings-marker-size-value');
+    if (markerSizeSlider && markerSizeValue) {
+        markerSizeSlider.oninput = () => {
+            markerSizeValue.textContent = markerSizeSlider.value;
+        };
+    }
+    
+    // 모달 표시
+    const modal = domCache.get('plot-settings-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+    }
+};
+
+// 현재 trace의 설정 로드
+function loadTraceSettings(plotManager, traceIndex) {
+    const trace = plotManager.traces[traceIndex];
+    if (!trace) return;
+    
+    // 색상
+    const colorInput = domCache.get('plot-settings-color');
+    if (colorInput && trace.line && trace.line.color) {
+        colorInput.value = trace.line.color;
+    }
+    
+    // 선 스타일
+    const lineStyleSelect = domCache.get('plot-settings-line-style');
+    if (lineStyleSelect && trace.line && trace.line.dash) {
+        lineStyleSelect.value = trace.line.dash;
+    }
+    
+    // 마커 스타일
+    const markerStyleSelect = domCache.get('plot-settings-marker-style');
+    if (markerStyleSelect) {
+        if (trace.mode === 'lines') {
+            markerStyleSelect.value = 'none';
+        } else if (trace.marker && trace.marker.symbol) {
+            markerStyleSelect.value = trace.marker.symbol;
+        }
+    }
+    
+    // 선 두께
+    const lineWidthSlider = domCache.get('plot-settings-line-width');
+    const lineWidthValue = domCache.get('plot-settings-line-width-value');
+    if (lineWidthSlider && trace.line && trace.line.width) {
+        lineWidthSlider.value = trace.line.width;
+        if (lineWidthValue) {
+            lineWidthValue.textContent = trace.line.width;
+        }
+    }
+    
+    // 마커 크기
+    const markerSizeSlider = domCache.get('plot-settings-marker-size');
+    const markerSizeValue = domCache.get('plot-settings-marker-size-value');
+    if (markerSizeSlider && trace.marker && trace.marker.size) {
+        markerSizeSlider.value = trace.marker.size;
+        if (markerSizeValue) {
+            markerSizeValue.textContent = trace.marker.size;
+        }
+    }
+    
+    // 그리드 표시 (layout 설정)
+    const showGridCheckbox = domCache.get('plot-settings-show-grid');
+    if (showGridCheckbox && plotManager.layout) {
+        const showGrid = plotManager.layout.xaxis?.showgrid !== false;
+        showGridCheckbox.checked = showGrid;
+    }
+    
+    // X축 라벨
+    const xaxisLabelInput = domCache.get('plot-settings-xaxis-label');
+    if (xaxisLabelInput && plotManager.layout && plotManager.layout.xaxis) {
+        xaxisLabelInput.value = plotManager.layout.xaxis.title?.text || '';
+    }
+    
+    // Y축 라벨
+    const yaxisLabelInput = domCache.get('plot-settings-yaxis-label');
+    if (yaxisLabelInput && plotManager.layout && plotManager.layout.yaxis) {
+        yaxisLabelInput.value = plotManager.layout.yaxis.title?.text || '';
+    }
+}
+
+// Plot Settings 모달 닫기
+window.closePlotSettings = function() {
+    console.log('[closePlotSettings] Closing settings modal');
+    
+    const modal = domCache.get('plot-settings-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    
+    currentPlotSettingsPlotId = null;
+};
+
+// Plot Settings 적용
+window.applyPlotSettings = function() {
+    console.log('[applyPlotSettings] Applying settings');
+    
+    if (!currentPlotSettingsPlotId) {
+        console.error('[applyPlotSettings] No plot ID set');
+        return;
+    }
+    
+    // 현재 플롯의 PlotlyPlotManager 가져오기
+    const plotManager = plotState.plotTabManager.getPlotManager(currentPlotSettingsPlotId);
+    if (!plotManager || !plotManager.isInitialized) {
+        console.error('[applyPlotSettings] Plot manager not found or not initialized');
+        return;
+    }
+    
+    // 모든 설정 값 읽기
+    const traceIndex = parseInt(domCache.get('plot-settings-trace-select')?.value || 0);
+    const color = domCache.get('plot-settings-color')?.value;
+    const lineStyle = domCache.get('plot-settings-line-style')?.value;
+    const markerStyle = domCache.get('plot-settings-marker-style')?.value;
+    const lineWidth = parseFloat(domCache.get('plot-settings-line-width')?.value);
+    const markerSize = parseFloat(domCache.get('plot-settings-marker-size')?.value);
+    const showGrid = domCache.get('plot-settings-show-grid')?.checked;
+    const xaxisLabel = domCache.get('plot-settings-xaxis-label')?.value;
+    const yaxisLabel = domCache.get('plot-settings-yaxis-label')?.value;
+    
+    // 설정 객체 생성
+    const settings = {
+        traceIndex,
+        color,
+        lineStyle,
+        markerStyle,
+        lineWidth,
+        markerSize,
+        showGrid,
+        xaxisLabel,
+        yaxisLabel
+    };
+    
+    // PlotlyPlotManager의 applyTraceSettings() 메서드 호출
+    plotManager.applyTraceSettings(settings);
+    
+    // 모달 닫기
+    window.closePlotSettings();
+};
+
+// 모달 외부 클릭 시 닫기
+window.addEventListener('click', (event) => {
+    const modal = domCache.get('plot-settings-modal');
+    if (event.target === modal) {
+        window.closePlotSettings();
+    }
+});
 
 // ==============================================================
 // 페이지 로드 시 초기화

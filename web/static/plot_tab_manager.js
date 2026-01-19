@@ -479,6 +479,12 @@ class PlotTabManager {
         return tab ? tab.plotManager : null;
     }
 
+    getPlotManager(plotId) {
+        // plotId는 containerId와 동일 (예: "plot-container-tab-1")
+        const tab = this.tabs.find(t => t.plotManager && t.plotManager.containerId === plotId);
+        return tab ? tab.plotManager : null;
+    }
+
     setBufferTime(bufferTime) {
         this.bufferTime = bufferTime;
         // 모든 탭의 PlotlyPlotManager에 버퍼 시간 설정

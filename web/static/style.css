@@ -743,3 +743,102 @@ h3 {
     display: block;
 }
 
+/* Plot Settings Modal Styles */
+#plot-settings-modal .form-group {
+    margin-bottom: 16px;
+}
+
+#plot-settings-modal .form-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+#plot-settings-modal input[type="text"],
+#plot-settings-modal select {
+    width: 100%;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 14px;
+}
+
+#plot-settings-modal input[type="text"]:focus,
+#plot-settings-modal select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(74, 214, 255, 0.15);
+}
+
+#plot-settings-modal input[type="color"] {
+    width: 100%;
+    height: 40px;
+    padding: 4px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+#plot-settings-modal input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+
+#plot-settings-modal input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 6px;
+}
+
+#plot-settings-modal input[type="range"] {
+    width: 100%;
+    height: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 5px;
+    outline: none;
+    -webkit-appearance: none;
+}
+
+#plot-settings-modal input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: var(--accent);
+    cursor: pointer;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+#plot-settings-modal input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    background: var(--accent);
+    cursor: pointer;
+    border-radius: 50%;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+#plot-settings-modal input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    margin-right: 8px;
+    cursor: pointer;
+    accent-color: var(--accent);
+}
+
+#plot-settings-modal .form-group label:has(input[type="checkbox"]) {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+#plot-settings-line-width-value,
+#plot-settings-marker-size-value {
+    color: var(--accent);
+    font-weight: 600;
+}
+
