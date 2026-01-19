@@ -67,9 +67,17 @@ class PlotlyPlotManager {
         this.lastUpdateTime = 0;
         this.pendingUpdate = false;
         this.firstTimestamp = null;    // 첫 데이터 포인트의 timestamp (t0 기준)
-        this.t0Mode = false;           // t0 모드 (상대 시간 표시)
+        this.t0Mode = true;            // t0 모드 (상대 시간 표시) - 디폴트 true로 변경
         this.isPaused = false;         // 일시정지 상태
         this.autoScaleRange = null;    // 오토 스케일 범위 (줌 제한용)
+        this.panMode = false;          // Pan 모드 활성화 여부
+        this.panStartPos = null;        // Pan 시작 위치
+        this.panHandlers = [];
+        this.panLastUpdateTime = 0;     // Pan 업데이트 throttling용
+        this.panThrottleMs = 16;        // ~60Hz (약 16ms)
+        this.panMousemoveHandler = null; // Pan mousemove 핸들러 (인스턴스 변수로 변경하여 제거 가능하도록)
+        this.plotDeletionSetup = false;  // Plot 삭제 기능 설정 여부
+        this.hoveredTraceIndex = null;   // 현재 hover된 trace index         // Pan 이벤트 핸들러 저장
     }
 
     init() {
@@ -131,7 +139,8 @@ class PlotlyPlotManager {
                 type: 'scatter',
                 line: {
                     width: 2
-                }
+                },
+                hovertemplate: '%{y:.6f}<extra></extra>'  // Y값만 표시 (시간 제거)
             };
             this.traces.push(trace);
         });
@@ -147,7 +156,7 @@ class PlotlyPlotManager {
             },
             xaxis: {
                 title: {
-                    text: 'Time (seconds)',
+                    text: 'Time (seconds, relative to t0)',  // 디폴트로 상대 시간 표시
                     font: { color: '#000000' }
                 },
                 showgrid: true,
@@ -200,13 +209,19 @@ class PlotlyPlotManager {
             }
         };
 
-        // Plotly config 설정
+            // Plotly config 설정
         const config = {
             responsive: true,
             displayModeBar: true,
             modeBarButtonsToRemove: ['lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],  // +/-, reset axes 버튼 제거
             displaylogo: false,
             scrollZoom: true,  // 마우스 휠 줌 활성화 (일시정지 시에만 작동, dragmode로 제어)
+            hovermode: 'closest',  // Hover 모드 설정
+            hoverlabel: {
+                bgcolor: 'rgba(255, 255, 255, 0.9)',
+                bordercolor: '#000',
+                font: { color: '#000', size: 12 }
+            },
             modeBarButtonsToAdd: [
                 {
                     name: 'Pause/Play',
@@ -222,7 +237,7 @@ class PlotlyPlotManager {
                     }
                 },
                 {
-                    name: 't0 (Relative Time)',
+                    name: 'ROS Time (Absolute Time)',  // 버튼 이름 변경 (t0 모드가 기본이므로)
                     icon: {
                         width: 1000,
                         height: 1000,
@@ -268,6 +283,13 @@ class PlotlyPlotManager {
             Plotly.newPlot(this.containerId, this.traces, layout, config);
             this.isInitialized = true;
             
+            // 초기 상태 설정: 재생 중이면 dragmode를 false로 설정 (줌/팬 비활성화)
+            if (!this.isPaused) {
+                const plotDiv = document.getElementById(this.containerId);
+                Plotly.relayout(this.containerId, { dragmode: false });
+                console.log('[PlotlyPlotManager] Initial dragmode set to false (playing mode)');
+            }
+            
             // 타이틀 더블클릭 이벤트 추가
             this.setupTitleEditor();
             
@@ -285,6 +307,12 @@ class PlotlyPlotManager {
             // 초기 상태(재생)에서는 버튼 비활성화 상태로 표시
             setTimeout(() => this.updateModeBarButtonStates(), 200);
             
+            // Hover tooltip 커스터마이징
+            this.setupCustomHover();
+            
+            // Plot 데이터 및 Legend에서 plot 삭제 기능
+            this.setupPlotDeletion();
+            
             console.log('[PlotlyPlotManager] Plot created successfully');
             return true;
         } catch (error) {
@@ -299,6 +327,26 @@ class PlotlyPlotManager {
         
         // 기존 컨텍스트 메뉴 제거
         plotDiv.addEventListener('contextmenu', (e) => {
+            // delete plot 메뉴가 표시되는 경우 기존 메뉴는 표시하지 않음
+            if (this.hoveredTraceIndex !== null) {
+                // Plot 데이터 위에 마우스가 있으면 기존 메뉴 표시 안함
+                return;
+            }
+            
+            // Legend 영역 확인
+            const legend = plotDiv.querySelector('.legend');
+            if (legend) {
+                const legendRect = legend.getBoundingClientRect();
+                const mouseX = e.clientX;
+                const mouseY = e.clientY;
+                
+                if (mouseX >= legendRect.left && mouseX <= legendRect.right &&
+                    mouseY >= legendRect.top && mouseY <= legendRect.bottom) {
+                    // Legend 위에 있으면 기존 메뉴 표시 안함
+                    return;
+                }
+            }
+            
             e.preventDefault();
             
             // 마우스 위치 저장 (plot 영역 기준)
@@ -381,6 +429,612 @@ class PlotlyPlotManager {
                 document.addEventListener('click', closeMenu);
             }, 100);
         });
+    }
+
+    setupCustomHover() {
+        const plotDiv = document.getElementById(this.containerId);
+        if (!plotDiv) {
+            return;
+        }
+        
+        // Hover 시 Y값만 표시 - plotly_hover 이벤트로 직접 수정
+        let hoverTimeout = null;
+        
+        plotDiv.on('plotly_hover', (data) => {
+            if (!data || !data.points || data.points.length === 0) {
+                return;
+            }
+            
+            if (hoverTimeout) {
+                clearTimeout(hoverTimeout);
+            }
+            
+            // Plotly가 tooltip을 생성한 후 수정
+            hoverTimeout = setTimeout(() => {
+                const hoverLayer = plotDiv.querySelector('.hoverlayer');
+                if (hoverLayer) {
+                    const tooltips = hoverLayer.querySelectorAll('g.hovertext');
+                    
+                    // Y값 저장 (클로저 문제 해결)
+                    const yValues = data.points.map(p => p.y !== undefined ? p.y : 0);
+                    
+                    // tooltip 수정 함수 (매번 tooltips를 다시 찾아서 최신 상태 유지)
+                    const modifyTooltips = () => {
+                        const currentHoverLayer = plotDiv.querySelector('.hoverlayer');
+                        if (!currentHoverLayer) return;
+                        
+                        const currentTooltips = currentHoverLayer.querySelectorAll('g.hovertext');
+                        currentTooltips.forEach((tooltipGroup, index) => {
+                            if (yValues[index] !== undefined) {
+                                const yValue = yValues[index];
+                                
+                                // tooltip의 모든 text 요소 찾기
+                                const textElements = tooltipGroup.querySelectorAll('text, tspan');
+                                textElements.forEach((textEl) => {
+                                    const text = textEl.textContent || '';
+                                    // time이 포함된 경우 (괄호, 쉼표, 과학적 표기법, 또는 숫자,쉼표,숫자 형식) Y값만 표시
+                                    const hasComma = text.includes(',');
+                                    const hasParen = text.includes('(');
+                                    const hasScientific = text.match(/^\d+\.\d+e[+-]\d+/i) !== null;
+                                    const hasComplexFormat = text.match(/^\d+\.\d+e\+\d+.*,.*-?\d/) !== null;
+                                    const shouldModify = hasComma || hasParen || hasScientific || hasComplexFormat;
+                                    
+                                    if (shouldModify) {
+                                        const newText = (typeof yValue === 'number') ? yValue.toFixed(6) : String(yValue);
+                                        textEl.textContent = newText;
+                                    }
+                                });
+                            }
+                        });
+                    };
+                    
+                    // 즉시 수정
+                    modifyTooltips();
+                    
+                    // Plotly가 tooltip을 계속 업데이트하므로 MutationObserver로 감시
+                    // 기존 observer가 있으면 disconnect
+                    if (this.hoverObserver) {
+                        this.hoverObserver.disconnect();
+                    }
+                    
+                    // hoverLayer 전체를 관찰 (더 확실함)
+                    this.hoverObserver = new MutationObserver(() => {
+                        modifyTooltips();
+                    });
+                    
+                    this.hoverObserver.observe(hoverLayer, {
+                        childList: true,
+                        subtree: true,
+                        characterData: true
+                    });
+                    
+                    // 주기적으로도 체크 (MutationObserver가 놓칠 수 있음)
+                    if (this.hoverCheckInterval) {
+                        clearInterval(this.hoverCheckInterval);
+                    }
+                    this.hoverCheckInterval = setInterval(() => {
+                        modifyTooltips();
+                    }, 100);
+                }
+            }, 50);
+        });
+        
+        plotDiv.on('plotly_unhover', () => {
+            if (hoverTimeout) {
+                clearTimeout(hoverTimeout);
+                hoverTimeout = null;
+            }
+            
+            // MutationObserver 정리
+            if (this.hoverObserver) {
+                this.hoverObserver.disconnect();
+                this.hoverObserver = null;
+            }
+            
+            // Interval 정리
+            if (this.hoverCheckInterval) {
+                clearInterval(this.hoverCheckInterval);
+                this.hoverCheckInterval = null;
+            }
+        });
+    }
+
+    setupPlotDeletion() {
+        // 이미 설정되어 있으면 스킵 (중복 방지)
+        if (this.plotDeletionSetup) {
+            return;
+        }
+        
+        const plotDiv = document.getElementById(this.containerId);
+        if (!plotDiv) {
+            return;
+        }
+        
+        this.plotDeletionSetup = true;
+        
+        // Plot 데이터 위 마우스 오버레이 감지
+        const hoverHandler = (data) => {
+            if (data && data.points && data.points.length > 0) {
+                this.hoveredTraceIndex = data.points[0].curveNumber;
+            }
+        };
+        
+        const unhoverHandler = () => {
+            this.hoveredTraceIndex = null;
+        };
+        
+        plotDiv.on('plotly_hover', hoverHandler);
+        plotDiv.on('plotly_unhover', unhoverHandler);
+        
+        // 통합 contextmenu 핸들러 (Plot 데이터 + Legend)
+        const contextMenuHandler = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            
+            // 기존 컨텍스트 메뉴 제거 (delete plot이 표시되면 기존 메뉴는 표시하지 않음)
+            const existingContextMenu = document.getElementById('plot-context-menu');
+            if (existingContextMenu) {
+                existingContextMenu.remove();
+            }
+            
+            const existingDeleteMenu = document.getElementById('plot-delete-menu');
+            if (existingDeleteMenu) {
+                existingDeleteMenu.remove();
+            }
+            
+            let targetTraceIndex = null;
+            let isPlotData = false;
+            let isLegend = false;
+            
+            // 1. Plot 데이터 위에 마우스가 있는지 확인
+            if (this.hoveredTraceIndex !== null) {
+                targetTraceIndex = this.hoveredTraceIndex;
+                isPlotData = true;
+            } else {
+                // 2. Legend 영역 확인
+                const legend = plotDiv.querySelector('.legend');
+                if (legend) {
+                    const legendRect = legend.getBoundingClientRect();
+                    const mouseX = e.clientX;
+                    const mouseY = e.clientY;
+                    
+                    if (mouseX >= legendRect.left && mouseX <= legendRect.right &&
+                        mouseY >= legendRect.top && mouseY <= legendRect.bottom) {
+                        isLegend = true;
+                        
+                        // Legend의 rect 요소들 확인
+                        const legendRects = legend.querySelectorAll('rect');
+                        for (let i = 0; i < legendRects.length; i++) {
+                            const rect = legendRects[i];
+                            const rectBounds = rect.getBoundingClientRect();
+                            if (mouseX >= rectBounds.left && mouseX <= rectBounds.right &&
+                                mouseY >= rectBounds.top && mouseY <= rectBounds.bottom) {
+                                // 부모 요소에서 trace index 찾기
+                                let parent = rect.parentElement;
+                                while (parent && parent !== legend) {
+                                    if (parent.classList.contains('traces')) {
+                                        const traceIndex = Array.from(legend.querySelectorAll('.traces')).indexOf(parent);
+                                        if (traceIndex !== -1) {
+                                            targetTraceIndex = traceIndex;
+                                            break;
+                                        }
+                                    }
+                                    parent = parent.parentElement;
+                                }
+                                break;
+                            }
+                        }
+                        
+                        // Fallback: 마우스 위치 기반으로 가장 가까운 trace 찾기
+                        if (targetTraceIndex === null) {
+                            let minDist = Infinity;
+                            const legendItems = legend.querySelectorAll('.traces');
+                            legendItems.forEach((item, index) => {
+                                const itemRect = item.getBoundingClientRect();
+                                const centerY = itemRect.top + itemRect.height / 2;
+                                const dist = Math.abs(mouseY - centerY);
+                                if (dist < minDist) {
+                                    minDist = dist;
+                                    targetTraceIndex = index;
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+            
+            // Plot 데이터 또는 Legend 위에서만 메뉴 표시
+            if ((isPlotData || isLegend) && targetTraceIndex !== null && targetTraceIndex < this.traces.length) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation(); // 다른 이벤트 리스너 차단
+                
+                // Legend 위에서 오른쪽 클릭 후 발생하는 자동 토글 방지
+                if (isLegend) {
+                    // Plotly의 legend 더블클릭 이벤트 차단
+                    const blockLegendDoubleClick = (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        event.stopImmediatePropagation();
+                        plotDiv.off('plotly_legenddoubleclick', blockLegendDoubleClick);
+                    };
+                    
+                    // 짧은 시간 동안 legend 더블클릭 차단
+                    plotDiv.on('plotly_legenddoubleclick', blockLegendDoubleClick);
+                    setTimeout(() => {
+                        plotDiv.off('plotly_legenddoubleclick', blockLegendDoubleClick);
+                    }, 500);
+                    
+                    // Legend 클릭 이벤트도 capture phase에서 차단
+                    const legend = plotDiv.querySelector('.legend');
+                    if (legend) {
+                        // 모든 마우스 이벤트 차단
+                        const blockAllMouseEvents = (mouseEvent) => {
+                            // 오른쪽 클릭 직후 발생하는 모든 마우스 이벤트 차단
+                            mouseEvent.preventDefault();
+                            mouseEvent.stopPropagation();
+                            mouseEvent.stopImmediatePropagation();
+                        };
+                        
+                        // capture phase에서 차단 (Plotly보다 먼저 실행)
+                        legend.addEventListener('click', blockAllMouseEvents, true);
+                        legend.addEventListener('mousedown', blockAllMouseEvents, true);
+                        legend.addEventListener('mouseup', blockAllMouseEvents, true);
+                        legend.addEventListener('dblclick', blockAllMouseEvents, true);
+                        
+                        // 500ms 후 자동 제거
+                        setTimeout(() => {
+                            legend.removeEventListener('click', blockAllMouseEvents, true);
+                            legend.removeEventListener('mousedown', blockAllMouseEvents, true);
+                            legend.removeEventListener('mouseup', blockAllMouseEvents, true);
+                            legend.removeEventListener('dblclick', blockAllMouseEvents, true);
+                        }, 500);
+                    }
+                }
+                
+                const menu = document.createElement('div');
+                menu.id = 'plot-delete-menu';
+                menu.style.cssText = `
+                    position: absolute;
+                    left: ${e.pageX}px;
+                    top: ${e.pageY}px;
+                    background: #ffffff;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                    z-index: 10001;
+                    font-size: 13px;
+                    min-width: 150px;
+                `;
+                
+                const menuItem = document.createElement('div');
+                menuItem.textContent = '🗑️ Delete plot';
+                menuItem.style.cssText = `
+                    padding: 8px 16px;
+                    cursor: pointer;
+                    color: #000;
+                    background: transparent;
+                `;
+                
+                menuItem.onmouseenter = () => {
+                    menuItem.style.background = '#f0f0f0';
+                };
+                menuItem.onmouseleave = () => {
+                    menuItem.style.background = 'transparent';
+                };
+                menuItem.onclick = () => {
+                    this.deleteTrace(targetTraceIndex);
+                    menu.remove();
+                };
+                
+                menu.appendChild(menuItem);
+                document.body.appendChild(menu);
+                
+                // 외부 클릭 시 메뉴 닫기
+                const closeMenu = (event) => {
+                    if (!menu.contains(event.target)) {
+                        menu.remove();
+                        document.removeEventListener('click', closeMenu);
+                    }
+                };
+                setTimeout(() => {
+                    document.addEventListener('click', closeMenu);
+                }, 100);
+                
+                return false; // 이벤트 전파 차단
+            }
+        };
+        
+        // contextmenu 이벤트는 capture phase에서 먼저 처리하여 setupContextMenu보다 우선
+        plotDiv.addEventListener('contextmenu', contextMenuHandler, true);
+    }
+
+    deleteTrace(traceIndex) {
+        if (traceIndex === null || traceIndex < 0 || traceIndex >= this.traces.length) {
+            console.warn(`[PlotlyPlotManager] Invalid trace index: ${traceIndex}`);
+            return;
+        }
+        
+        const trace = this.traces[traceIndex];
+        const path = trace.name;
+        
+        console.log(`[PlotlyPlotManager] Deleting trace: ${path} (index: ${traceIndex})`);
+        
+        // DataBuffer에서 제거
+        if (this.dataBuffers.has(path)) {
+            this.dataBuffers.delete(path);
+        }
+        
+        // Trace 제거
+        this.traces.splice(traceIndex, 1);
+        
+        // Plotly에서 trace 제거
+        try {
+            Plotly.deleteTraces(this.containerId, traceIndex);
+            console.log(`[PlotlyPlotManager] Trace deleted successfully`);
+        } catch (error) {
+            console.error('[PlotlyPlotManager] Failed to delete trace:', error);
+            // Plotly.react로 전체 다시 렌더링
+            const plotDiv = document.getElementById(this.containerId);
+            const currentLayout = plotDiv.layout;
+            Plotly.react(this.containerId, this.traces, currentLayout);
+        }
+        
+        // addTraces 후 plot 삭제 기능 재설정 (이벤트 리스너 재등록)
+        this.plotDeletionSetup = false;
+        setTimeout(() => {
+            this.setupPlotDeletion();
+        }, 100);
+    }
+
+    setupPanControl() {
+        const plotDiv = document.getElementById(this.containerId);
+        if (!plotDiv) {
+            return;
+        }
+        
+        // 이미 활성화되어 있으면 기존 핸들러 제거 후 재등록 (안전장치)
+        if (this.panMode) {
+            // 기존 핸들러 제거
+            this.panHandlers.forEach(({ element, event, handler, useCapture }) => {
+                element.removeEventListener(event, handler, useCapture || false);
+            });
+            if (this.panMousemoveHandler) {
+                document.removeEventListener('mousemove', this.panMousemoveHandler);
+                this.panMousemoveHandler = null;
+            }
+            this.panHandlers = [];
+        }
+        
+        this.panMode = true;
+        
+        // H2: 기존 mousemove 핸들러가 남아있으면 먼저 제거 (안전장치)
+        if (this.panMousemoveHandler) {
+            document.removeEventListener('mousemove', this.panMousemoveHandler);
+            this.panMousemoveHandler = null;
+        }
+        
+        // 중간 버튼(휠 클릭) mousedown 이벤트 (먼저 정의하고 등록하여 panStartPos를 먼저 설정)
+        const mousedownHandler = (e) => {
+            // 중간 버튼이 아니면 아무것도 하지 않음 (Plotly 기본 동작 허용)
+            if (e.button !== 1) {
+                return;
+            }
+            
+            // 일시정지 상태가 아니면 아무것도 하지 않음
+            if (!this.isPaused) {
+                return;
+            }
+            
+            // 중간 버튼이고 일시정지 상태일 때만 처리 (줌 모드에서도 작동)
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            
+            // Plotly의 dragmode를 false로 설정하여 모든 드래그 동작 차단
+            const currentDragmode = plotDiv.layout.dragmode || 'zoom';
+            this.savedDragmode = currentDragmode;
+            
+            console.log(`[PlotlyPlotManager] Middle button pan started (saved dragmode: ${currentDragmode})`);
+            
+            // panStartPos를 설정 (globalDragBlockers가 이미 등록되어 있으므로 즉시 차단 시작)
+            this.panStartPos = {
+                x: e.clientX,
+                y: e.clientY
+            };
+            
+            // dragmode를 false로 설정 (Plotly가 드래그를 완전히 비활성화)
+            Plotly.relayout(plotDiv, { dragmode: false });
+            
+            // Plotly의 드래그 핸들러를 직접 비활성화
+            // plotDiv의 _fullLayout에서 dragmode 강제 설정
+            if (plotDiv._fullLayout) {
+                plotDiv._fullLayout.dragmode = false;
+            }
+                
+                // 현재 plot 범위 저장
+                const layout = plotDiv.layout;
+                this.panStartRange = {
+                    x: layout.xaxis && layout.xaxis.range ? [...layout.xaxis.range] : null,
+                    y: layout.yaxis && layout.yaxis.range ? [...layout.yaxis.range] : null
+                };
+                
+                // 범위가 없으면 autorange 상태이므로 현재 범위를 가져와야 함
+                if (!this.panStartRange.x || !this.panStartRange.y) {
+                    const xaxis = plotDiv._fullLayout.xaxis;
+                    const yaxis = plotDiv._fullLayout.yaxis;
+                    if (xaxis && yaxis) {
+                        this.panStartRange = {
+                            x: [xaxis._rl[0], xaxis._rl[1]],
+                            y: [yaxis._rl[0], yaxis._rl[1]]
+                        };
+                    }
+                }
+                
+                plotDiv.style.cursor = 'grabbing';
+                
+                // mousemove 핸들러 동적 등록 (Pan 시작 시에만)
+                // H2: 인스턴스 변수에 저장하여 removePanControl에서 제거 가능하도록
+                this.panMousemoveHandler = (moveEvent) => {
+                    if (!this.panStartPos || moveEvent.buttons !== 4) {
+                        return;
+                    }
+                    
+                    if (!this.isPaused) {
+                        return;
+                    }
+                    
+                    // Throttling: 너무 자주 업데이트하지 않음
+                    const now = Date.now();
+                    if (now - this.panLastUpdateTime < this.panThrottleMs) {
+                        return;
+                    }
+                    this.panLastUpdateTime = now;
+                    
+                    moveEvent.preventDefault();
+                    moveEvent.stopPropagation();
+                    
+                    const deltaX = moveEvent.clientX - this.panStartPos.x;
+                    const deltaY = moveEvent.clientY - this.panStartPos.y;
+                    
+                    // Plot 영역 크기
+                    const rect = plotDiv.getBoundingClientRect();
+                    const plotWidth = rect.width;
+                    const plotHeight = rect.height;
+                    
+                    // 범위 변화량 계산
+                    if (this.panStartRange && this.panStartRange.x && this.panStartRange.y) {
+                        const xRange = this.panStartRange.x[1] - this.panStartRange.x[0];
+                        const yRange = this.panStartRange.y[1] - this.panStartRange.y[0];
+                        
+                        const deltaXRange = -(deltaX / plotWidth) * xRange;
+                        const deltaYRange = (deltaY / plotHeight) * yRange; // Y축은 반대
+                        
+                        const newXRange = [
+                            this.panStartRange.x[0] + deltaXRange,
+                            this.panStartRange.x[1] + deltaXRange
+                        ];
+                        const newYRange = [
+                            this.panStartRange.y[0] + deltaYRange,
+                            this.panStartRange.y[1] + deltaYRange
+                        ];
+                        
+                        Plotly.relayout(this.containerId, {
+                            'xaxis.range': newXRange,
+                            'yaxis.range': newYRange,
+                            'xaxis.autorange': false,
+                            'yaxis.autorange': false
+                        });
+                    }
+                };
+                
+                document.addEventListener('mousemove', this.panMousemoveHandler);
+                console.log('[PlotlyPlotManager] Pan started');
+        };
+        
+        // mouseup 이벤트 (전역)
+        const mouseupHandler = (e) => {
+            if (e.button === 1 && this.panStartPos !== null) { // 중간 버튼이 눌려있었던 경우
+                // mousemove 핸들러 제거
+                if (this.panMousemoveHandler) {
+                    document.removeEventListener('mousemove', this.panMousemoveHandler);
+                    this.panMousemoveHandler = null;
+                }
+                
+                // dragmode 복원
+                const restoreDragmode = this.savedDragmode || 'zoom';
+                Plotly.relayout(plotDiv, { dragmode: restoreDragmode });
+                
+                // _fullLayout도 복원
+                if (plotDiv._fullLayout) {
+                    plotDiv._fullLayout.dragmode = restoreDragmode;
+                }
+                
+                this.panStartPos = null;
+                this.panStartRange = null;
+                this.panLastUpdateTime = 0;
+                if (plotDiv) {
+                    plotDiv.style.cursor = '';
+                }
+                console.log('[PlotlyPlotManager] Pan ended');
+            }
+        };
+        
+        // 이벤트 리스너 등록
+        // 1. mousedownHandler를 capture phase로 먼저 등록하여 panStartPos를 먼저 설정
+        plotDiv.addEventListener('mousedown', mousedownHandler, true);
+        
+        // 2. 왼쪽 버튼 드래그 차단 핸들러 정의 및 등록 (mousedownHandler 다음에 실행되도록)
+        const blockLeftButtonDrag = (dragEvent) => {
+            // pan 중일 때만 왼쪽 버튼 차단
+            if (dragEvent.button === 0 && this.panStartPos !== null) {
+                dragEvent.preventDefault();
+                dragEvent.stopPropagation();
+                dragEvent.stopImmediatePropagation();
+                return false;
+            }
+        };
+        
+        // blockLeftButtonDrag를 capture phase로 등록 (mousedownHandler 다음에 등록)
+        plotDiv.addEventListener('mousedown', blockLeftButtonDrag, true);
+        document.addEventListener('mousedown', blockLeftButtonDrag, true);
+        window.addEventListener('mousedown', blockLeftButtonDrag, true);
+        
+        // mouseup 이벤트 등록
+        document.addEventListener('mouseup', mouseupHandler, false);
+        
+        // 핸들러 저장 (나중에 제거하기 위해)
+        this.panHandlers = [
+            { element: plotDiv, event: 'mousedown', handler: mousedownHandler, useCapture: true },
+            { element: document, event: 'mouseup', handler: mouseupHandler, useCapture: false }
+        ];
+        
+        this.globalDragBlockers = [
+            { element: plotDiv, event: 'mousedown', handler: blockLeftButtonDrag, useCapture: true },
+            { element: document, event: 'mousedown', handler: blockLeftButtonDrag, useCapture: true },
+            { element: window, event: 'mousedown', handler: blockLeftButtonDrag, useCapture: true }
+        ];
+        
+        console.log('[PlotlyPlotManager] Pan control enabled (middle button)');
+    }
+
+    removePanControl() {
+        if (!this.panMode) {
+            return; // 이미 비활성화됨
+        }
+        
+        // 이벤트 리스너 제거
+        this.panHandlers.forEach(({ element, event, handler, useCapture }) => {
+            element.removeEventListener(event, handler, useCapture || false);
+        });
+        
+        // H2: mousemove 핸들러 제거 (인스턴스 변수로 변경했으므로 여기서 제거 가능)
+        if (this.panMousemoveHandler) {
+            document.removeEventListener('mousemove', this.panMousemoveHandler);
+            this.panMousemoveHandler = null;
+        }
+        
+        // globalDragBlockers 제거
+        if (this.globalDragBlockers) {
+            this.globalDragBlockers.forEach(({ element, event, handler, useCapture }) => {
+                element.removeEventListener(event, handler, useCapture);
+            });
+            this.globalDragBlockers = null;
+        }
+        
+        this.panHandlers = [];
+        this.panMode = false;
+        this.panStartPos = null;
+        this.panStartRange = null;
+        this.panLastUpdateTime = 0;
+        
+        const plotDiv = document.getElementById(this.containerId);
+        if (plotDiv) {
+            plotDiv.style.cursor = '';
+        }
+        
+        console.log('[PlotlyPlotManager] Pan control disabled');
     }
 
     savePlotToFile() {
@@ -472,7 +1126,37 @@ class PlotlyPlotManager {
             // 일시정지 상태에서는 기본 줌 동작 허용
         }, { passive: false, capture: true });
         
-        console.log('[PlotlyPlotManager] Wheel control setup (paused mode only)');
+        // 오른쪽 클릭 시 줌 방지 (일시정지 상태에서 줌 버튼이 활성화되어 있을 때)
+        plotDiv.addEventListener('contextmenu', (e) => {
+            // 일시정지 상태에서 dragmode가 zoom이면 오른쪽 클릭 차단
+            if (this.isPaused && plotDiv.layout && plotDiv.layout.dragmode === 'zoom') {
+                // Plotly의 오른쪽 클릭 줌 방지
+                // 하지만 contextmenu는 허용 (setupContextMenu에서 처리)
+                // 여기서는 Plotly의 내부 줌 핸들러만 차단
+                const target = e.target;
+                const isPlotArea = target.closest('.plot-container') && !target.closest('.modebar');
+                
+                if (isPlotArea) {
+                    // Plotly의 오른쪽 클릭 줌 핸들러를 차단하기 위해
+                    // mousedown 이벤트에서 차단하는 것이 더 효과적
+                    // 여기서는 contextmenu만 통과시키고 Plotly 내부 줌은 차단
+                }
+            }
+        }, { passive: false, capture: true });
+        
+        // mousedown 이벤트에서 오른쪽 클릭 줌 차단
+        plotDiv.addEventListener('mousedown', (e) => {
+            // 오른쪽 버튼 (button === 2) 및 일시정지 상태에서 zoom 모드인 경우
+            if (e.button === 2 && this.isPaused && plotDiv.layout && plotDiv.layout.dragmode === 'zoom') {
+                // Plotly의 줌 핸들러 차단
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                // contextmenu는 허용하기 위해 preventDefault는 호출하지 않음
+                console.log('[PlotlyPlotManager] Right-click zoom blocked (zoom mode)');
+            }
+        }, { passive: false, capture: true });
+        
+        console.log('[PlotlyPlotManager] Wheel control setup (paused mode only, right-click zoom blocked)');
     }
 
     _isZoomPanModeBarButtonTitle(title) {
@@ -898,7 +1582,8 @@ class PlotlyPlotManager {
                 type: 'scatter',
                 line: {
                     width: 2
-                }
+                },
+                hovertemplate: '%{y:.6f}<extra></extra>'  // Y값만 표시 (시간 제거)
             };
             // this.traces에는 나중에 추가 (Plotly.addTraces 성공 후)
             newTraces.push(trace);
@@ -931,6 +1616,12 @@ class PlotlyPlotManager {
             const afterCount = plotDiv.data ? plotDiv.data.length : 0;
             console.log(`[PlotlyPlotManager] AFTER adding: Plotly has ${afterCount} traces (expected ${this.traces.length})`);
             console.log(`[PlotlyPlotManager] Added ${newTraces.length} traces successfully`);
+            
+            // addTraces 후 plot 삭제 기능 재설정 (legend hover 이벤트 재설정)
+            setTimeout(() => {
+                this.setupPlotDeletion();
+            }, 100);
+            
             return true;
         } catch (error) {
             console.error('[PlotlyPlotManager] Failed to add traces:', error);
@@ -940,15 +1631,15 @@ class PlotlyPlotManager {
 
     toggleT0Mode() {
         this.t0Mode = !this.t0Mode;
-        console.log(`[PlotlyPlotManager] t0 mode: ${this.t0Mode ? 'ON' : 'OFF'}`);
+        console.log(`[PlotlyPlotManager] t0 mode: ${this.t0Mode ? 'ON (Relative)' : 'OFF (Absolute ROS time)'}`);
         
         if (this.t0Mode && this.firstTimestamp === null) {
             console.warn('[PlotlyPlotManager] No data yet, t0 mode will activate when data arrives');
             return;
         }
         
-        // X축 라벨 변경
-        const xAxisTitle = this.t0Mode ? 'Time (seconds, relative to t0)' : 'Time (seconds)';
+        // X축 라벨 변경 (t0 모드가 디폴트이므로)
+        const xAxisTitle = this.t0Mode ? 'Time (seconds, relative to t0)' : 'Time (seconds, ROS time)';
         
         const plotDiv = document.getElementById(this.containerId);
         const layout = plotDiv && plotDiv.layout ? plotDiv.layout : null;
@@ -999,7 +1690,39 @@ class PlotlyPlotManager {
             this._updatePlotly();
         }
         
+        // 버튼 이름 업데이트 (디폴트가 t0 모드이므로 버튼 이름 반대로)
+        this.updateT0ButtonName();
+        
         console.log(`[PlotlyPlotManager] t0 mode toggled, X-axis ${this.t0Mode ? 'relative' : 'absolute'}`);
+    }
+
+    updateT0ButtonName() {
+        const plotDiv = document.getElementById(this.containerId);
+        const modeBar = plotDiv ? plotDiv.querySelector('.modebar') : null;
+        
+        if (modeBar) {
+            // 모든 버튼을 순회하여 t0/ROS Time 버튼 찾기
+            const buttons = modeBar.querySelectorAll('[data-title]');
+            let t0Button = null;
+            
+            for (const btn of buttons) {
+                const title = btn.getAttribute('data-title');
+                if (title && (title.includes('ROS Time') || title.includes('t0') || title.includes('Relative Time'))) {
+                    t0Button = btn;
+                    break;
+                }
+            }
+            
+            if (t0Button) {
+                // t0 모드 ON: 버튼 이름을 "ROS Time (Absolute Time)"으로
+                // t0 모드 OFF: 버튼 이름을 "t0 (Relative Time)"으로
+                const newTitle = this.t0Mode ? 'ROS Time (Absolute Time)' : 't0 (Relative Time)';
+                t0Button.setAttribute('data-title', newTitle);
+                console.log(`[PlotlyPlotManager] t0 button title changed to: ${newTitle}`);
+            } else {
+                console.warn('[PlotlyPlotManager] t0/ROS Time button not found');
+            }
+        }
     }
 
     togglePause() {
@@ -1014,8 +1737,13 @@ class PlotlyPlotManager {
                 'dragmode': 'zoom'  // 박스 선택으로 줌, 팬은 shift+드래그
             });
             
+            // Pan 컨트롤 활성화
+            this.setupPanControl();
+            
             console.log('[PlotlyPlotManager] Zoom/Pan enabled (paused mode)');
         } else {
+            // Pan 컨트롤 비활성화
+            this.removePanControl();
             // 재생: 자동 오토스케일 후 모든 상호작용 비활성화
             this.zoomOutAutoScale();  // 자동 오토스케일
             

@@ -132,6 +132,185 @@ function initPlotSubtab() {
     
     // 주기적으로 토픽 목록 갱신 시작
     startTopicRefresh();
+    
+    // PlotlyPlotManager 초기화 및 빈 plot 표시
+    if (!plotState.plotManager) {
+        console.log('[initPlotSubtab] Initializing PlotlyPlotManager with empty plot');
+        initEmptyPlot();
+    }
+}
+
+// 빈 plot 초기화 (처음 plot 탭 진입 시)
+function initEmptyPlot() {
+    // PlotArea의 안내 메시지 제거
+    const plotArea = document.getElementById('plot-area');
+    if (plotArea) {
+        plotArea.innerHTML = '';
+    }
+    
+    // PlotlyPlotManager 생성 (기본 5초 버퍼)
+    plotState.plotManager = new PlotlyPlotManager('plot-area', 5);
+    
+    // 빈 plot 생성 (더미 데이터로 초기화)
+    if (plotState.plotManager.init()) {
+        // 빈 trace로 plot 생성
+        const dummyPath = '_empty_plot_';
+        plotState.plotManager.createPlot([dummyPath]);
+        
+        // 즉시 더미 buffer 제거 (UI만 표시)
+        plotState.plotManager.dataBuffers.delete(dummyPath);
+        plotState.plotManager.traces = [];
+        
+        // 빈 plot으로 다시 렌더링
+        const plotDiv = document.getElementById('plot-area');
+        const layout = {
+            title: {
+                text: 'Plot Area (Drag and drop data from left panel)',
+                font: {
+                    color: '#000000',
+                    size: 14
+                }
+            },
+            xaxis: {
+                title: {
+                    text: 'Time (seconds, relative to t0)',  // 디폴트로 상대 시간 표시
+                    font: { color: '#000000' }
+                },
+                showgrid: true,
+                gridcolor: '#cccccc',
+                gridwidth: 1,
+                zeroline: true,
+                zerolinecolor: '#000000',
+                zerolinewidth: 1,
+                tickfont: { color: '#000000' },
+                exponentformat: 'e',
+                showexponent: 'all'
+            },
+            yaxis: {
+                title: {
+                    text: 'Value',
+                    font: { color: '#000000' }
+                },
+                showgrid: true,
+                gridcolor: '#cccccc',
+                gridwidth: 1,
+                zeroline: true,
+                zerolinecolor: '#000000',
+                zerolinewidth: 1,
+                tickfont: { color: '#000000' },
+                exponentformat: 'e',
+                showexponent: 'all'
+            },
+            showlegend: true,
+            legend: {
+                x: 1,
+                xanchor: 'right',
+                y: 1,
+                yanchor: 'top',
+                bgcolor: 'rgba(255, 255, 255, 0.9)',
+                bordercolor: '#000000',
+                borderwidth: 1,
+                font: { color: '#000000' }
+            },
+            margin: {
+                l: 60,
+                r: 120,
+                b: 50,
+                t: 50
+            },
+            paper_bgcolor: '#ffffff',
+            plot_bgcolor: '#ffffff',
+            font: {
+                color: '#000000',
+                family: 'Arial, sans-serif'
+            }
+        };
+        
+        const config = {
+            responsive: true,
+            displayModeBar: true,
+            modeBarButtonsToRemove: ['lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
+            displaylogo: false,
+            scrollZoom: false,  // 처음에는 줌 비활성화
+            hovermode: 'closest',
+            hoverlabel: {
+                bgcolor: 'rgba(255, 255, 255, 0.9)',
+                bordercolor: '#000',
+                font: { color: '#000', size: 12 }
+            },
+            modeBarButtonsToAdd: [
+                {
+                    name: 'Pause/Play',
+                    icon: {
+                        width: 1000,
+                        height: 1000,
+                        path: 'M300,200 L300,800 L400,800 L400,200 Z M600,200 L600,800 L700,800 L700,200 Z',
+                        transform: 'matrix(1 0 0 -1 0 1000)'
+                    },
+                    click: (gd) => {
+                        plotState.plotManager.togglePause();
+                    }
+                },
+                {
+                    name: 'ROS Time (Absolute Time)',  // 버튼 이름 변경 (t0 모드가 기본이므로)
+                    icon: {
+                        width: 1000,
+                        height: 1000,
+                        path: 'M500,100 A400,400 0 1,1 500,900 A400,400 0 1,1 500,100 M500,300 L500,500 L650,650',
+                        transform: 'matrix(1 0 0 -1 0 1000)'
+                    },
+                    click: (gd) => {
+                        plotState.plotManager.toggleT0Mode();
+                    }
+                },
+                {
+                    name: 'Zoom Out (Auto Scale)',
+                    icon: {
+                        width: 1000,
+                        height: 1000,
+                        path: 'M450,200 A250,250 0 1,1 450,700 A250,250 0 1,1 450,200 M350,450 L550,450 M600,650 L800,850',
+                        transform: 'matrix(1 0 0 -1 0 1000)'
+                    },
+                    click: (gd) => {
+                        plotState.plotManager.zoomOutAutoScale();
+                    }
+                },
+                {
+                    name: 'Clear Plot (Reset)',
+                    icon: {
+                        width: 1000,
+                        height: 1000,
+                        path: 'M300,200 L300,800 L700,800 L700,200 Z M250,200 L750,200 M350,150 L650,150 M400,350 L400,700 M500,350 L500,700 M600,350 L600,700',
+                        transform: 'matrix(1 0 0 -1 0 1000)'
+                    },
+                    click: (gd) => {
+                        plotState.plotManager.clearPlot();
+                    }
+                }
+            ]
+        };
+        
+        Plotly.newPlot('plot-area', [], layout, config);
+        plotState.plotManager.isInitialized = true;
+        
+        // 초기 상태 설정: 재생 중이면 dragmode를 false로 설정 (줌/팬 비활성화)
+        if (!plotState.plotManager.isPaused) {
+            Plotly.relayout('plot-area', { dragmode: false });
+            console.log('[initEmptyPlot] Initial dragmode set to false (playing mode)');
+        }
+        
+        // 타이틀 더블클릭, contextmenu, zoom limiter 등 설정
+        plotState.plotManager.setupTitleEditor();
+        plotState.plotManager.setupContextMenu();
+        plotState.plotManager.setupZoomLimiter();
+        plotState.plotManager.setupWheelControl();
+        plotState.plotManager.setupModeBarGuards();
+        setTimeout(() => plotState.plotManager.updateModeBarButtonStates(), 200);
+        plotState.plotManager.setupCustomHover();
+        plotState.plotManager.setupPlotDeletion();
+        
+        console.log('[initEmptyPlot] Empty plot created successfully');
+    }
 }
 
 // 주기적으로 토픽 목록 갱신
@@ -1972,11 +2151,31 @@ function filterPlotTree(searchText) {
             // 매칭되면 표시 및 부모 노드들도 표시
             node.style.display = '';
             
-            // 부모 노드들 표시
+            // 토픽 노드 자체가 매칭된 경우: 하위 노드 확장
+            if (plotState.topicNodes && plotState.topicNodes.has(path)) {
+                const topicNode = plotState.topicNodes.get(path);
+                if (topicNode && topicNode.childrenContainer && 
+                    (topicNode.childrenContainer.style.display === 'none' || topicNode.childrenContainer.style.display === '')) {
+                    plotState.tree.toggleExpand(topicNode);
+                }
+            }
+            
+            // 부모 노드들 표시 및 확장
             let parent = node.parentElement;
             while (parent && parent.classList.contains('plot-tree-children')) {
                 parent.style.display = 'block';
-                parent = parent.parentElement?.parentElement; // children -> node -> children
+                // 부모 노드를 찾아서 표시 및 확장 (children -> node)
+                const parentNode = parent.parentElement;
+                if (parentNode && parentNode.classList.contains('plot-tree-node')) {
+                    // 부모 노드도 표시
+                    parentNode.style.display = '';
+                    // 부모 노드가 확장되지 않았으면 확장
+                    if (parentNode.childrenContainer && 
+                        (parentNode.childrenContainer.style.display === 'none' || parentNode.childrenContainer.style.display === '')) {
+                        plotState.tree.toggleExpand(parentNode);
+                    }
+                }
+                parent = parentNode?.parentElement; // node -> children
             }
         } else {
             // 매칭되지 않으면 숨김
@@ -2080,7 +2279,7 @@ function setupPlotDropZone() {
 
             // PlotlyPlotManager 생성 또는 재사용
             if (!plotState.plotManager) {
-                plotState.plotManager = new PlotlyPlotManager('plot-area', 1000);
+                plotState.plotManager = new PlotlyPlotManager('plot-area', 5);  // 기본 5초 (HTML input의 기본값과 일치)
             }
 
             // Plot 생성 (모든 paths 전달 - createPlot이 내부에서 중복 처리)
