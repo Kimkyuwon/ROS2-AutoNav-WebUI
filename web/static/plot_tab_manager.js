@@ -41,6 +41,12 @@ class PlotTabManager {
             // 따라서 여기서는 savedPaths를 보관만 하고, 나중에 복원
         }
         
+        // beforeunload 이벤트 등록 - 페이지 떠나기 직전에 상태 저장
+        window.addEventListener('beforeunload', () => {
+            console.log('[PlotTabManager] beforeunload: saving state');
+            this.saveState();
+        });
+        
         return true;
     }
 
@@ -95,9 +101,6 @@ class PlotTabManager {
         
         // 새 탭을 즉시 활성화
         this.switchTab(tabId);
-        
-        // 상태 저장
-        this.saveState();
         
         console.log(`[PlotTabManager] Created tab: ${tabId} (${defaultTitle})`);
         return tab;
@@ -232,9 +235,6 @@ class PlotTabManager {
             tabUI.style.borderBottom = '2px solid var(--primary)';
         }
         
-        // 상태 저장
-        this.saveState();
-        
         console.log(`[PlotTabManager] Switched to tab: ${tabId}`);
     }
 
@@ -284,9 +284,6 @@ class PlotTabManager {
         // 닫기 버튼 표시/숨기기 업데이트
         this.updateCloseButtons();
         
-        // 상태 저장
-        this.saveState();
-        
         console.log(`[PlotTabManager] Closed tab: ${tabId}`);
     }
 
@@ -328,9 +325,6 @@ class PlotTabManager {
             titleSpan.textContent = tab.title;
             titleSpan.style.display = 'block';
             input.remove();
-            
-            // 상태 저장
-            this.saveState();
             
             console.log(`[PlotTabManager] Tab title updated: ${tabId} -> ${tab.title}`);
         };
@@ -392,13 +386,50 @@ class PlotTabManager {
         console.log(`[PlotTabManager] Buffer time updated: ${bufferTime}s`);
     }
 
-    // 탭 상태 저장 (LocalStorage)
+    // 페이지 로드 타입 확인 (일반 새로고침 vs 일반 로드)
+    getNavigationType() {
+        try {
+            // Modern API (PerformanceNavigationTiming)
+            const navEntries = performance.getEntriesByType('navigation');
+            if (navEntries && navEntries.length > 0) {
+                const navType = navEntries[0].type;
+                console.log('[PlotTabManager.getNavigationType] Modern API:', navType);
+                // 'reload': F5 새로고침
+                // 'navigate': 일반 로드 (새 탭, 주소 입력 등)
+                // 'back_forward': 뒤로/앞으로 가기
+                return navType;
+            }
+            
+            // Fallback to deprecated API
+            const perfNav = performance.navigation;
+            if (perfNav) {
+                const navType = perfNav.type;
+                console.log('[PlotTabManager.getNavigationType] Deprecated API:', navType);
+                // 0: TYPE_NAVIGATE (일반 로드)
+                // 1: TYPE_RELOAD (새로고침)
+                // 2: TYPE_BACK_FORWARD (뒤로/앞으로 가기)
+                if (navType === 1) return 'reload';
+                if (navType === 2) return 'back_forward';
+                return 'navigate';
+            }
+            
+            // API를 사용할 수 없으면 기본값 (안전하게 'navigate' 반환)
+            console.warn('[PlotTabManager.getNavigationType] Performance API not available');
+            return 'navigate';
+        } catch (error) {
+            console.error('[PlotTabManager.getNavigationType] Error:', error);
+            return 'navigate';  // 안전하게 'navigate' 반환
+        }
+    }
+
+    // 탭 상태 저장 (beforeunload 이벤트에서만 저장 - F5 새로고침만 복원)
     saveState() {
         try {
             const state = {
                 activeTabId: this.activeTabId,
                 nextTabId: this.nextTabId,
                 bufferTime: this.bufferTime,
+                timestamp: Date.now(),  // 저장 시간 기록
                 tabs: this.tabs.map(tab => {
                     const plottedPaths = tab.plotManager && tab.plotManager.dataBuffers 
                         ? Array.from(tab.plotManager.dataBuffers.keys()) 
@@ -412,24 +443,54 @@ class PlotTabManager {
                 })
             };
             
-            localStorage.setItem('plotTabManagerState', JSON.stringify(state));
-            console.log('[PlotTabManager.saveState] State saved:', state);
+            sessionStorage.setItem('plotTabManagerState', JSON.stringify(state));
+            console.log('[PlotTabManager.saveState] State saved with timestamp:', state.timestamp);
         } catch (error) {
             console.error('[PlotTabManager.saveState] Failed to save state:', error);
         }
     }
 
-    // 탭 상태 복원 (LocalStorage)
+    // 탭 상태 복원 (SessionStorage - 일반 새로고침 시에만 복원)
     loadState() {
         try {
-            const savedState = localStorage.getItem('plotTabManagerState');
+            // ⚠️ 중요: Navigation Type 확인 - 일반 새로고침(reload)일 때만 복원
+            const navType = this.getNavigationType();
+            console.log('[PlotTabManager.loadState] Navigation type:', navType);
+            
+            // 'reload'가 아니면 즉시 초기화
+            if (navType !== 'reload') {
+                console.log('[PlotTabManager] Not a reload, starting fresh (clearing saved state)');
+                sessionStorage.removeItem('plotTabManagerState');
+                return false;
+            }
+            
+            const savedState = sessionStorage.getItem('plotTabManagerState');
+            
+            // 저장된 상태가 없으면 기본 상태
             if (!savedState) {
                 console.log('[PlotTabManager] No saved state found');
                 return false;
             }
 
             const state = JSON.parse(savedState);
-            console.log('[PlotTabManager] Loading saved state:', state);
+            
+            // ⚠️ timestamp 체크: 1초 이내의 새로고침만 복원
+            // F5 새로고침은 매우 빠르게 발생 (100-500ms)
+            // 하드 리프레시나 런치 재실행은 1초 이상 소요
+            const now = Date.now();
+            const timeDiff = now - (state.timestamp || 0);
+            const MAX_RESTORE_TIME = 1000;  // 1초
+            
+            if (timeDiff > MAX_RESTORE_TIME) {
+                console.log(`[PlotTabManager] State too old (${timeDiff}ms), starting fresh`);
+                sessionStorage.removeItem('plotTabManagerState');
+                return false;
+            }
+            
+            console.log(`[PlotTabManager] Loading saved state (${timeDiff}ms ago):`, state);
+            
+            // 복원 직후 즉시 SessionStorage 삭제
+            sessionStorage.removeItem('plotTabManagerState');
 
             // nextTabId 복원
             this.nextTabId = state.nextTabId || 1;
@@ -547,11 +608,11 @@ class PlotTabManager {
         delete tab.savedPaths;
     }
 
-    // 상태 초기화 (LocalStorage 삭제)
+    // 상태 초기화 (SessionStorage 삭제)
     clearState() {
         try {
-            localStorage.removeItem('plotTabManagerState');
-            console.log('[PlotTabManager] State cleared');
+            sessionStorage.removeItem('plotTabManagerState');
+            console.log('[PlotTabManager] State cleared from SessionStorage');
         } catch (error) {
             console.error('[PlotTabManager] Failed to clear state:', error);
         }
