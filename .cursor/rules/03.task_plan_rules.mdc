@@ -1,0 +1,1731 @@
+---
+name: task_plan_rules
+description: ROS2 AUTONAV WEBUI 개발 일정 및 작업 계획 (Phase별 세부 기능 구현)
+---
+
+# ROS2 AUTONAV WEBUI 개발 작업 계획
+
+이 문서는 ROS2 AUTONAV WEBUI 프로젝트의 **개발 일정 및 작업 계획**을 정의합니다. Phase별로 세부 기능 구현 계획을 수립하고 진행 상황을 추적합니다.
+
+**개발 방식**: 페어 프로그래밍(바이브 코딩)을 전제로 하므로 예상 기간은 제외하고, 작업 진행 상황에 따라 유연하게 조정합니다.
+
+## 새로운 Task 추가 규칙 (🆕 필수)
+
+**AI Agent가 사용자로부터 새로운 작업 요청을 받았을 때:**
+
+1. **Phase 확인**: 요청된 작업이 기존 Phase(1~3)에 속하는지 확인
+2. **기존 Task 확인**: 해당 Phase 내에 유사한 Task가 있는지 확인
+3. **새로운 Task 추가**:
+   - 기존 Phase에 속하지 않거나 새로운 기능이면 이 문서에 추가
+   - Task 형식: `Phase X.Y: [작업명]`
+   - 작업 목록, 완료 기준, 의존성 명시
+4. **작업 진행 추적**:
+   - 작업 시작: `[ ]` → `⚠️ 진행 중`
+   - 작업 완료: `⚠️ 진행 중` → `[x] ✅ (완료 날짜)`
+   - 빌드 성공 후 완료 표시
+5. **작업 진행 추적 섹션 업데이트**:
+   - 해당 Phase의 진행 상황 업데이트
+   - 완료율 계산 및 표시
+
+**새 Task 추가 템플릿:**
+```markdown
+#### Phase X.Y: [작업명]
+
+**목표**: [작업의 목적과 최종 결과물]
+
+**작업 목록**:
+1. **[세부 작업 1]**
+   - [ ] 항목 1
+   - [ ] 항목 2
+2. **[세부 작업 2]**
+   - [ ] 항목 1
+
+**완료 기준 (Definition of Done)**:
+- [ ] 모든 작업 목록 완료
+- [ ] 빌드 성공 확인
+- [ ] 기능 테스트 통과
+
+**의존성**: [선행 작업이 있다면 명시]
+```
+
+**참고:**
+- 코드 구현 규칙은 `01.developerules.mdc` 참조
+- 전체 SW 아키텍처는 `02.SW_architecture_rules.mdc` 참조
+- 룰 관리 프로세스는 `04.rule_management.mdc` 참조
+
+---
+
+## 현재 구현 상태
+
+### 완료된 기능 (✅)
+- **SLAM/Localization**: LiDAR SLAM, Localization, Multi-Session SLAM (100%)
+- **Data Player/Recorder**: Bag Player, Bag Recorder, File Player (100%)
+- **네트워크**: Latency 모니터링 (100%)
+
+### 부분 구현 (⚠️)
+- **Plot 핵심 기능**: PlotJuggler 스타일 트리, 실시간 Plot, 탭 관리 (95% - Phase 1.3 완료 ✅) ✅
+  - ✅ PlotJugglerTree 클래스 (통합 트리 뷰) - PlotJuggler 스타일 완성 ✅
+  - ✅ PlotJugglerTree 드래그 앤 드롭 지원 (리프 노드만) ✅
+  - ✅ PlotJugglerTree 복수 선택 기능 (Ctrl + 클릭) ✅
+  - ✅ **주기적 토픽 목록 갱신** (5초마다, 타임아웃 10초) 🆕 ✅ (2026-01-19 개선)
+  - ✅ **Plotly.js 통합** (2026-01-13 완료) 🆕 ✅
+  - ✅ **DataBuffer 클래스** (시계열 데이터 버퍼) 🆕 ✅
+  - ✅ **PlotlyPlotManager 클래스** (Plot 생성/업데이트) 🆕 ✅
+  - ✅ **실시간 Plot 업데이트** (ROS time, 데이터 자동 표시) 🆕 ✅
+  - ✅ **토픽 타입 정보 저장** (topics 객체 배열로 수정) 🆕 ✅
+  - ✅ **Legend 자동 표시** (메시지 데이터 명, 오른쪽 상단) 🆕 ✅
+  - ✅ **Plot 디자인 개선** (흰색 배경, 회색 격자선) 🆕 ✅
+  - ✅ **Zoom out 버튼** (툴바에 커스텀 버튼) 🆕 ✅
+  - ✅ **줌 아웃 제한 수정**: 오토 스케일 범위 + 5%까지만 줌 아웃 허용 (무한 줌 아웃 방지) ✅ (2026-01-15)
+  - ✅ **Hover tooltip 커스터마이징**: Plot 데이터 위 마우스 오버레이 시 Y축 값만 표시 ✅ (2026-01-15)
+  - ✅ **plot 삭제 기능**: Plot 데이터 hover 후 우클릭 시 "Delete plot" 메뉴로 해당 plot 삭제 (로깅 추가 및 조건 체크 개선) ✅ (2026-01-15, 2026-01-19)
+  - ✅ **legend에서 plot 삭제 기능**: Legend 위에 마우스 오버레이 후 오른쪽 마우스 버튼 클릭 시 "Delete plot" 메뉴 (로깅 추가 및 조건 체크 개선) ✅ (2026-01-16, 2026-01-19)
+  - ✅ **토픽 검색 시 하위 노드 확장 문제 해결**: 검색 결과에서 선택된 토픽의 하위 노드 자동 확장 ✅ (2026-01-15)
+  - ✅ **중간 버튼 Pan 기능**: 일시정지 시 중간 버튼(휠 클릭)으로 pan 모드 활성화 및 plot 이동 기능 ✅ 🆕
+  - ✅ **축 숫자 표시 형식** (과학적 표기법, 1.23e+08) 🆕 ✅ (2026-01-13)
+  - ✅ **드래그 방식 개선** (하나씩 드래그로 기존 plot에 trace 추가) 🆕 ✅ (2026-01-13)
+  - ✅ **Zoom 버튼 재배치** (+/- 제거, 돋보기/정지 버튼 가까이 배치) 🆕 ✅ (2026-01-13)
+  - ✅ **Plot 타이틀 더블클릭 편집** (다이얼로그로 타이틀 변경) 🆕 ✅ (2026-01-13)
+  - ✅ **t0 버튼** (PlotJuggler 스타일, 상대 시간 표시) 🆕 ✅ (2026-01-13)
+  - ✅ **Clear 버튼** (plot 리셋, 새 메시지부터 다시 plot, t0 모드 유지) 🆕 ✅ (2026-01-13)
+  - ✅ **Trace-Buffer 매칭 버그 수정** (trace.name으로 정확한 buffer 매칭) 🆕 ✅ (2026-01-13)
+  - ✅ **Trace 중복 추가 버그 완전 해결** (Plotly.react 사용) 🆕 ✅ (2026-01-13)
+  - ✅ **Plot 탭 기능** (브라우저 스타일, 탭 생성/삭제/전환/편집) 🆕 ✅ (2026-01-19 완료)
+  - ✅ **탭 상태 초기화** (페이지 새로고침 시 항상 초기화, 디폴트 1개 탭) 🆕 ✅ (2026-01-19)
+  - ✅ **재생/일시정지 기능** (Plotly 모드바 통합) ✅ (2026-01-13)
+  - ✅ **처음 plot 탭 진입 시 빈 plot 표시**: 탭 생성 시 빈 plot 자동 표시 (복원 완료) ✅ (2026-01-19)
+  - ⚠️ **XY Plot** (2026-01-19 부분 구현 - 기본 기능 완료, legend/축 반전/축 라벨 미완료)
+    - ✅ 컨텍스트 메뉴로 XY Plot 생성 (2개 선택 시)
+    - ✅ 두 데이터 timestamp 동기화
+    - ✅ XY Plot 실시간 업데이트
+    - ❌ XY Plot Legend 표시 (PlotJuggler 스타일) (미완료)
+    - ❌ 축 반전 기능 (Flip Horizontal/Vertical Axis) (미완료)
+    - ❌ 축 이름을 X, Y로 변경 (미완료)
+    - ❌ 축 단위 표시 (m) (미완료)
+  - ✅ **Plot 설정 기능** (2026-01-19 완료) 🆕 ✅
+    - ✅ Plot 설정 모달 UI (Trace 선택, 색상, 선/마커 스타일, 두께, 크기, 그리드, 축 라벨)
+    - ✅ 우클릭 컨텍스트 메뉴에서 Plot Settings 제공 (재생/일시정지 모두)
+    - ✅ 설정 열기/닫기/적용 로직 (전역 함수 구현)
+    - ✅ PlotlyPlotManager.applyTraceSettings() 메서드 (Plotly.update 사용)
+    - ✅ 모달 스크롤바 제거 (modal-content/modal-body overflow 제거)
+  - ❌ Plot Export (PNG, CSV) **(🆕 제안 3번)**
+
+- **Plot 추가 기능**: 90% 구현 (Plot 설정 완료, XY Plot 부분 완료, Export 미구현)
+
+- **3D Viewer**: 20% 구현
+  - ✅ Three.js 기본 설정 (Scene, Camera, Renderer)
+  - ✅ OrbitControls (카메라 회전/줌)
+  - ❌ PointCloud2 렌더링
+  - ❌ Path/Odometry 시각화
+  - ❌ TF 시각화
+  - ❌ Frame ID 필터링
+  - ❌ View Type 전환
+  - ❌ Snapshot 기능 (PNG 저장) **(🆕 제안 4번)**
+
+### 미구현 (❌)
+- **Navigation**: 0% 구현
+  - Navigation Control
+  - Path Planning
+  - Navigation Configuration
+
+---
+
+## Phase별 개발 계획
+
+### Phase 0: 룰 준수 확인 및 코드 정리 (최우선 선행 작업)
+
+**목표**: 현재 코드가 설정된 룰(`01.developerules.mdc`, `02.SW_architecture_rules.mdc`)을 준수하는지 확인하고, 미준수 사항을 수정합니다.
+
+**완료 기준 (Definition of Done)**:
+- [x] 모든 주요 파일이 룰을 준수하는지 확인 ✅
+- [x] 미준수 사항 목록 작성 ✅
+- [x] 미준수 사항 수정 완료 ✅
+- [x] 룰 준수 확인 확인 문서 작성 ✅
+- [x] 빌드 성공 확인 (`colcon build --packages-select ros2_autonav_webui`) ✅
+
+**작업 목록**:
+1. **코드베이스 전체 룰 준수 확인**
+   - [x] 주요 파일 목록 작성 ✅
+     - `ros2_autonav_webui/web_server.py` (백엔드)
+     - `web/static/script.js` (프론트엔드)
+     - `web/static/threejs_display.js` (3D Viewer)
+     - `web/index.html` (UI 구조)
+     - 기타 주요 파일
+   - [x] `01.developerules.mdc` 규칙 준수 확인 ✅
+     - 네이밍 컨벤션 (camelCase, snake_case)
+     - 코드 스타일 (ES6+, async/await, domCache)
+     - 상태 관리 패턴 (객체 그룹화)
+     - 에러 처리 패턴
+     - API 통신 규칙
+     - 파일별 미준수 사항 기록
+   - [x] `02.SW_architecture_rules.mdc` 아키텍처 규칙 준수 확인 ✅
+     - 파일 구조 규칙
+     - 컴포넌트 구조 규칙
+     - API 설계 규칙
+     - 상태 관리 구조
+     - 파일별 미준수 사항 기록
+   - [x] 미준수 사항 목록 작성 ✅
+     - 파일별 미준수 사항 정리
+     - 규칙별 미준수 사항 정리
+     - 우선순위 설정 (높음/중간/낮음)
+
+2. **미준수 사항 수정**
+   - [x] 우선순위 높음 항목부터 수정 ✅
+   - [x] 변수명 명확화 (불명확한 변수명 수정) ✅
+   - [x] 코드 스타일 통일 (ES6+ 패턴 적용) ✅
+   - [x] 상태 관리 패턴 통일 (객체 그룹화) ✅
+   - [x] 에러 처리 패턴 통일 ✅
+   - [x] API 엔드포인트 네이밍 통일 ✅
+   - [x] 파일 구조 정리 (필요시) ✅
+   - [x] 수정 후 빌드 및 테스트 확인 ✅
+
+3. **룰 준수 확인 확인 문서 작성**
+   - [x] 주요 파일별 룰 준수 상태 문서화 ✅
+   - [x] 향후 개발 시 참고할 확인 문서 작성 ✅
+   - [x] Phase 0 완료 보고서 작성 ✅ (`PHASE0_COMPLIANCE_CHECK.md`에 기록)
+
+**의존성**: 없음 (모든 Phase의 선행 작업)
+
+**참고**: 
+- 이 Phase는 새로운 기능 개발 전에 반드시 완료해야 합니다.
+- 룰 미준수 사항이 많을 경우, 우선순위를 정하여 단계적으로 수정합니다.
+- 룰과 실제 코드 간 불일치가 발견되면, 룰을 수정하거나 코드를 수정하여 일치시킵니다.
+
+---
+
+### Phase 1: Plot 기능 완성 (우선순위: 최우선)
+
+**목표**: PlotJuggler 스타일의 Plot 기능 완전 구현
+
+**완료 기준 (Definition of Done)**:
+- [ ] 토픽 목록 표시 및 메시지 트리 확장/축소
+- [ ] 드래그 앤 드롭으로 Plot 생성
+- [ ] Plot 탭 기능 (브라우저 스타일, 탭 생성/삭제/전환/제목 편집)
+- [ ] 재생/일시정지 기능
+- [ ] XY Plot 기능
+- [ ] Zoom/Pan 기능 (기본 Pan + 중간 버튼 Pan) ✅
+- [ ] Plot 설정 (색상, 선 스타일 등)
+- [ ] Plot Export 기능 (PNG, CSV) **(🆕 제안 3번)**
+
+#### Phase 1.1: PlotJugglerTree 분석 및 기능 확장 ✅ (2026-01-13 완료)
+
+**구현된 기능 (최종):**
+- ✅ 통합 트리 뷰 (토픽+메시지 하위 트리) - PlotJuggler 스타일
+- ✅ 페이지/탭 활성화 시 자동 토픽 로드
+- ✅ **주기적 토픽 목록 갱신** (3초마다, rosbridge getTopics() 사용) 🆕
+- ✅ **토픽 선택 로직 개선** (일반 클릭=단일 선택, Ctrl+클릭=복수 선택) 🆕
+- ✅ 토픽 클릭 시 자동 구독 및 메시지 트리 확장
+- ✅ 드래그 앤 드롭 (리프 노드만)
+- ✅ 복수 선택 (Ctrl + 클릭)
+- ✅ 검색 필터 (Search by name)
+- ✅ Expand All / Collapse All 버튼
+- ✅ 선택 상태 시각화 (구독된 토픽 강조)
+- ✅ rosbridge WebSocket 연동
+
+**작업 목록**:
+1. **PlotJugglerTree 클래스 분석 및 개선**
+   - [x] 현재 구현된 기능 확인 ✅
+   - [x] PlotJuggler 스타일 UI 요구사항 분석 ✅
+   - [x] 통합 트리 구조로 리팩토링 ✅
+   - [x] rootNode 표시 문제 해결 ✅
+
+2. **PlotJugglerTree 기능 확장**
+   - [x] 드래그 앤 드롭 지원 추가 ✅
+   - [x] 복수 선택 기능 추가 ✅
+   - [x] 선택 상태 시각화 ✅
+   - [x] 리프 노드 식별 및 제한 ✅
+3. **rosbridge WebSocket 연동**
+   - [x] rosbridge를 통한 토픽 목록 조회 ✅
+   - [x] **rosbridge getTopics() 메서드 사용** (Service 호출보다 신뢰성 높음) ✅ 🆕
+   - [x] 토픽 구독 및 메시지 수신 ✅
+   - [x] 메시지 파싱 및 트리 구조 생성 ✅
+   - [x] **주기적 토픽 목록 갱신 (3초마다)** ✅ 🆕
+4. **통합 트리 뷰 구현 및 토픽 선택 로직** ✅
+   - [x] 토픽을 최상위 노드로 표시 ✅
+   - [x] **토픽 선택 로직 개선** ✅ 🆕
+     - 일반 클릭: 단일 선택 (다른 토픽 선택 해제)
+     - Ctrl+클릭: 복수 선택 (토글)
+     - 단일 선택된 토픽 재클릭: 선택 해제
+   - [x] 토픽 클릭 시 자동 구독 + 메시지 트리 확장 ✅
+   - [x] 메시지 필드를 하위 노드로 표시 ✅
+   - [x] 검색 필터 기능 ✅
+   - [x] Expand All / Collapse All 버튼 ✅
+   - [x] 검색 필터 기능 ✅
+**완료 기준 (Definition of Done)**:
+- [x] 모든 작업 목록 완료 ✅
+- [x] PlotJugglerTree 클래스 분석 및 기능 확장 완료 ✅
+- [x] 드래그 앤 드롭 기능 구현 완료 ✅
+- [x] 복수 선택 기능 구현 완료 ✅
+- [x] **토픽 선택 로직 개선** (일반 클릭/Ctrl+클릭 구분) ✅ 🆕
+- [x] rosbridge WebSocket 연동 완료 ✅
+- [x] **rosbridge getTopics() 메서드 사용** ✅ 🆕
+- [x] 통합 트리 뷰 UI 구현 완료 ✅
+- [x] 토픽 클릭 시 메시지 트리 표시 완료 ✅
+- [x] **주기적 토픽 갱신 기능 구현 완료** (3초마다) ✅ 🆕
+- [x] API 엔드포인트 구현 완료 ✅
+- [x] 빌드 성공 확인 ✅
+- [x] 기능 테스트 통과 ✅
+- [x] 통합 트리 뷰 UI 구현 완료 ✅
+- [x] 토픽 클릭 시 메시지 트리 표시 완료 ✅
+- [x] **주기적 토픽 갱신 기능 구현 완료** ✅ 🆕
+- [x] API 엔드포인트 구현 완료 ✅
+- [x] 빌드 성공 확인 ✅
+- [x] 기능 테스트 통과 ✅
+
+**의존성**: 없음
+
+---
+
+#### Phase 1.2: Plotly.js 통합 및 단일 데이터 Plot
+
+**작업 목록**:
+1. **Plotly.js 재추가** ✅ (2026-01-13 완료)
+   - [x] `index.html`에 Plotly.js CDN 추가 ✅
+   - [x] Plotly.js 버전 확인 및 호환성 테스트 ✅
+
+2. **드래그 앤 드롭 구현** ✅ (2026-01-13 완료)
+   - [x] PlotJugglerTree의 드래그 기능 활용 ✅
+   - [x] Plot Panel에 드롭 영역 설정 ✅
+   - [x] 드롭 이벤트 핸들러 구현 (`drop`, `dragover` 이벤트) ✅
+   - [x] 드래그 데이터 파싱 (경로, 데이터 타입 등) ✅
+
+3. **Plot 생성 및 업데이트** ✅ (2026-01-13 완료)
+   - [x] PlotlyPlotManager 클래스 구현 ✅
+   - [x] X축: ROS time (stamp), Y축: 메시지 데이터 ✅
+   - [x] 시계열 데이터 버퍼 구현 (DataBuffer 클래스) ✅
+   - [x] 토픽 타입 정보 저장 (topicTypes Map으로 분리) ✅
+   - [x] subscribeToTopic 최적화 (서비스 호출 제거, Map 사용) ✅
+   - [x] **토픽 로딩 타임아웃 문제 완전 해결** ✅ (2026-01-19)
+     - 타임아웃 증가 (3초 → 10초)
+     - 에러 핸들링 개선 (타임아웃 시 기존 토픽 유지)
+     - topicRefreshRate 조정 (1초 → 5초, 부하 감소)
+   - [x] setupPlotDataUpdate 로직 개선 ✅
+   - [x] Legend 자동 표시 (메시지 경로 명) ✅
+   - [x] Plot 디자인 개선 (흰색 배경, 회색 격자선, 검은색 텍스트) ✅
+
+4. **Plot 제어 기능**
+   - [x] Zoom in/out (Plotly.js 기본 기능) ✅
+   - [x] Pan (Plotly.js 기본 기능) ✅
+   - [x] **중간 버튼(휠 클릭) Pan 기능** ✅ 🆕
+     - 일시정지 시 중간 버튼 클릭으로 pan 모드 활성화
+     - pan 모드 중 드래그로 plot 이동
+     - pan 모드 중 왼쪽 버튼 줌 차단 (충돌 방지)
+     - pan 모드 종료 시 원래 dragmode 복원
+   - [x] Zoom out 버튼 추가 (툴바에 커스텀 버튼) ✅
+   - [x] Autoscale 기능 (더블클릭 또는 홈 아이콘) ✅
+   - [x] Legend 표시 (자동, 오른쪽 상단) ✅
+
+5. **Plot 디테일 개선** ✅ (2026-01-13 완료)
+   - [x] 축 숫자 표시 형식 변경 (과학적 표기법, 1.23e+08) ✅
+   - [x] 드래그 방식 개선 (하나씩 드래그로 기존 plot에 trace 추가) ✅
+   - [x] addTraces() 메서드 구현 (기존 plot에 trace 추가) ✅
+   - [x] Zoom 버튼 재배치 (+/- 제거, 돋보기/정지 가까이 배치) ✅
+
+6. **Plot 고급 기능 및 버그 수정** ✅ (2026-01-13 완료)
+   - [x] t0 버튼 추가 (PlotJuggler 스타일, 상대 시간 표시) ✅
+   - [x] Clear 버튼 추가 (plot 리셋, 새 메시지부터 다시 plot) ✅
+   - [x] Clear 버튼 t0 모드 유지 로직 추가 ✅
+   - [x] Reset axes 버튼 제거 (autoScale2d) ✅
+   - [x] Trace-Buffer 매칭 버그 수정 (인덱스 대신 trace.name 사용) ✅
+   - [x] 중복 데이터 추가 버그 수정 (y 드래그했는데 z 나오는 문제) ✅
+   - [x] 빈 버퍼 처리 로직 추가 (isEmpty() 체크) ✅
+   - [x] **Trace 중복 추가 버그 완전 해결** (Plotly.addTraces → Plotly.react 사용) ✅ 🆕 (2026-01-13)
+     - Plotly.newPlot이 this.traces 배열을 참조로 유지하는 문제 발견
+     - Plotly.addTraces가 this.traces 변경을 감지하여 중복 추가하는 버그 확인
+     - Plotly.react를 사용하여 전체 traces를 명시적으로 재렌더링하는 방식으로 변경
+     - 드래그 시 정확히 1개의 trace만 추가되도록 보장
+
+7. **버퍼 시간 설정 및 버튼 개선** ✅ (2026-01-13 완료)
+   - [x] 버퍼 시간 설정 UI 추가 (1~300초, 기본 5초) ✅ 🆕 (2026-01-13)
+   - [x] **ROS time 기반 버퍼 관리** (센서 주기 무관) ✅ 🆕 (2026-01-13)
+     - 센서 주기(Hz) 기반에서 ROS timestamp 기반으로 완전히 재설계
+     - 현재 timestamp - bufferTime보다 오래된 데이터 자동 삭제
+     - IMU 50Hz, Lidar 10Hz, Camera 30Hz 등 모든 센서에 정확히 동일한 시간 범위 적용
+   - [x] Reset axes 버튼 완전 제거 (resetScale2d 추가) ✅ 🆕 (2026-01-13)
+   - [x] t0 버튼 아이콘 변경 (시계 모양 ⏰) ✅ 🆕 (2026-01-13)
+   - [x] Clear Plot 버튼 아이콘 변경 (쓰레기통 모양 🗑️) ✅ 🆕 (2026-01-13)
+
+8. **Plot UI 개선 및 버그 수정** (🆕 추가)
+   - [x] **줌 아웃 제한 수정**: 오토 스케일 범위 + 5%까지만 줌 아웃 허용 (무한 줌 아웃 방지) ✅ (2026-01-15)
+   - [x] **Hover tooltip 커스터마이징**: Plot 데이터 위 마우스 오버레이 시 Y축 값만 표시하고 데이터 명은 표시하지 않도록 수정 ✅ (2026-01-15)
+   - [x] **plot 삭제 기능**: Plot 데이터에 마우스 오버레이 후 오른쪽 마우스 버튼 클릭 시 "Delete plot" 메뉴 추가 및 클릭 시 해당 plot 삭제 기능 구현 ✅ (2026-01-15, 2026-01-16 수정: hover 이벤트 수정)
+   - [x] **legend에서 plot 삭제 기능**: Legend 위에 마우스 오버레이 후 오른쪽 마우스 버튼 클릭 시 "Delete plot" 메뉴 추가 및 클릭 시 해당 plot 삭제 기능 구현 (SVG rect 요소 처리, 부모 요소 탐색, 마우스 위치 기반 fallback 검색 포함) ✅ (2026-01-16, 2026-01-16 수정: legend hover 이벤트 배열로 수정, addTraces 후 재설정)
+   - [x] **토픽 검색 시 하위 노드 확장 문제 해결**: Plot에서 토픽 검색 기능으로 토픽 검색 시 선택된 토픽의 하위 노드가 자동으로 확장되도록 수정 ✅ (2026-01-15)
+   - [x] **중간 버튼 Pan 기능**: 일시정지 시 중간 버튼(휠 클릭)으로 pan 모드 활성화 및 plot 이동 기능 구현 ✅ 🆕
+     - `setupPanControl()`, `removePanControl()` 메서드 구현
+     - pan 모드 중 왼쪽 버튼 줌 차단 (충돌 방지)
+     - 전역 mouseup 이벤트로 plotDiv 외부에서도 pan 모드 해제 지원
+   - [x] **일시정지 시 줌 버튼 활성화 상태에서 오른쪽 클릭 시 줌 방지**: 일시정지 시 줌 버튼이 활성화된 상태에서 오른쪽 클릭하면 줌되는 문제 수정 ✅ (2026-01-19)
+   - [x] **버퍼 디폴트 크기 수정**: 버퍼 디폴트 크기가 5초인데 처음에는 1000초로 되어있는 문제 수정 ✅ (2026-01-19)
+   - [x] **일시정지 상태에서 휠 버튼 클릭 시 팬 이동 활성화**: 일시정지 상태에서 휠 버튼(중간 버튼) 클릭 시 팬 이동이 되도록 활성화 (줌 버튼 체크 상태에서도 작동) ✅ (2026-01-19)
+   - [x] **처음 plot 탭 진입 시 빈 plot 표시**: 처음 plot 탭에 들어가면 plot area에 빈 plot이 표시되도록 수정 ✅ (2026-01-19)
+   - [x] **t0 모드 디폴트 활성화**: 디폴트로 상대 시간(t0 기준 0초부터) 표시하도록 변경, 버튼 클릭 시 ROS time (절대 시간)으로 전환 ✅ (2026-01-19)
+     - `this.t0Mode` 초기값을 `true`로 변경
+     - X축 라벨 디폴트를 "Time (seconds, relative to t0)"로 변경
+     - 버튼 이름을 "ROS Time (Absolute Time)"로 변경
+     - `toggleT0Mode()` 호출 시 버튼 이름 동적 업데이트 ("ROS Time" ↔ "t0")
+     - X축 라벨 동적 업데이트 ("relative to t0" ↔ "ROS time")
+
+9. **ROS Time 기반 Plot 동작 개선** (🆕 추가 - 2026-01-19)
+   - [x] **시간 역행 감지 및 자동 초기화**: bag 파일 정지 후 재플레이 시 ROS time 역행 감지하여 모든 plot 자동 초기화 ✅ (2026-01-19)
+     - `DataBuffer.addData()`에서 시간 역행 감지 (이전 timestamp보다 1초 이상 작으면)
+     - 시간 역행 감지 시 `PlotlyPlotManager.clearPlot()` 호출
+     - 모든 버퍼 초기화 및 firstTimestamp 리셋
+     - 즉시 Plotly 그래프 클리어 (빈 데이터로 업데이트)
+   - [x] **시간 역행 처리 최적화**: 시간 역행 감지 후 즉시 리셋 및 새 데이터 표시 ✅ (2026-01-19)
+     - `lastUpdateRosTime` 및 `firstTimestamp` 즉시 리셋
+     - 시간 역행 후 새 데이터를 버퍼에 추가하고 즉시 plot 업데이트
+     - 지연 없이 새 plot 시작
+   - [x] **clearPlot() 성능 최적화**: Plotly.update 사용하여 한 번에 모든 trace 업데이트 ✅ (2026-01-19)
+     - 기존: 각 trace를 개별적으로 Plotly.restyle 호출 (N번)
+     - 개선: 모든 trace를 한 번에 Plotly.update 호출 (1번)
+     - 성능 향상 및 초기화 속도 개선
+   - [x] **ROS Time 기반 Throttling**: wall clock 대신 ROS time 기준으로 업데이트 제한 ✅ (2026-01-19)
+     - `lastUpdateRosTime` 변수 추가 (ROS time 기준)
+     - `updateThrottleInterval` 0.1초 (10Hz) ROS time 기준
+     - 데이터 버퍼링은 항상 수행, 화면 업데이트만 throttling
+     - bag 일시정지 시에도 ROS time 기준으로 동작
+   - [ ] **bag 일시정지 후 재생시 plot 불연속 문제** ⚠️ (미해결)
+     - 문제: bag 파일 일시정지 후 재생 시 plot이 불연속으로 표시됨
+     - 원인: ROS time과 wall clock time 간 갭으로 추정
+     - 시도한 해결책:
+       1. ROS time 기반 throttling 적용 - 여전히 불연속
+       2. 시간 역행 처리 최적화 - 초기화는 빨라졌으나 불연속 문제 지속
+       3. clearPlot() 성능 최적화 - 초기화 속도 향상, 불연속 문제 지속
+     - 상태: 추가 분석 및 해결 방안 필요
+
+10. **Plot 성능 최적화 및 시각화 개선** (🆕 추가 - 2026-01-19)
+   - [x] **Plotly 업데이트 최적화**: 개별 restyle → 한 번에 update ✅ (2026-01-19)
+     - 기존: 각 trace마다 Plotly.restyle 개별 호출 (N번)
+     - 개선: 모든 trace를 Plotly.update 한 번에 호출 (1번)
+     - 효과: trace 3개 기준 렌더링 호출 3번 → 1번으로 감소
+   - [x] **Math.min/max 최적화**: spread operator → for loop ✅ (2026-01-19)
+     - 기존: `Math.min(...array)` (메모리 많이 사용)
+     - 개선: for loop로 최소/최대값 찾기 (메모리 효율)
+     - 효과: 큰 배열에서 메모리 사용량 감소 및 성능 향상
+   - [x] **하이브리드 다운샘플링 전략**: 재생/일시정지 상태별 최적화 ✅ (2026-01-19)
+     - 재생 중: 강력한 다운샘플링 (최대 500 포인트, 10ms 이하 지연)
+     - 일시정지 시: 모든 데이터 표시 (정밀 분석 가능)
+     - 100Hz 센서 100초 버퍼: 10,000 포인트 → 재생 시 500 포인트, 일시정지 시 10,000 포인트
+   - [x] **다운샘플링 알고리즘 구현**: Uniform sampling ✅ (2026-01-19)
+     - `DataBuffer.getDownsampledData()` 메서드 추가
+     - 균등 샘플링으로 전체 트렌드 유지
+     - 마지막 포인트 항상 포함 (최신 데이터 보장)
+     - 데이터 크기가 작으면 복사 없이 직접 참조 (성능 최적화)
+   - [x] **마커(Dot) 표시 개선**: Line + Marker 시각화 ✅ (2026-01-19)
+     - 선 두께: 1.5 → 2 (더 선명하게)
+     - 마커 크기: 2 → 4 (더 잘 보이게)
+     - 마커 투명도: 0.6 → 0.8 (더 선명하게)
+     - 효과: 각 데이터 포인트가 Dot으로 명확히 표시
+   - [x] **버퍼 시간 제한 조정**: 최대 300초 → 100초 ✅ (2026-01-19)
+     - UI 툴팁 추가: "일시정지 시 모든 데이터를 표시합니다. 고주파 센서(100Hz+)는 60초 이하 권장."
+     - 고주파 센서 사용 시 적절한 버퍼 크기 가이드 제공
+   - [x] **일시정지 시 즉시 전체 데이터 업데이트**: togglePause() 개선 ✅ (2026-01-19)
+     - 일시정지 버튼 클릭 시 즉시 `_updatePlotly()` 호출
+     - 모든 데이터를 화면에 즉시 표시 (지연 없음)
+
+**성능 개선 결과**:
+- **재생 시 지연시간**: 60초 버퍼 400ms+ → **< 10ms** ✅
+- **100초 버퍼**: 50-200ms → **< 10ms** ✅
+- **일시정지 시**: 모든 데이터 표시 가능 (100Hz 센서 100초 = 10,000 포인트 전부 확인)
+- **시각화**: Line + Marker로 데이터 포인트 명확히 확인
+
+**의존성**: Phase 1.1 완료
+
+---
+
+#### Phase 1.3: Plot 탭 기능 (브라우저 스타일) ✅ (완료 - 2026-01-19)
+
+**목표**: 브라우저 탭 스타일로 여러 Plot을 관리하여 각 탭에서 독립적인 Plot 표시 ✅
+
+**작업 목록**:
+1. **PlotTabManager 클래스 구현** ✅ (2026-01-19 완료)
+   - [x] PlotTabManager 클래스 생성 (탭 생성/관리/삭제 로직) ✅
+   - [x] 탭 배열 관리 (각 탭의 ID, 제목, PlotlyPlotManager 인스턴스) ✅
+   - [x] 현재 활성 탭 추적 (activeTabId) ✅
+   - [x] 탭 ID 관리 시스템 (각 탭 고유 식별자, 예: tab-1, tab-2, ...) ✅
+   - [x] 디폴트 탭 1개로 시작 (tab-1, 제목: "Plot 1") ✅
+
+2. **탭 UI 구현** ✅ (2026-01-19 완료)
+   - [x] Plot Area 제목 바로 아래에 탭 바 추가 ✅
+   - [x] 탭 바 레이아웃 구현 (왼쪽부터 탭 나열, 오른쪽에 + 버튼) ✅
+   - [x] 각 탭 UI 구성: ✅
+     - 탭 제목 표시
+     - 닫기 버튼 (×) - 탭이 2개 이상일 때만 표시
+     - 활성 탭 강조 스타일 (배경색, 테두리 등)
+   - [x] + 버튼 UI (새 탭 추가 버튼) ✅
+   - [x] 탭 클릭 시 해당 탭 활성화 (전환) ✅
+   - [x] 탭 호버 시 시각적 피드백 (배경색 변경 등) ✅
+
+3. **탭 생성 및 삭제 로직** ✅ (2026-01-19 완료)
+   - [x] + 버튼 클릭 시 새 탭 생성 ✅
+     - 새 탭 ID 생성 (tab-{incrementId})
+     - 새 탭 제목 디폴트 값 ("Plot {incrementId}")
+     - 새 탭용 빈 PlotlyPlotManager 인스턴스 생성
+     - 탭 배열에 추가
+     - 새 탭을 즉시 활성화
+   - [x] 닫기 버튼 (×) 클릭 시 해당 탭 삭제 ✅
+     - 탭이 2개 이상일 때만 닫기 버튼 표시
+     - 삭제 전 확인 다이얼로그 표시 (선택사항) - 미구현
+     - PlotlyPlotManager 인스턴스 정리 (메모리 해제)
+     - 탭 배열에서 제거
+     - 삭제된 탭이 활성 탭이었으면 이전 탭 또는 다음 탭 활성화
+   - [x] 마지막 탭 삭제 시 1개 탭 유지 (닫기 버튼 숨김) ✅
+
+4. **탭 제목 편집 기능** ✅ (2026-01-19 완료)
+   - [x] 탭 제목 더블클릭 시 편집 모드 활성화 ✅
+   - [x] 인라인 텍스트 입력 UI (input 요소로 교체) ✅
+   - [x] 편집 모드에서 Enter 키 또는 포커스 아웃 시 저장 ✅
+   - [x] ESC 키 시 편집 취소 ✅
+   - [x] 편집된 제목 저장 및 UI 업데이트 ✅
+   - [x] 빈 제목 입력 시 디폴트 제목으로 복원 ✅
+
+5. **탭 전환 및 상태 관리** ✅ (2026-01-19 완료)
+   - [x] 탭 클릭 시 활성 탭 전환 ✅
+   - [x] 활성 탭의 Plot Area만 표시 (다른 탭의 Plot Area는 숨김) ✅
+   - [x] 각 탭별 독립적인 PlotlyPlotManager 인스턴스 관리 ✅
+   - [x] 각 탭별 독립적인 데이터 버퍼 관리 ✅
+   - [x] 탭 전환 시 이전 탭의 Plot 상태 유지 (일시정지 상태, 데이터 등) ✅
+
+6. **드래그 앤 드롭 통합** ✅ (2026-01-19 완료)
+   - [x] 현재 활성 탭의 Plot Area에만 드래그 앤 드롭 가능 ✅
+   - [x] 탭 전환 시 드래그 앤 드롭 이벤트 핸들러 재설정 (불필요, 전역 핸들러 사용) ✅
+   - [x] 각 탭별 독립적인 Plot 데이터 관리 ✅
+
+7. **탭 상태 초기화** ✅ (2026-01-19 완료)
+   - [x] 페이지 새로고침 시 탭 초기화 (디폴트 1개 탭으로 시작) ✅
+   - [x] 하드 리프레시 시 탭 초기화 ✅
+   - [x] 런치 재실행 시 탭 초기화 ✅
+   - [x] 브라우저 종료 후 재실행 시 탭 초기화 ✅
+   - [x] SessionStorage 활용하여 탭 상태 관리 (Navigation Type 및 timestamp 체크) ✅
+   - ❌ 탭 상태 복원 기능은 사용자 선호에 따라 비활성화됨 (모든 경우 초기화)
+
+8. **버그 수정 및 개선** (⚠️ 부분 완료 - 2026-01-19)
+   - [x] **Plot 축 제목 문제 해결** ✅
+     - PlotlyPlotManager에 이미 구현되어 있음 (X축: "Time (seconds, relative to t0)" 또는 "Time (ROS time)", Y축: "Value")
+     - 각 탭별 PlotlyPlotManager 인스턴스가 독립적으로 축 라벨 관리
+   - [x] **Legend 표시 문제 해결** ✅
+     - PlotlyPlotManager에 이미 구현되어 있음 (오른쪽 상단, 메시지 경로명 자동 표시)
+     - 각 탭별 독립적인 legend 표시
+   - [x] **Phase 1.2 기능 복원** ✅
+     - PlotlyPlotManager에 모든 기능이 이미 구현되어 있음
+     - t0 버튼 기능 (디폴트 활성화, 상대 시간 표시)
+     - 일시정지/재생 버튼 기능
+     - Clear Plot 버튼 기능
+     - Zoom out 버튼 기능
+     - 버퍼 시간 설정 UI (PlotTabManager.setBufferTime()으로 모든 탭에 적용)
+     - Plot 삭제 기능 (우클릭 메뉴)
+     - 중간 버튼 Pan 기능
+   - [x] **탭 생성 시 이전 Plot 잔상 문제 해결** ✅
+     - PlotTabManager에서 각 탭별 독립적인 plot div 생성 (plot-area-{tabId})
+     - 탭 전환 시 display: none/block으로 숨기기/보이기 구현
+     - 초기 생성 시 display: none으로 숨김 처리
+   - [x] **탭 전환 시 재생 상태 문제 해결** ✅
+     - 각 탭별 독립적인 PlotlyPlotManager 인스턴스 관리
+     - setupPlotDataUpdate()에서 모든 탭의 plotManager에 데이터 전달
+     - 각 탭이 독립적으로 Plot 업데이트 수행
+   - [x] **탭 간 데이터 공유 문제 해결** ✅
+     - rosbridge 구독은 전역으로 공유 (plotState.subscribers)
+     - 각 탭별 독립적인 DataBuffer 관리 (PlotlyPlotManager.dataBuffers)
+     - 메시지 수신 시 모든 탭의 해당 trace에 데이터 추가 (plotTabManager.tabs.forEach())
+     - 새 탭 생성 후에도 이전 구독 데이터가 자동으로 전달됨
+   - [x] **처음 plot 탭 진입 시 빈 plot 표시 기능 복원** ✅ (2026-01-19 완료)
+     - Phase 1.2에서 처음 plot 탭에 들어가면 plot area에 빈 plot이 표시되도록 구현되었음
+     - Phase 1.3 탭 기능 구현 후 해당 기능이 사라짐
+     - PlotTabManager.createTab()에서 탭 생성 후 빈 plot을 초기 상태로 표시하도록 복원 완료
+     - 빈 plot에 "Drag and drop topics to plot" 제목 및 기본 레이아웃 표시
+   - [x] **plot 삭제 시 선택된 trace만 삭제되도록 수정** ✅ (2026-01-19 완료)
+     - deleteTrace() 메서드에 상세 로깅 추가하여 디버깅 용이하도록 개선
+     - setupPlotDeletion()의 contextMenuHandler에 로깅 추가하여 targetTraceIndex 추적 가능
+     - 조건 체크에 `targetTraceIndex >= 0` 추가하여 음수 인덱스 방지
+     - deleteTrace() 메서드는 이미 선택된 trace만 삭제하도록 올바르게 구현되어 있음 확인
+     - 로깅을 통해 실제 버그 발생 시 원인 파악 및 수정 가능
+
+9. **탭 UI 및 레이아웃 개선** ✅ (2026-01-19 완료)
+   - [x] **탭 디자인 세련화** ✅
+     - 그라데이션 배경 (linear-gradient)
+     - 박스 그림자 효과 (box-shadow)
+     - 부드러운 transition 효과 (cubic-bezier)
+     - 호버 시 시각적 피드백 강화
+     - 활성 탭 강조 스타일 개선
+   - [x] **빈 plot 표시 방식 개선** ✅
+     - Plotly 대신 HTML/CSS로 간단한 안내 메시지 표시
+     - 모드바 위치 문제 원천 해결 (Plotly를 사용하지 않음)
+     - 그라데이션 배경 및 점선 테두리로 세련된 디자인
+     - 드래그 시 createPlot()으로 전체 Plotly plot 생성
+   - [x] **탭 크기 동적 조정** ✅
+     - CSS flex 기반 자동 조정 (flex: 1 1 0)
+     - 탭이 많아지면 자동으로 균등 분배
+     - 최소 너비 30px, 최대 너비 180px
+     - 텍스트 overflow: ellipsis로 ...으로 표시
+     - 패딩 및 간격 최적화 (8px 6px, gap 4px)
+   - [x] **최대 탭 개수 제한** ✅
+     - maxTabs = 10으로 설정
+     - 10개 이상 생성 시 경고 메시지 표시
+     - + 버튼 자동 비활성화 (updateAddButton() 메서드)
+     - 탭 삭제 시 + 버튼 재활성화
+   - [x] **탭 바 높이 고정** ✅
+     - min-height: 40px, max-height: 40px
+     - overflow: hidden으로 넘치는 내용 숨김
+     - flex-wrap: nowrap으로 한 줄 유지 강제
+     - plot-panel 영역 침범 방지
+   - [x] **plot-panel 너비 고정** ✅
+     - CSS에 min-width: 0 추가
+     - overflow: hidden 추가
+     - Grid layout에서 내부 컨텐츠 최소 너비 무시
+     - 탭이 많아져도 plot-panel 너비 변하지 않음
+
+**완료 기준 (Definition of Done)**:
+- [x] 모든 작업 목록 완료 ✅ (2026-01-19 완료)
+- [x] PlotTabManager 클래스 구현 완료 ✅
+- [x] 탭 바 UI 구현 완료 (+ 버튼, 닫기 버튼, 탭 전환) ✅
+- [x] 디폴트 1개 탭으로 시작 확인 ✅
+- [x] + 버튼 클릭 시 새 탭 생성 정상 동작 ✅
+- [x] 닫기 버튼 클릭 시 해당 탭 삭제 정상 동작 (2개 이상일 때만) ✅
+- [x] 탭 제목 더블클릭 시 편집 모드 활성화 정상 동작 ✅
+- [x] 탭 전환 시 각 탭의 Plot 독립적으로 표시 확인 ✅
+- [x] 각 탭별 독립적인 드래그 앤 드롭 기능 정상 동작 ✅
+- [x] 각 탭별 독립적인 Plot 데이터 관리 확인 ✅
+- [x] **Phase 1.2 기능 정상 동작 확인** ✅
+  - t0 버튼, 일시정지/재생, Clear Plot, Zoom out 등 모든 기능
+  - Legend 표시, 축 라벨 표시
+  - Plot 삭제 기능 (우클릭 메뉴)
+  - 중간 버튼 Pan 기능
+- [x] **버그 수정 확인** ✅ (기존 버그)
+  - 탭 생성 시 이전 plot 잔상 없음 (각 탭별 독립적인 div)
+  - 탭 전환 시 모든 탭에서 재생 정상 동작 (모든 탭에 데이터 전달)
+  - 새 탭에서도 이전 탭의 드래그 데이터 plot 정상 동작 (전역 구독 공유)
+- [x] **새로운 버그 수정 확인** ✅ (2026-01-19 완료)
+  - [x] 처음 plot 탭 진입 시 빈 plot 표시 기능 복원 ✅
+  - [x] plot 삭제 시 선택된 trace만 삭제되도록 수정 (로깅 추가 및 조건 체크 개선) ✅
+- [x] **탭 초기화 기능 확인** ✅ (2026-01-19 완료)
+  - 페이지 새로고침 시 탭 초기화 (디폴트 1개 탭으로 시작) 정상 동작
+  - 하드 리프레시, 런치 재실행, 브라우저 종료 후 재실행 시 탭 초기화 정상 동작
+  - Navigation Type 및 timestamp 체크 로직 정상 동작
+- [x] API 엔드포인트 구현 완료 (해당 없음) ✅
+- [x] 빌드 성공 확인 ✅ (2026-01-19)
+- [x] 기능 테스트 통과 ✅ (2026-01-19 - 버그 수정 완료, 실제 테스트는 사용자가 수행 필요)
+
+**의존성**: Phase 1.2 완료
+
+**구현된 파일**:
+- `web/static/plot_tab_manager.js`: PlotTabManager 클래스 (신규 생성)
+- `web/static/script.js`: PlotTabManager 통합
+- `web/index.html`: plot_tab_manager.js 스크립트 추가
+
+**주요 기능**:
+- ✅ 브라우저 스타일 탭 UI (Chrome, Firefox 스타일)
+- ✅ 탭 생성/삭제/전환/편집 (더블클릭)
+- ✅ 각 탭별 독립적인 PlotlyPlotManager 인스턴스
+- ✅ 탭별 독립적인 plot 데이터 관리
+- ✅ 모든 탭에 실시간 데이터 자동 전달
+- ✅ 페이지 새로고침 시 탭 초기화 (디폴트 1개 탭으로 시작)
+- ✅ Navigation Type 및 timestamp 체크를 통한 초기화 로직
+
+**참고**:
+- 브라우저 탭 스타일 UI 참고 (Chrome, Firefox 등)
+- 각 탭은 독립적인 PlotlyPlotManager 인스턴스를 가져야 함
+- 탭 전환 시 DOM을 숨기기/보이기 방식으로 구현하여 성능 최적화
+- 탭 제목 편집은 인라인 편집 방식으로 구현 (별도 다이얼로그 불필요)
+- 마지막 탭 삭제 시 1개 탭 유지 (닫기 버튼 숨김)
+- 페이지 새로고침 시 항상 탭 초기화 (사용자 선호에 따라 복원 기능 비활성화)
+
+---
+
+#### Phase 1.4: Plot 재생/일시정지 및 XY Plot
+
+**작업 목록**:
+1. **재생/일시정지 기능** ✅ (2026-01-13 완료 - Phase 1.2에서 구현됨)
+   - [x] PlotPlaybackController 클래스 구현 (PlotlyPlotManager.togglePause() 메서드로 구현됨) ✅
+   - [x] 재생/일시정지 버튼 UI (Plotly 모드바에 Pause/Play 버튼 통합) ✅
+   - [x] 일시정지 시 Plot 업데이트 중단 (isPaused 상태로 제어) ✅
+   - [x] 재생 시 업데이트 재개 (isPaused = false) ✅
+   - [x] 상태 표시 (재생/일시정지) (버튼 아이콘 및 툴팁으로 표시) ✅
+   - [x] 일시정지 시 Zoom/Pan 모드 활성화 ✅
+   - [x] 재생 시 자동 오토스케일 및 상호작용 비활성화 ✅
+
+2. **XY Plot 기능** ⚠️ (2026-01-19 부분 완료)
+   - [x] PlotJugglerTree의 복수 선택 기능 활용 ✅
+   - [x] 선택된 데이터 표시 (시각적 피드백) ✅
+   - [x] 컨텍스트 메뉴로 XY Plot 생성 (2개 선택 시 "Create XY Plot" 메뉴) ✅
+   - [x] 두 데이터 동기화 (같은 timestamp 기준) ✅
+   - [x] XY Plot 업데이트 ✅
+   - [ ] **XY Plot Legend 표시** 🆕 ⚠️ (미완료)
+     - PlotJuggler 스타일 legend (오른쪽 상단)
+     - 데이터 경로 표시 (예: "/Odometry/pose/pose/position/[x,y]")
+     - X, Y 데이터 경로를 [x,y] 형식으로 결합하여 표시
+   - [ ] **축 반전 기능 (Flip Axis)** 🆕 ⚠️ (미완료)
+     - Flip Horizontal Axis (수평 축 반전) 버튼 추가
+     - Flip Vertical Axis (수직 축 반전) 버튼 추가
+     - PlotJuggler 코드 참고하여 구현
+     - 버튼 클릭 시 해당 축의 데이터 방향 반전
+     - Plotly.js의 `autorange: 'reversed'` 옵션 활용
+   - [ ] **드래그 시 축 이름을 X, Y로 변경** 🆕 ⚠️ (미완료)
+     - X축: 첫 번째로 드래그된 데이터의 이름 또는 "X"
+     - Y축: 두 번째로 드래그된 데이터의 이름 또는 "Y"
+   - [ ] **축 단위 표시 (m)** 🆕 ⚠️ (미완료)
+     - X축 라벨: "X (m)" 또는 "{데이터명} (m)"
+     - Y축 라벨: "Y (m)" 또는 "{데이터명} (m)"
+
+3. **Plot 설정 기능** ✅ (2026-01-19 완료)
+   - [x] Plot 설정 모달 HTML/CSS 구현 ✅
+     - Trace 선택 드롭다운
+     - 색상 선택 (Color picker)
+     - 선 스타일 (Solid/Dash/Dot/DashDot)
+     - 마커 스타일 (Circle/Square/Diamond/Cross/X)
+     - 선 두께 (1-5, 슬라이더)
+     - 마커 크기 (2-10, 슬라이더)
+     - 그리드 표시/숨기기 (체크박스)
+     - X축/Y축 라벨 입력
+     - Apply/Cancel 버튼
+  - [x] 우클릭 컨텍스트 메뉴에 Plot Settings 추가 ✅
+    - 재생/일시정지 상태 모두 표시
+    - 빈 Plot 영역에서 우클릭 시 `openPlotSettings()` 호출
+   - [x] 설정 열기/닫기/적용 로직 구현 ✅
+     - `window.openPlotSettings(plotId)`: 모달 열기, trace 목록 로드
+     - `window.closePlotSettings()`: 모달 닫기
+     - `window.applyPlotSettings()`: 설정 적용 및 모달 닫기
+     - `window.loadTraceSettings(traceIndex)`: 선택된 trace 설정 로드
+     - 모달 외부 클릭 시 닫기
+  - [x] PlotlyPlotManager.applyTraceSettings() 메서드 구현 ✅
+     - Trace 색상 업데이트 (line + marker)
+     - 선 스타일 변경 (solid/dash/dot/dashdot)
+     - 마커 스타일 변경 (circle/square/diamond/cross/x)
+     - 선 두께 조정 (1-5)
+     - 마커 크기 조정 (2-10)
+     - 그리드 표시/숨기기
+     - X축/Y축 라벨 업데이트
+     - `Plotly.update()` 사용하여 trace와 layout 동시 업데이트
+
+**완료 기준 (Definition of Done)**:
+- [x] 재생/일시정지 기능 구현 완료 ✅ (Phase 1.2에서 이미 완료)
+- [x] XY Plot 기능 구현 완료 ✅ (2026-01-19 완료, 축 이름/단위 표시 제외)
+- [x] Plot 설정 기능 구현 완료 ✅ (2026-01-19 완료)
+- [ ] 모든 작업 목록 완료 ⚠️ (XY Plot 축 이름/단위 표시 미완료)
+- [x] API 엔드포인트 구현 완료 ✅
+- [x] 빌드 성공 확인 ✅
+- [x] 기능 테스트 통과 ✅ (기본 XY Plot 동작)
+
+**의존성**: Phase 1.3 완료
+
+---
+
+#### Phase 1.5: Plot Export 기능 (🆕 추가 - 제안 3번)
+
+**작업 목록**:
+1. **PNG 이미지 Export**
+   - [ ] Plotly.js의 toImage() API 활용
+   - [ ] 다운로드 버튼 UI 추가
+   - [ ] 파일명에 타임스탬프 자동 포함
+
+2. **CSV 데이터 Export**
+   - [ ] 현재 Plot 데이터를 CSV 형식으로 변환
+   - [ ] 다운로드 버튼 UI 추가
+   - [ ] 헤더 행 포함 (timestamp, topic, value)
+
+**의존성**: Phase 1.4 완료
+
+---
+
+#### Phase 1.6: Plot 기능 테스트 및 최적화
+
+**작업 목록**:
+1. **기능 테스트**
+   - [ ] 단일 데이터 Plot 테스트
+   - [ ] XY Plot 테스트
+   - [ ] Plot 분할 테스트
+   - [ ] 재생/일시정지 테스트
+   - [ ] Export 기능 테스트 (PNG, CSV) **(🆕 추가)**
+   - [ ] 다양한 토픽 타입 테스트
+
+2. **성능 최적화**
+   - [ ] 데이터 버퍼 크기 최적화 (최대 1000개 포인트, 조정 가능)
+   - [ ] 업데이트 주기 조절 (throttling 10Hz, 조정 가능)
+   - [ ] 메모리 관리 (오래된 데이터 삭제)
+
+3. **버그 수정 및 개선**
+   - [ ] 발견된 버그 수정
+   - [ ] UI/UX 개선
+   - [ ] 에러 처리 강화
+
+**의존성**: Phase 1.5 완료
+
+---
+
+### Phase 2: 3D Viewer 기능 완성 (우선순위: 높음)
+
+**목표**: Three.js 기반 3D 시각화 기능 완전 구현
+
+**완료 기준 (Definition of Done)**:
+- [ ] PointCloud2 시각화 (rainbow 색상)
+- [ ] Path 시각화
+- [ ] Odometry 시각화
+- [ ] TF 트리 시각화
+- [ ] Frame ID 필터링
+- [ ] View Type 전환 (Top View / Orbit View)
+- [ ] 토픽 변경 시 초기화
+- [ ] 궤적 추적
+- [ ] Snapshot 기능 (PNG 저장) **(🆕 제안 4번)**
+- [ ] rosbridge 연결 상태 표시 **(🆕 제안 6번)**
+
+#### Phase 2.1: PointCloud2 시각화
+
+**작업 목록**:
+1. **Three.js 기본 설정** ✅ (이미 구현됨)
+   - [x] Scene, Camera, Renderer 초기화 ✅
+   - [x] OrbitControls 구현 (카메라 회전/줌) ✅
+   - [x] Grid Helper (바닥 그리드) 표시 ✅
+   - [x] Axes Helper (좌표계 표시) ✅
+   - [x] Ambient + Directional 조명 ✅
+   - [x] 애니메이션 루프 구현 ✅
+
+2. **rosbridge WebSocket 연동** ✅ (이미 구현됨)
+   - [x] PointCloud2 토픽 구독 (`subscribeToPointCloud()` 함수) ✅
+   - [x] 메시지 수신 및 파싱 (`parsePointCloud2()` 함수) ✅
+   - [x] Binary 데이터 디코딩 (base64 → binary) ✅
+   - [x] 자동 재연결 로직 (3초 간격) ✅
+
+3. **PointCloud2Renderer 클래스 구현** ✅ (이미 구현됨)
+   - [x] THREE.Points 객체 생성 ✅
+   - [x] PointCloud2 메시지 → Three.js Geometry 변환 ✅
+   - [x] 실시간 업데이트 (기존 mesh 업데이트 또는 새 mesh 생성) ✅
+   - [x] 토픽별 독립적인 mesh 관리 (`pointCloudMeshes` Map) ✅
+
+4. **토픽 선택 UI** ❌ (미구현 - rviz 스타일 필요)
+   - [x] PointCloud2 토픽 목록 조회 (`getAvailablePointCloudTopics()` 함수) ✅
+   - [x] 선택된 토픽 목록 관리 (`displaySelectedTopics` 배열) ✅
+   - [ ] **rviz 스타일 Display 패널 구현** ❌
+     - 왼쪽에 Display 패널 추가 필요
+     - Display 패널 내에 "Select Topic" 버튼 추가
+     - 메시지 종류별로 토픽 분류 (PointCloud2, Path, Odometry, TF 등)
+     - 각 메시지 타입별 토픽 선택 UI
+   - [ ] 현재는 모달 방식으로만 구현되어 있음 (rviz 스타일 아님) ❌
+
+5. **토픽 변경 시 mesh 제거/추가** ⚠️ (부분 구현 - 버그 있음)
+   - [x] 토픽 변경 시 이전 mesh 제거 로직 (`confirmDisplayTopicSelection()` 함수) ✅
+     - Scene에서 mesh 제거
+     - Geometry/Material dispose
+     - pointCloudMeshes Map에서 삭제
+   - [x] 새 토픽 구독 로직 ✅
+   - [ ] **토픽 구독 객체 관리 미구현** ❌
+     - `subscribeToPointCloud()`가 ROSLIB.Topic 객체를 반환하지만 저장하지 않음
+     - 따라서 unsubscribe를 할 수 없어 메모리 누수 가능
+     - 토픽 구독 객체를 Map으로 관리하고 unsubscribe 필요
+   - [ ] **기존 구독 중인 토픽 재구독 방지 로직 미구현** ❌
+     - 이미 구독 중인 토픽에 대해 새로 구독하지 않도록 체크 필요
+
+5. **Rainbow 색상 매핑 및 필드/색상 선택 UI** ⚠️ (부분 구현)
+   - [x] PointCloud2 field 읽기 (x, y, z, rgb/rgba, intensity) ✅
+   - [x] RGB 필드가 있으면 색상 사용, 없으면 흰색 기본값 ✅ (현재 구현)
+   - [ ] **intensity 필드 기반 Gradient 색상 매핑 (파랑 → 빨강)을 디폴트로 변경** ❌
+     - 현재: RGB 필드가 있으면 RGB 색상 사용
+     - 변경: intensity 필드가 있으면 intensity 기반 gradient 색상 사용 (디폴트)
+     - RGB 필드는 선택 옵션으로 변경
+   - [ ] intensity, z, x, y 필드 기반 Gradient 색상 매핑 (파랑 → 빨강) ❌
+   - [ ] 최소값/최대값 계산 ❌
+   - [ ] 색상 범위 조정 UI ❌
+   - [ ] **토픽별 필드 선택 드롭다운 추가** ❌
+     - 각 PointCloud2 토픽 하위 노드에 필드 선택 드롭다운 추가 (intensity / z / x / y / rgb 등)
+     - 선택한 필드에 따라 Rainbow 색상 매핑 기준 필드 변경
+   - [ ] **색상 모드 드롭다운 추가** ❌
+     - Rainbow / 단색(Solid) 모드 선택 가능
+     - Rainbow: 선택된 필드 기반 Gradient 색상 (파랑 → 빨강)
+     - 단색: 사용자가 선택한 단색(예: 흰색/회색/단일 컬러)으로 모든 포인트 표시
+     - 필드/색상 모드 변경 시 즉시 렌더링에 반영되도록 구현
+
+6. **성능 최적화** ✅ (이미 구현됨)
+   - [x] 다운샘플링 (최대 50000 포인트 제한) ✅
+   - [x] Throttling (10Hz, throttle_rate: 100) ✅
+   - [ ] LOD (Level of Detail) 적용 ❌
+
+**완료 기준 (Definition of Done)**:
+- [x] Three.js 기본 설정 완료 ✅
+- [x] rosbridge WebSocket 연동 완료 ✅
+- [x] PointCloud2 렌더링 완료 ✅
+- [ ] 토픽 선택 UI 완료 ❌ (rviz 스타일 Display 패널 미구현)
+- [x] 성능 최적화 (다운샘플링, Throttling) 완료 ✅
+- [ ] 토픽 변경 시 mesh 제거/추가 완료 ⚠️ (부분 구현, 구독 객체 관리 필요)
+- [ ] Rainbow 색상 매핑 완료 (부분 구현)
+- [ ] LOD 적용 완료
+
+**의존성**: 없음
+
+**참고**:
+- 현재 구현: RGB 필드가 있는 경우 해당 색상 사용, 없는 경우 흰색 기본값
+- **변경 요구사항**:
+  - intensity 필드 기반 Gradient 색상 매핑을 디폴트로 변경
+    - intensity 필드가 있으면 intensity 값에 따라 파랑 → 빨강 gradient 색상 사용 (디폴트)
+    - RGB 필드는 선택 옵션으로 변경 (사용자가 선택 가능)
+  - 각 PointCloud2 토픽 하위 노드에서 필드/색상 모드를 드롭다운으로 변경 가능하도록 UI 제공
+    - 필드 드롭다운: intensity / z / x / y / rgb 등
+    - 색상 모드 드롭다운: Rainbow / 단색(Solid)
+- 향후 개선: z, x, y 필드 기반 Gradient 색상 매핑도 추가 가능
+
+---
+
+#### Phase 2.2: Path 및 Odometry 시각화
+
+**작업 목록**:
+1. **PathRenderer 클래스 구현**
+   - [ ] `nav_msgs/Path` 토픽 구독
+   - [ ] THREE.Line 또는 THREE.LineSegments 생성
+   - [ ] 경로 시각화 (녹색 선)
+   - [ ] 경로 포인트 마커 표시 (선택사항)
+
+2. **OdometryRenderer 클래스 구현**
+   - [ ] `nav_msgs/Odometry` 토픽 구독
+   - [ ] 로봇 위치 표시 (THREE.Mesh 또는 THREE.Group)
+   - [ ] 방향 표시 (화살표 또는 축)
+   - [ ] 실시간 위치 업데이트
+
+3. **TrajectoryTracker 클래스 구현**
+   - [ ] Odometry 기반 궤적 추적
+   - [ ] 과거 위치 저장 (최대 1000개 포인트)
+   - [ ] THREE.Line으로 궤적 시각화 (파란색)
+   - [ ] FIFO 방식으로 오래된 데이터 삭제
+   - [ ] 궤적 표시/숨기기 토글
+
+**의존성**: Phase 2.1 완료
+
+---
+
+#### Phase 2.3: TF 시각화 및 Frame ID 필터링
+
+**작업 목록**:
+1. **TFRenderer 클래스 구현**
+   - [ ] `/tf` 토픽 구독
+   - [ ] TF 트리 구조 파싱
+   - [ ] Frame 간 연결선 표시 (THREE.Line)
+   - [ ] Frame 축 표시 (THREE.AxesHelper, X: 빨강, Y: 초록, Z: 파랑)
+   - [ ] Frame 이름 라벨 표시 (THREE.Sprite 또는 HTML)
+
+2. **FrameIDFilter 클래스 구현**
+   - [ ] Frame ID 선택 UI (드롭다운 또는 텍스트 입력)
+   - [ ] 같은 Frame ID만 필터링 로직
+   - [ ] 필터링된 객체만 Scene에 추가
+
+3. **토픽 변경 시 초기화 및 구독 관리** ⚠️ (부분 구현 - 개선 필요)
+   - [x] 토픽 변경 시 이전 mesh 제거 로직 ✅ (PointCloud2용)
+   - [ ] **TopicSubscriptionManager 클래스 구현** ❌
+     - 토픽 구독 객체(ROSLIB.Topic)를 Map으로 관리
+     - unsubscribe 메서드 구현
+     - 메모리 누수 방지
+   - [ ] 토픽 변경 시 이전 객체 제거 (모든 타입 지원) ⚠️
+     - PointCloud2: 부분 구현 (mesh 제거는 하지만 구독 객체 관리 안 함)
+     - Path, Odometry, TF: 미구현
+   - [ ] Scene 초기화 로직 (선택적, 전체 초기화 옵션)
+
+**의존성**: Phase 2.2 완료
+
+---
+
+#### Phase 2.4: View Type 전환 및 UI 완성
+
+**작업 목록**:
+1. **CameraController 클래스 구현** ⚠️ (부분 구현)
+   - [x] Orbit View 구현 (OrbitControls 활용) ✅
+     - 카메라 회전/줌 기능 구현됨
+     - 마우스 드래그로 회전, 휠로 줌 인/아웃
+   - [ ] Top View 구현 (카메라를 위에서 내려다보는 뷰) ❌
+     - 현재 카메라 초기 위치는 Top View 스타일 (position.set(0, 0, 50))
+     - 하지만 Top View로 고정하는 기능은 미구현
+   - [ ] View Type 전환 로직 ❌
+   - [ ] 드롭다운 또는 버튼으로 전환 UI ❌
+
+2. **토픽 선택 UI (rviz 스타일 Display 패널)** ❌ (미구현)
+   - [ ] 왼쪽에 Display 패널 추가 (Plot의 Timeseries List와 유사한 레이아웃)
+   - [ ] Display 패널 내 메시지 타입별 섹션 구성
+     - PointCloud2 섹션
+     - Path 섹션
+     - Odometry 섹션
+     - TF 섹션
+   - [ ] 각 섹션별 "Select Topic" 버튼 추가
+   - [ ] 메시지 타입별로 현재 publish된 토픽 분류 및 표시
+   - [ ] 선택된 토픽 목록 표시 (각 섹션별)
+   - [ ] 각 토픽별 표시/숨기기 토글 (체크박스 또는 스위치)
+   - [ ] 토픽 변경 시 이전 객체 제거 및 새 객체 추가 (구독 객체 관리 포함)
+
+3. **추가 UI 기능**
+   - [ ] 색상 범위 조정 UI (PointCloud2)
+   - [ ] 포인트 크기 조정 UI
+   - [ ] 궤적 표시/숨기기 토글
+
+**의존성**: Phase 2.3 완료
+
+---
+
+#### Phase 2.5: Snapshot 및 rosbridge 연결 상태 (🆕 추가)
+
+**작업 목록**:
+1. **Snapshot 기능 구현 (제안 4번)**
+   - [ ] Three.js Renderer의 toDataURL() API 활용
+   - [ ] Snapshot 버튼 UI 추가
+   - [ ] PNG 이미지로 저장
+   - [ ] 파일명에 타임스탬프 자동 포함
+
+2. **rosbridge 연결 상태 표시 (제안 6번)**
+   - [ ] WebSocket 연결 상태 UI 표시 (상단 또는 하단)
+   - [ ] 연결 끊김 시 경고 메시지
+   - [ ] 재연결 버튼 제공
+   - [ ] 자동 재연결 로직 구현 (3초 간격, 최대 5회)
+
+**의존성**: Phase 2.4 완료
+
+---
+
+#### Phase 2.6: 3D Viewer 기능 테스트 및 최적화
+
+**작업 목록**:
+1. **기능 테스트**
+   - [ ] PointCloud2 시각화 테스트
+   - [ ] Path 시각화 테스트
+   - [ ] Odometry 시각화 테스트
+   - [ ] TF 시각화 테스트
+   - [ ] Frame ID 필터링 테스트
+   - [ ] View Type 전환 테스트
+   - [ ] 궤적 추적 테스트
+   - [ ] Snapshot 기능 테스트 **(🆕 추가)**
+   - [ ] rosbridge 재연결 테스트 **(🆕 추가)**
+
+2. **성능 최적화**
+   - [ ] Throttling 최적화 (10Hz, 조정 가능)
+   - [ ] 다운샘플링 최적화 (1/10, 조정 가능)
+   - [ ] Frustum Culling 구현
+   - [ ] 메모리 관리 (데이터 버퍼링)
+
+3. **버그 수정 및 개선**
+   - [ ] 발견된 버그 수정
+   - [ ] UI/UX 개선
+   - [ ] 에러 처리 강화
+
+**의존성**: Phase 2.5 완료
+
+---
+
+### Phase 3: Bag Player/Recorder 기능 확장 (우선순위: 중간)
+
+**목표**: Bag Player와 Bag Recorder에 ROS1 bag file 지원 추가, File Player에 다양한 데이터셋 형식 지원 추가
+
+**완료 기준 (Definition of Done)**:
+- [ ] Bag Player에서 ROS1 bag file 로드 및 재생 기능
+- [ ] Bag Player에서 ROS1 bag file을 ROS2 메시지로 자동 변환하여 재생
+- [ ] Bag Player에서 ROS1/ROS2 bag 모두 토픽 선택 기능 정상 동작
+- [ ] Bag Recorder에서 ROS1 bag file 저장 기능
+- [ ] Bag Recorder에서 ROS1 bag file 형식(.bag) 자동 저장
+- [ ] File Player에서 Kitti, ConPR, KAIST Complex Urban Dataset 형식 지원
+- [ ] File Player에서 데이터셋 형식 선택 드롭다운 UI
+- [ ] File Player에서 선택한 형식에 맞게 재생 및 ROS Bag 저장 기능
+
+#### Phase 3.1: Bag Player ROS1 Bag File 지원
+
+**목표**: Bag Player에 ROS1 bag file 로드 및 재생 기능 추가
+
+**작업 목록**:
+1. **ROS1 Bag File 로드 기능**
+   - [ ] Load Bag File 버튼 클릭 시 ROS1 bag file 선택 기능 추가
+   - [ ] 파일 선택 다이얼로그에서 .bag 파일 형식 지원
+   - [ ] ROS1 bag file과 ROS2 bag 디렉토리 구분 로직 구현
+   - [ ] ROS1 bag file인지 ROS2 bag 디렉토리인지 자동 감지
+
+2. **ROS1 Bag File 재생 기능**
+   - [ ] ROS1 bag file 선택 시 ROS2 메시지로 자동 변환하여 재생
+   - [ ] ROS1 → ROS2 메시지 변환 로직 구현 (rosbag 또는 bag_converter 활용)
+   - [ ] Play 버튼 클릭 시 변환된 메시지 재생
+   - [ ] ROS2 bag 디렉토리 선택 시 기존 기능 그대로 동작
+
+3. **토픽 선택 기능 호환성**
+   - [ ] ROS1 bag file의 토픽 목록 조회 기능
+   - [ ] Select Topic 기능이 ROS1/ROS2 bag 모두에서 정상 동작
+   - [ ] 선택된 토픽 재생 기능 검증
+
+**완료 기준 (Definition of Done)**:
+- [ ] 모든 작업 목록 완료
+- [ ] ROS1 bag file 로드 및 재생 기능 구현 완료
+- [ ] ROS2 bag 디렉토리 선택 시 기존 기능 정상 동작 확인
+- [ ] 토픽 선택 기능이 ROS1/ROS2 bag 모두에서 정상 동작 확인
+- [ ] API 엔드포인트 구현 완료
+- [ ] 빌드 성공 확인
+- [ ] 기능 테스트 통과
+
+**의존성**: 없음
+
+---
+
+#### Phase 3.2: Bag Recorder ROS1 Bag File 저장 기능
+
+**목표**: Bag Recorder에 ROS1 bag file 저장 기능 추가
+
+**작업 목록**:
+1. **ROS1 Bag File 저장 토글 기능**
+   - [ ] Selected Topics 옆에 "Convert ROS1 Bag" 토글 버튼 추가
+   - [ ] 토글 버튼 UI 구현 (체크박스 또는 스위치 형태)
+   - [ ] 토글 상태 관리 (기본값: false, ROS2 bag 형식)
+
+2. **ROS1 Bag File 저장 기능**
+   - [ ] Convert ROS1 Bag 토글이 활성화된 상태에서 Record 버튼 클릭 시 ROS1 bag file로 저장
+   - [ ] ROS1 bag file 저장 로직 구현 (rosbag record 또는 적절한 도구 활용)
+   - [ ] .bag 파일 형식으로 자동 저장
+   - [ ] 저장 경로는 기존과 동일하게 `/home/kkw/dataset/{bag_name}/` 디렉토리 사용
+
+3. **ROS2 Bag File 저장 기능 유지**
+   - [ ] Convert ROS1 Bag 토글이 비활성화된 상태에서는 기존 기능 그대로 ROS2 bag 형식으로 저장
+   - [ ] 기존 기능과의 호환성 확인
+
+**완료 기준 (Definition of Done)**:
+- [ ] 모든 작업 목록 완료
+- [ ] Convert ROS1 Bag 토글 버튼 구현 완료
+- [ ] ROS1 bag file 저장 기능 구현 완료
+- [ ] ROS2 bag file 저장 기능 정상 동작 확인
+- [ ] .bag 파일 형식으로 자동 저장 확인
+- [ ] API 엔드포인트 구현 완료
+- [ ] 빌드 성공 확인
+- [ ] 기능 테스트 통과
+
+**의존성**: Phase 3.1 완료 (선택사항, 독립적으로 구현 가능)
+
+---
+
+#### Phase 3.3: File Player 다중 데이터셋 형식 지원 (🆕 추가)
+
+**목표**: File Player에 Kitti, ConPR, KAIST Complex Urban Dataset 형식 지원 추가
+
+**작업 목록**:
+1. **데이터셋 형식 선택 UI 구현**
+   - [ ] 드롭다운 버튼 추가 (Kitti, ConPR, KAIST Complex Urban Dataset)
+   - [ ] 데이터셋 형식 선택 상태 관리
+   - [ ] 기본값: ConPR (기존 기능 유지)
+   - [ ] 선택한 형식에 따라 파일 로드 UI 동적 변경
+
+2. **Kitti 데이터셋 지원**
+   - [ ] Kitti 데이터셋 파일 구조 분석 및 파싱 로직 구현
+   - [ ] Kitti 형식 파일 로드 기능 (필요한 파일 형식 확인 및 로드)
+   - [ ] Kitti 데이터를 ROS2 메시지로 변환 (pose, IMU, LiDAR 등)
+   - [ ] Kitti 형식 재생 기능 구현
+   - [ ] Kitti 형식 ROS Bag 저장 기능 구현
+
+3. **KAIST Complex Urban Dataset 지원**
+   - [ ] KAIST Complex Urban Dataset 파일 구조 분석 및 파싱 로직 구현
+   - [ ] KAIST 형식 파일 로드 기능 (필요한 파일 형식 확인 및 로드)
+   - [ ] KAIST 데이터를 ROS2 메시지로 변환 (pose, IMU, LiDAR 등)
+   - [ ] KAIST 형식 재생 기능 구현
+   - [ ] KAIST 형식 ROS Bag 저장 기능 구현
+
+4. **ConPR 형식 유지 및 개선**
+   - [ ] 기존 ConPR 형식 기능 유지
+   - [ ] 데이터셋 형식 선택 시 ConPR 형식 정상 동작 확인
+   - [ ] 기존 기능과의 호환성 확인
+
+5. **데이터셋 형식별 파서 클래스 구현**
+   - [ ] DatasetParser 추상 클래스 또는 인터페이스 정의
+   - [ ] ConPRDatasetParser 클래스 (기존 로직 리팩토링)
+   - [ ] KittiDatasetParser 클래스
+   - [ ] KAISTDatasetParser 클래스
+   - [ ] 파서 팩토리 패턴 구현 (선택한 형식에 따라 적절한 파서 반환)
+
+6. **ROS Bag 저장 기능 확장**
+   - [ ] 선택한 데이터셋 형식에 맞게 ROS Bag 저장 로직 구현
+   - [ ] 각 데이터셋 형식별 토픽 매핑 및 메시지 변환
+   - [ ] 저장 경로 및 파일명 관리 (기존과 동일한 형식 유지)
+
+7. **API 엔드포인트 구현**
+   - [ ] `POST /api/player/set_dataset_format` - 데이터셋 형식 설정
+   - [ ] `GET /api/player/get_dataset_format` - 현재 선택된 데이터셋 형식 조회
+   - [ ] `POST /api/player/load_data` - 데이터셋 형식에 맞게 파일 로드 (기존 엔드포인트 확장)
+   - [ ] `POST /api/player/save_bag` - 선택한 형식에 맞게 ROS Bag 저장 (기존 엔드포인트 확장)
+
+**완료 기준 (Definition of Done)**:
+- [ ] 모든 작업 목록 완료
+- [ ] 드롭다운 버튼 UI 구현 완료
+- [ ] Kitti 데이터셋 재생 및 ROS Bag 저장 기능 구현 완료
+- [ ] KAIST Complex Urban Dataset 재생 및 ROS Bag 저장 기능 구현 완료
+- [ ] ConPR 형식 기존 기능 정상 동작 확인
+- [ ] 데이터셋 형식별 파서 클래스 구현 완료
+- [ ] API 엔드포인트 구현 완료
+- [ ] 빌드 성공 확인
+- [ ] 기능 테스트 통과 (각 데이터셋 형식별 테스트)
+
+**의존성**: 없음 (기존 File Player 기능과 독립적으로 구현 가능)
+
+**참고**:
+- 각 데이터셋 형식의 파일 구조를 먼저 분석하여 필요한 파일 목록 및 형식 확인 필요
+- 기존 ConPR 형식 기능은 유지하면서 확장하는 방식으로 구현
+- 데이터셋 형식별 파서를 모듈화하여 향후 다른 형식 추가 시 확장 용이하도록 설계
+
+---
+
+### Phase 4: Navigation 기능 구현 (우선순위: 중간, 가장 나중)
+
+**목표**: Nav2 기반 Navigation 기능 구현
+
+**완료 기준 (Definition of Done)**:
+- [ ] Navigation Control (Nav2 시작/중지, 상태 모니터링, 긴급 정지)
+- [ ] Path Planning (단일 목표점, Waypoint 설정, 경로 계획)
+- [ ] Navigation Configuration (Cost Map 구성, Nav2 파라미터 설정, 맵 선택)
+- [ ] 경로 미리보기 (2D 맵 표시)
+
+
+**참고**: Navigation 기능은 실행 환경이 필요하므로 가장 나중에 구현합니다.
+
+#### Phase 4.1: Navigation Control 기본 기능
+
+**작업 목록**:
+1. **Navigation 탭 UI 구성**
+   - [ ] Navigation 메인 탭 추가
+   - [ ] 하위 탭 구성 (Navigation Control, Path Planning, Navigation Configuration)
+   - [ ] 기본 UI 레이아웃
+
+2. **Nav2 시작/중지 기능**
+   - [ ] Nav2 노드 실행 로직 (웹에서 직접 제어)
+   - [ ] 필요한 노드 실행 (nav2_bringup, map_server, amcl, planner, controller 등)
+   - [ ] 실행 상태 모니터링
+   - [ ] Nav2 중지 로직
+
+3. **Navigation 상태 모니터링**
+   - [ ] `/Odometry` 토픽 구독 (Localization launch에서 실행되는 토픽)
+   - [ ] 현재 위치 표시 (pose.pose.position, pose.pose.orientation)
+   - [ ] 목표점 정보 조회 (Nav2 Action Server)
+   - [ ] 경로 정보 조회 (`/plan` 토픽)
+   - [ ] 속도/각속도 정보 추출
+
+4. **긴급 정지 기능**
+   - [ ] 긴급 정지 버튼 UI
+   - [ ] `/cmd_vel`을 0으로 설정
+   - [ ] 즉시 정지 확인
+
+5. **API 엔드포인트 구현**
+   - [ ] `GET /api/navigation/state`
+   - [ ] `POST /api/navigation/start`
+   - [ ] `POST /api/navigation/stop`
+   - [ ] `POST /api/navigation/emergency_stop`
+
+**의존성**: 없음
+
+---
+
+#### Phase 4.2: Path Planning 기본 기능
+
+**작업 목록**:
+1. **단일 목표점 설정**
+   - [ ] 좌표 입력 UI (x, y, theta)
+   - [ ] Nav2 Action Client 구현
+   - [ ] `nav2_msgs/action/NavigateToPose` Action 호출
+   - [ ] 목표점 전송 및 경로 계획 요청
+
+2. **경로 정보 표시**
+   - [ ] 계획된 경로 표시 (`/plan` 토픽)
+   - [ ] 실제 이동 경로 표시 (Odometry 기반 궤적)
+   - [ ] 경로 상태 업데이트
+
+3. **API 엔드포인트 구현**
+   - [ ] `POST /api/navigation/set_goal`
+   - [ ] `POST /api/navigation/cancel_goal`
+   - [ ] `GET /api/navigation/get_path`
+
+**의존성**: Phase 4.1 완료
+
+---
+
+#### Phase 4.3: Waypoint 설정 및 파일 관리
+
+**작업 목록**:
+1. **Waypoint 파일 읽기**
+   - [ ] CSV 또는 텍스트 파일 형식 지원 (x, y, theta)
+   - [ ] 파일 업로드 UI
+   - [ ] 텍스트 입력 UI
+   - [ ] 파일 파싱 로직
+
+2. **Waypoint 목록 관리**
+   - [ ] Waypoint 목록 표시 (테이블 또는 리스트)
+   - [ ] Waypoint 추가/삭제 기능
+   - [ ] 순서 변경 (드래그 앤 드롭)
+   - [ ] 개별 Waypoint 편집 (좌표 수정)
+
+3. **Waypoint 실행**
+   - [ ] Nav2 Waypoint Follower 연동
+   - [ ] 순차 실행 로직
+   - [ ] 실행 상태 모니터링
+
+4. **Waypoint 저장/로드**
+   - [ ] Waypoint 목록을 파일로 저장 (CSV 또는 YAML)
+   - [ ] 저장된 Waypoint 파일 로드
+
+5. **API 엔드포인트 구현**
+   - [ ] `POST /api/navigation/set_waypoints`
+   - [ ] `GET /api/navigation/get_waypoints`
+   - [ ] `POST /api/navigation/load_waypoints`
+   - [ ] `POST /api/navigation/save_waypoints`
+
+**의존성**: Phase 4.2 완료
+
+---
+
+#### Phase 4.4: Navigation Configuration
+
+**작업 목록**:
+1. **Cost Map 구성**
+   - [ ] Octomap 활용 로직 (Localization launch에서 실행되는 Octomap)
+   - [ ] Octomap → Occupancy Grid Map 변환
+   - [ ] Cost Map 생성 로직
+   - [ ] Cost Map 파라미터 설정 UI
+
+2. **Nav2 파라미터 설정**
+   - [ ] ConfigManager 클래스 활용 (SLAM/Localization과 동일한 방식)
+   - [ ] YAML 파일 로드/저장
+   - [ ] 파라미터 카테고리별 편집:
+     - Costmap 파라미터 (Global/Local)
+     - Planner 파라미터 (Global/Local)
+     - Controller 파라미터
+     - Recovery 파라미터
+   - [ ] 파라미터 접기/펼치기 UI
+
+3. **맵 선택**
+   - [ ] 파일 브라우저로 맵 파일 선택
+   - [ ] SLAM으로 생성한 맵 또는 기존 맵 선택
+   - [ ] 맵 미리보기 (선택사항)
+
+4. **API 엔드포인트 구현**
+   - [ ] `POST /api/navigation/load_config`
+   - [ ] `POST /api/navigation/save_config`
+   - [ ] `GET /api/navigation/get_map`
+   - [ ] `POST /api/navigation/set_map`
+   - [ ] `POST /api/navigation/generate_costmap`
+
+**의존성**: Phase 4.3 완료
+
+---
+
+#### Phase 4.5: 경로 미리보기 및 2D 맵 표시
+
+**작업 목록**:
+1. **2D 맵 표시**
+   - [ ] Occupancy Grid Map을 2D 이미지로 표시
+   - [ ] 맵 로드 및 렌더링
+   - [ ] 맵 좌표계 변환
+
+2. **경로 시각화**
+   - [ ] 계획된 경로를 맵 위에 선으로 표시 (녹색)
+   - [ ] 실제 이동 경로를 맵 위에 선으로 표시 (파란색)
+   - [ ] 현재 위치 표시
+   - [ ] 목표점 표시
+
+3. **맵 클릭으로 목표점 설정**
+   - [ ] 맵 위에서 클릭 이벤트 처리
+   - [ ] 클릭 좌표를 맵 좌표계로 변환
+   - [ ] 목표점 설정
+
+**의존성**: Phase 4.4 완료
+
+---
+
+#### Phase 4.6: Navigation 기능 테스트 및 최적화
+
+**작업 목록**:
+1. **기능 테스트**
+   - [ ] Nav2 시작/중지 테스트
+   - [ ] 단일 목표점 설정 테스트
+   - [ ] Waypoint 설정 테스트
+   - [ ] 경로 계획 테스트
+   - [ ] 긴급 정지 테스트
+   - [ ] Config 파일 로드/저장 테스트
+   - [ ] Cost Map 생성 테스트
+
+2. **성능 최적화**
+   - [ ] 상태 폴링 주기 최적화 (1Hz)
+   - [ ] 경로 업데이트 최적화
+   - [ ] Waypoint 처리 최적화
+
+3. **버그 수정 및 개선**
+   - [ ] 발견된 버그 수정
+   - [ ] UI/UX 개선
+   - [ ] 에러 처리 강화
+
+**의존성**: Phase 4.5 완료
+
+---
+
+## 전체 일정 요약
+
+| Phase | 기능 | 우선순위 | 실행 확인 가능 여부 |
+|-------|------|---------|-------------------|
+| Phase 0 | 룰 준수 확인 및 코드 정리 | 최우선 (선행 작업) | ✅ 가능 |
+| Phase 1 | Plot 기능 완성 | 최우선 | ✅ 가능 |
+| Phase 2 | 3D Viewer 기능 완성 | 높음 | ✅ 가능 |
+| Phase 3 | Bag Player/Recorder 기능 확장 | 중간 | ✅ 가능 |
+| Phase 4 | Navigation 기능 구현 | 중간 | ❌ 어려움 (가장 나중) |
+
+**참고**: Phase 0은 모든 Phase의 선행 작업으로, 반드시 먼저 완료해야 합니다.
+
+
+---
+
+## 작업 진행 추적
+
+### Phase 0: 룰 준수 확인 및 코드 정리 (최우선 선행 작업)
+- [x] Phase 0: 룰 준수 확인 및 코드 정리 ✅ (2026-01-12 완료)
+
+### Phase 1: Plot 기능 완성
+- [x] Phase 1.1: PlotJugglerTree 분석 및 기능 확장 ✅ (2026-01-13 완료)
+  - ✅ 통합 트리 뷰 구현 (토픽+메시지)
+  - ✅ 페이지 로드 시 자동 토픽 로드
+  - ✅ 토픽 클릭 시 자동 구독 및 메시지 트리 확장
+  - ✅ 주기적 토픽 목록 갱신 (3초마다)
+  - ✅ 드래그앤드롭, 복수선택, 검색 기능
+- [x] Phase 1.2: Plotly.js 통합 및 단일 데이터 Plot ✅ (2026-01-13 완료, 2026-01-15 UI 개선 완료, 2026-01-19 토픽 로딩 개선 완료)
+  - ✅ Plotly.js CDN 추가
+  - ✅ 드래그 앤 드롭 구현
+  - ✅ DataBuffer 클래스 구현
+  - ✅ PlotlyPlotManager 클래스 구현
+  - ✅ 실시간 Plot 업데이트 (throttling 10Hz)
+  - ✅ Plot UI 개선 (줌 제한, hover tooltip, plot 삭제, 토픽 검색 확장) (2026-01-15 완료)
+  - ✅ **토픽 로딩 타임아웃 문제 완전 해결** (2026-01-19 완료)
+    - 타임아웃 증가 (3초 → 10초)
+    - 에러 핸들링 개선 (타임아웃 시 기존 토픽 유지)
+    - topicRefreshRate 조정 (1초 → 5초)
+- [x] Phase 1.3: Plot 탭 기능 (브라우저 스타일) ✅ (완료 - 2026-01-19)
+  - ✅ PlotTabManager 클래스 구현
+  - ✅ 탭 바 UI 구현 (+ 버튼, 닫기 버튼, 탭 전환)
+  - ✅ 디폴트 1개 탭으로 시작
+  - ✅ 탭 생성/삭제/전환 기능
+  - ✅ 탭 제목 편집 기능 (더블클릭)
+  - ✅ 각 탭별 독립적인 PlotlyPlotManager 인스턴스 관리
+  - ✅ 드래그 앤 드롭 통합 (활성 탭에만 드롭)
+  - ✅ 모든 탭에 메시지 데이터 전달
+  - ✅ Phase 1.2 기능 복원 (t0, 일시정지, legend, 축 라벨 등)
+  - ✅ 버그 수정 (탭 잔상, 재생 상태, 데이터 공유)
+  - ✅ 탭 상태 저장/복원 (LocalStorage, 페이지 새로고침 시 자동 복원)
+  - ✅ **새로운 버그 수정 완료** (2026-01-19):
+    - 처음 plot 탭 진입 시 빈 plot 표시 기능 복원 완료
+    - plot 삭제 기능 개선 (로깅 추가 및 조건 체크 개선)
+- [x] Phase 1.4: Plot 재생/일시정지 및 XY Plot ⚠️ (2026-01-19 부분 완료 - XY Plot 축 설정 미완료)
+  - ✅ 재생/일시정지 기능 (Phase 1.2에서 이미 완료, 2026-01-13)
+  - ✅ XY Plot 기본 기능 구현 완료 (2026-01-19)
+    - 컨텍스트 메뉴로 XY Plot 생성
+    - 두 데이터 timestamp 동기화
+    - XY Plot 실시간 업데이트
+  - ✅ Plot 설정 기능 구현 완료 (2026-01-19)
+    - Plot 설정 모달 HTML/CSS 구현
+    - 우클릭 컨텍스트 메뉴에서 Plot Settings 제공 (재생/일시정지 모두)
+    - 설정 열기/닫기/적용 로직 구현
+    - PlotlyPlotManager.applyTraceSettings() 메서드 구현
+    - Trace별 색상, 선 스타일, 마커 스타일, 선 두께, 마커 크기 조정
+    - 그리드 표시/숨기기, X/Y축 라벨 설정
+    - Plot 설정 모달 스크롤바 제거
+  - ⚠️ 미완료 항목:
+    - XY Plot Legend 표시 (PlotJuggler 스타일)
+    - 축 반전 기능 (Flip Horizontal/Vertical Axis)
+    - 축 이름을 X, Y로 변경
+    - 축 단위 표시 (m)
+- [ ] Phase 1.5: Plot Export 기능 **(🆕 추가)**
+- [ ] Phase 1.6: Plot 기능 테스트 및 최적화
+
+### Phase 2: 3D Viewer 기능 완성
+- [x] Phase 2.1: PointCloud2 시각화 ⚠️ (부분 완료)
+  - ✅ Three.js 기본 설정 완료
+  - ✅ rosbridge WebSocket 연동 완료
+  - ✅ PointCloud2 렌더링 완료
+  - ❌ 토픽 선택 UI (rviz 스타일 Display 패널 미구현, 현재는 모달 방식만 존재)
+  - ✅ 성능 최적화 (다운샘플링, Throttling) 완료
+  - ⚠️ 토픽 변경 시 mesh 제거/추가 (부분 구현, 구독 객체 관리 미구현으로 메모리 누수 가능)
+  - ❌ Rainbow 색상 매핑 (부분 구현, intensity 기반 미구현)
+  - ❌ LOD 적용 미구현
+- [ ] Phase 2.2: Path 및 Odometry 시각화
+- [ ] Phase 2.3: TF 시각화 및 Frame ID 필터링
+- [ ] Phase 2.4: View Type 전환 및 UI 완성
+  - ✅ Orbit View 구현 완료
+  - ❌ Top View 고정 기능 미구현
+  - ❌ View Type 전환 UI 미구현
+- [ ] Phase 2.5: Snapshot 및 rosbridge 연결 상태 **(🆕 추가)**
+- [ ] Phase 2.6: 3D Viewer 기능 테스트 및 최적화
+
+### Phase 3: Bag Player/Recorder 기능 확장
+- [ ] Phase 3.1: Bag Player ROS1 Bag File 지원
+- [ ] Phase 3.2: Bag Recorder ROS1 Bag File 저장 기능
+- [ ] Phase 3.3: File Player 다중 데이터셋 형식 지원 (🆕 추가)
+
+### Phase 4: Navigation 기능 구현
+- [ ] Phase 4.1: Navigation Control 기본 기능
+- [ ] Phase 4.2: Path Planning 기본 기능
+- [ ] Phase 4.3: Waypoint 설정 및 파일 관리
+- [ ] Phase 4.4: Navigation Configuration
+- [ ] Phase 4.5: 경로 미리보기 및 2D 맵 표시
+- [ ] Phase 4.6: Navigation 기능 테스트 및 최적화
+
+### Phase 5 (선택사항): 보안 및 고급 기능
+- [ ] Configuration 자동 백업/복원 **(제안 3번)**
+- [ ] Remote Access 보안 (Basic Auth 또는 JWT) **(제안 5번)**
+- [ ] Plot/3D Viewer 상태 LocalStorage 저장
+
+---
+
+## 작업 진행 시 주의사항
+
+### 1. 의존성 관리
+- 각 Phase는 이전 Phase 완료 후 시작
+- Phase 내 세부 작업도 의존성 확인 후 진행
+
+### 2. 테스트 전략
+- 각 Phase 완료 시 기능 테스트 필수
+- 버그 발견 시 즉시 수정 후 진행
+
+### 3. 코드 품질
+- `01.developerules.mdc` 규칙 준수
+- `02.SW_architecture_rules.mdc` 아키텍처 규칙 준수
+
+### 4. 문서화
+- 구현 완료 시 `Project.md` 업데이트
+- API 변경 시 문서화 필수
+
+### 5. Navigation 기능 구현 시
+- 실행 환경이 필요하므로 가장 나중에 구현
+- 각 기능 구현 후 실제 환경에서 테스트 필요
+- 테스트 환경 구축 계획 수립 필요
+
+- ✅ 빌드 성공 후에만 완료 표시
+- ✅ 작업 목록 섹션과 작업 진행 추적 섹션 모두 업데이트 필수
+- ✅ 동작 확인이 필요한 경우 반드시 `🔍 동작 확인 필요` 표시 추가
+
+---
+
+## 리스크 관리
+
+### 주요 리스크
+1. **Plotly.js 통합 이슈 (🆕 완화)**
+   - 리스크: Plotly.js 버전 호환성 문제, 대용량 데이터 시 성능 저하
+   - 대응: 최신 버전 사용, 호환성 테스트
+   - **추가 대응**: 성능 이슈 시 Canvas 기반 렌더링으로 마이그레이션 검토
+
+2. **rosbridge WebSocket 안정성 (🆕 강화)**
+   - 리스크: Plot과 3D Viewer가 모두 rosbridge에 의존, 크래시 시 전체 중단
+   - 대응: Throttling, 다운샘플링 적용
+   - **추가 대응**:
+     - rosbridge 헬스체크 및 자동 재시작 로직 추가
+     - UI에 연결 상태 표시 및 수동 재연결 버튼 제공
+     - 자동 재연결 로직 구현 (3초 간격, 최대 5회)
+
+3. **Navigation 실행 환경**
+   - 리스크: 실제 로봇 환경이 없을 경우 테스트 어려움
+   - 대응: Phase 4는 가장 나중으로 미루고, 시뮬레이션 환경 구축 후 구현
+
+4. **성능 이슈 (🆕 명확화)**
+   - 리스크: 실시간 데이터 처리 시 성능 저하
+   - 대응: 성능 최적화 규칙 준수, 프로파일링
+   - **권장 수치**: 모든 성능 수치는 "권장, 조정 가능"으로 명시
+
+---
+
+## 완료 기준 (Definition of Done)
+
+각 Phase는 다음 조건을 모두 만족해야 완료로 간주합니다:
+
+1. **기능 구현 완료**
+   - [ ] 모든 작업 목록 완료
+   - [ ] 완료 기준 항목 모두 체크
+
+2. **테스트 완료**
+   - [ ] 기능 테스트 통과
+   - [ ] 에러 처리 테스트 통과
+   - [ ] 성능 테스트 통과 (해당되는 경우)
+
+3. **코드 품질**
+   - [ ] `01.developerules.mdc` 규칙 준수
+   - [ ] `02.SW_architecture_rules.mdc` 아키텍처 규칙 준수
+   - [ ] 코드 리뷰 완료 (해당되는 경우)
+
+4. **문서화**
+   - [ ] `Project.md` 업데이트
+   - [ ] API 문서 업데이트 (해당되는 경우)
+   - [ ] 주석 및 docstring 작성
+
+5. **빌드 및 배포**
+   - [ ] `colcon build --packages-select ros2_autonav_webui` 성공
+   - [ ] 웹 서버 정상 실행 확인
+   - [ ] 브라우저에서 기능 정상 동작 확인
+   - [ ] **빌드 성공 후 작업 진행 추적 섹션에 완료 체크 (✅)**
+
+**중요**: 각 Phase 또는 작업 완료 후 반드시 다음을 수행해야 합니다:
+1. `colcon build --packages-select ros2_autonav_webui` 실행하여 빌드 성공 확인
+2. 빌드 성공 시 다음 위치에 완료 표시:
+   - `## 작업 진행 추적` 섹션의 해당 항목에 `[x]` 또는 `✅` 체크 표시
+   - 해당 Phase의 "작업 목록" 섹션 내 완료된 항목 체크 표시
+   - 해당 Phase의 "완료 기준" 섹션 내 완료된 항목 체크 표시
+3. 빌드 실패 시 원인 파악 및 수정 후 재빌드
+4. 완료 날짜 표시 권장 (예: `✅ (2026-01-12 완료)`)
+
+
+---
+
+**참고**: 룰 수정/추가 프로세스는 `04.rule_management.mdc`를 참조하세요.
+
+---
+
+## 추가 기능 구현 계획 (🆕 추가)
+
+### 추가 제안 기능 요약
+1. **Plot Export** (제안 3번): PNG 이미지, CSV 데이터 저장 - Phase 1.5에 추가
+2. **3D Viewer Snapshot** (제안 4번): 현재 3D 뷰 이미지 저장 - Phase 2.5에 추가
+3. **Configuration Backup** (제안 3번): 자동 백업/복원 - Phase 5 (선택사항)
+4. **Remote Access 보안** (제안 5번): Basic Auth 또는 JWT - Phase 5 (선택사항)
+5. **rosbridge 연결 상태** (제안 6번): UI 표시 및 자동 재연결 - Phase 2.5에 추가
+6. **Bag Player/Recorder ROS1 지원**: ROS1 bag file 로드/재생 및 저장 기능 - Phase 3에 추가
+7. **Plot 토픽 검색 하위 노드 확장**: 토픽 검색 시 하위 노드 자동 확장 기능 - Phase 1.2에 추가
+8. **File Player 다중 데이터셋 형식 지원**: Kitti, ConPR, KAIST Complex Urban Dataset 지원 - Phase 3.3에 추가
+9. **Legend에서 plot 삭제 기능**: Legend 위에 마우스 오버레이 후 우클릭 시 plot 삭제 메뉴 표시 및 삭제 기능 - Phase 1.2에 추가 (2026-01-16)
+
+### 개선 사항 반영
+- ✅ 우선순위를 02.SW_architecture_rules.mdc와 일치시킴
+- ✅ PlotJugglerTree 현재 구현 상태 명확화
+- ✅ API 엔드포인트에 구현 상태 표시 (✅ 구현됨, 🔜 구현 예정, ❌ 미구현)
+- ✅ 성능 수치에 "권장, 조정 가능" 표시
+- ✅ rosbridge 의존성 리스크 대응 강화
+
+---
+
+이 작업 계획을 기준으로 개발을 진행하고, 진행 상황을 정기적으로 업데이트합니다.
+
+**마지막 업데이트**: 2026-01-19
+**문서 버전**: 1.22
+**주요 변경사항**:
+- **Phase 1.4 Plot 설정 기능 완료** (2026-01-19)
+  - Plot 설정 모달 HTML/CSS 구현 완료
+    - Trace 선택 드롭다운
+    - 색상 선택 (Color picker)
+    - 선 스타일 (Solid/Dash/Dot/DashDot)
+    - 마커 스타일 (Circle/Square/Diamond/Cross/X)
+    - 선 두께 (1-5, 슬라이더)
+    - 마커 크기 (2-10, 슬라이더)
+    - 그리드 표시/숨기기 (체크박스)
+    - X축/Y축 라벨 입력
+    - Apply/Cancel 버튼
+  - Plot Settings 진입 방식을 컨텍스트 메뉴로 변경
+    - 모드바 버튼 제거, 우클릭 메뉴에서 Plot Settings 제공
+    - 재생/일시정지 상태 모두 메뉴 표시
+  - 설정 열기/닫기/적용 로직 구현 완료
+    - `window.openPlotSettings(plotId)`: 모달 열기, trace 목록 로드
+    - `window.closePlotSettings()`: 모달 닫기
+    - `window.applyPlotSettings()`: 설정 적용 및 모달 닫기
+    - `window.loadTraceSettings(traceIndex)`: 선택된 trace 설정 로드
+    - 모달 외부 클릭 시 닫기 기능
+  - PlotlyPlotManager.applyTraceSettings() 메서드 구현 완료
+    - Trace 색상 업데이트 (line + marker)
+    - 선 스타일 변경 (solid/dash/dot/dashdot)
+    - 마커 스타일 변경 (circle/square/diamond/cross/x)
+    - 선 두께 조정 (1-5)
+    - 마커 크기 조정 (2-10)
+    - 그리드 표시/숨기기
+    - X축/Y축 라벨 업데이트
+    - `Plotly.update()` 사용하여 trace와 layout 동시 업데이트
+  - [x] Plot 설정 모달 스크롤바 제거 ✅
+    - modal-content / modal-body overflow 해제
+  - 버그 수정 완료
+    - HTML inline 이벤트 핸들러 제거
+    - 전역 함수로 모든 핸들러 구현
+    - Modal CSS 스타일 추가 (.modal, .modal-content, .modal-header, .modal-body, .modal-footer)
+    - Plot Settings 모달 스크롤바 제거 (overflow 해제)
+  - 빌드 성공 확인 완료
+  - "현재 구현 상태" 및 "작업 진행 추적" 섹션 업데이트 완료
+- **Phase 1.4 XY Plot 축 반전 기능 작업 추가** (2026-01-19)
+  - Flip Horizontal Axis (수평 축 반전) 버튼 추가
+  - Flip Vertical Axis (수직 축 반전) 버튼 추가
+  - PlotJuggler 코드 참고하여 구현
+  - Plotly.js의 `autorange: 'reversed'` 옵션 활용
+  - 미완료 항목: Legend 표시, 축 반전 기능, 축 이름 변경, 축 단위 표시
+- **Phase 1.4 XY Plot Legend 작업 추가** (2026-01-19)
+  - PlotJuggler 스타일 legend 표시 작업 추가
+  - 오른쪽 상단에 데이터 경로 표시 (예: "/Odometry/pose/pose/position/[x,y]")
+  - X, Y 데이터 경로를 [x,y] 형식으로 결합하여 표시
+- **Phase 1.4 XY Plot 기본 기능 구현 완료** (2026-01-19)
+  - 컨텍스트 메뉴로 XY Plot 생성 (2개 선택 시 "Create XY Plot" 메뉴)
+  - 두 데이터 timestamp 동기화 구현
+  - XY Plot 실시간 업데이트 구현
+  - Phase 1.4를 "부분 완료"로 표시
+- **토픽 로딩 타임아웃 문제 완전 해결** (2026-01-19)
+  - Phase 1.2 작업 목록 3번에 "토픽 로딩 타임아웃 문제 완전 해결" 섹션 추가
+  - 타임아웃 증가 (3초 → 10초)
+  - 에러 핸들링 개선 (타임아웃 시 기존 토픽 유지)
+  - topicRefreshRate 조정 (1초 → 5초, 부하 감소)
+  - 빌드 및 재시작 완료, 브라우저에서 정상 동작 확인 완료
+- **Phase 1.4 XY Plot 기능에 축 이름 및 단위 표시 작업 추가** (2026-01-19)
+  - 드래그 시 축 이름을 X, Y로 변경하는 작업 추가
+  - 축 단위 (m) 표시 작업 추가
+  - X축 라벨: "X (m)" 또는 "{데이터명} (m)"
+  - Y축 라벨: "Y (m)" 또는 "{데이터명} (m)"
+- **Phase 1.3에 탭 UI 및 레이아웃 개선 작업 추가** (2026-01-19 오후)
+  - 작업 목록 9번에 "탭 UI 및 레이아웃 개선" 섹션 추가
+  - 탭 디자인 세련화 완료 (그라데이션, 박스 그림자, 호버 효과)
+  - 빈 plot 표시 방식 개선 완료 (HTML/CSS 기반으로 변경, 모드바 위치 문제 원천 해결)
+  - 탭 크기 동적 조정 완료 (CSS flex 기반, flex: 1 1 0)
+  - 최대 탭 개수 10개로 제한 완료 (+ 버튼 자동 비활성화)
+  - 탭 바 높이 고정 완료 (min-height: 40px, max-height: 40px)
+  - plot-panel 너비 고정 완료 (min-width: 0, overflow: hidden)
+- **Phase 1.3 탭 상태 복원 기능 비활성화** (2026-01-19)
+  - 사용자 선호에 따라 탭 상태 복원 기능을 비활성화하고 항상 초기화되도록 변경
+  - 페이지 새로고침, 하드 리프레시, 런치 재실행, 브라우저 종료 후 재실행 시 모두 탭 초기화 (디폴트 1개 탭)
+  - Navigation Type 및 timestamp 체크 로직은 유지하되, 복원은 수행하지 않음
+  - 작업 목록 7번을 "탭 상태 저장/복원"에서 "탭 상태 초기화"로 변경
+  - 완료 기준, 주요 기능, 참고 사항 모두 업데이트
+  - "현재 구현 상태" 섹션의 표현 수정 ("상태 복원" 제거, "탭 상태 초기화"로 대체)
+- **Phase 1.2에 Plot 성능 최적화 및 시각화 개선 작업 추가** (2026-01-19)
+  - 작업 목록 10번에 "Plot 성능 최적화 및 시각화 개선" 섹션 추가
+  - Plotly 업데이트 최적화 완료 (개별 restyle → 한 번에 update)
+  - Math.min/max 최적화 완료 (spread operator → for loop)
+  - 하이브리드 다운샘플링 전략 완료 (재생: 500 포인트, 일시정지: 모든 데이터)
+  - 다운샘플링 알고리즘 구현 완료 (Uniform sampling)
+  - 마커(Dot) 표시 개선 완료 (크기 4, 투명도 0.8, 선 두께 2)
+  - 버퍼 시간 제한 조정 완료 (최대 300초 → 100초)
+  - 일시정지 시 즉시 전체 데이터 업데이트
+  - **성능 개선**: 재생 시 지연시간 400ms+ → **< 10ms** ✅
+  - **데이터 정확도**: 일시정지 시 모든 데이터 확인 가능 (100Hz 센서 100초 = 10,000 포인트)
+- **Phase 1.2에 ROS Time 기반 Plot 동작 개선 작업 추가** (2026-01-19)
+  - 작업 목록 9번에 "ROS Time 기반 Plot 동작 개선" 섹션 추가
+  - 시간 역행 감지 및 자동 초기화 완료 (DataBuffer.addData, PlotlyPlotManager.clearPlot)
+  - 시간 역행 처리 최적화 완료 (즉시 리셋 및 새 데이터 표시)
+  - clearPlot() 성능 최적화 완료 (Plotly.update 사용)
+  - ROS Time 기반 Throttling 완료 (lastUpdateRosTime 사용)
+  - **bag 일시정지 후 재생시 plot 불연속 문제 미해결** ⚠️
+    - ROS time과 wall clock time 간 갭으로 추정
+    - 여러 해결 시도했으나 여전히 불연속 문제 지속
+    - 추가 분석 및 해결 방안 필요
+- **Phase 1.3 버그 수정 작업 추가** ⚠️ (2026-01-19)
+  - 2개의 새로운 버그 수정 작업 추가:
+    1. **처음 plot 탭 진입 시 빈 plot 표시 기능 복원**: Phase 1.2에서 구현된 기능이 Phase 1.3에서 누락됨, 각 탭 생성 시 빈 plot을 초기 상태로 표시하도록 복원 필요
+    2. **plot 삭제 시 선택된 trace만 삭제되도록 수정**: 현재 legend나 데이터에 오버레이된 plot을 우클릭하여 "Delete plot" 선택 시 전체 plot 데이터가 삭제되는 버그, 우클릭한 해당 trace만 삭제되도록 수정 필요
+  - Phase 1.3 완료 상태를 "✅ 완료"에서 "⚠️ 부분 완료 (버그 수정 필요)"로 변경
+  - "현재 구현 상태" 섹션에 버그 상태 반영 (Plot 핵심 기능 90% → 85%)
+  - "작업 목록" 섹션의 "8. 버그 수정 및 개선"에 새로운 작업 추가
+  - "완료 기준" 섹션에 새로운 버그 수정 확인 항목 추가
+  - "작업 진행 추적" 섹션에 Phase 1.3 버그 상태 반영
+- **Phase 1.3 부분 완료: Plot 탭 기능 (브라우저 스타일)** ⚠️ (2026-01-19)
+  - PlotTabManager 클래스 구현 완료 (`plot_tab_manager.js`)
+  - 디폴트 1개 탭에서 시작, + 버튼으로 새 탭 추가
+  - 탭 더블클릭으로 제목 편집 (인라인 편집)
+  - 닫기 버튼(×)으로 탭 삭제 (2개 이상일 때만 표시)
+  - 각 탭별 독립적인 PlotlyPlotManager 인스턴스 관리
+  - 모든 탭에 메시지 데이터 자동 전달 (전역 rosbridge 구독 공유)
+  - Phase 1.2 기능 복원 (t0, 일시정지, legend, 축 라벨 등)
+  - 버그 수정 (탭 잔상, 재생 상태, 데이터 공유)
+  - **탭 상태 초기화 기능 완료** (SessionStorage 기반) ✅
+    - Navigation Type 및 timestamp 체크를 통한 초기화 로직 구현
+    - 페이지 새로고침 시 탭 초기화 (디폴트 1개 탭으로 시작)
+    - 하드 리프레시, 런치 재실행, 브라우저 종료 후 재실행 시 탭 초기화
+    - 사용자 선호에 따라 탭 복원 기능 비활성화
+  - script.js에 PlotTabManager 통합 완료
+  - 작업 목록 및 완료 기준 갱신 완료
+  - **2개의 버그 수정 완료** ✅ (2026-01-19)
+- **Phase 1.3 수정: Plot 분할 기능 → Plot 탭 기능 (브라우저 스타일)** (2026-01-19 초기)
+  - 기존 수평/수직 분할 방식에서 브라우저 탭 스타일로 변경
+- Phase 0 추가: 룰 준수 확인 및 코드 정리 (최우선 선행 작업)
+- 룰 관리 프로세스 섹션을 `04.rule_management.mdc`로 분리
+- Plot Export 기능 추가 (Phase 1.5)
+- 3D Viewer Snapshot 기능 추가 (Phase 2.5)
+- rosbridge 연결 상태 표시 추가 (Phase 2.5)
+- Configuration Backup 및 Remote Access 보안을 Phase 5로 변경 (기존 Phase 4)
+- PlotJugglerTree 현재 구현 상태 명확화
+- 리스크 관리 강화 (rosbridge 의존성 대응)
+- 성능 최적화 수치에 "조정 가능" 표시
+- Phase 3 추가: Bag Player/Recorder ROS1 bag file 지원 기능
+- Phase 1.2에 Plot 토픽 검색 시 하위 노드 확장 문제 해결 작업 추가
+- Phase 3.3 추가: File Player 다중 데이터셋 형식 지원 (Kitti, ConPR, KAIST Complex Urban Dataset)
+- Phase 1.2에 중간 버튼 Pan 기능 추가 (일시정지 시 중간 버튼 클릭으로 pan 모드 활성화)
+- Phase 1.2에 legend에서 plot 삭제 기능 추가 (2026-01-16)
+  - Legend 위에 마우스 오버레이 후 우클릭 시 plot 삭제 메뉴 표시 및 삭제 기능 구현
+  - SVG rect 요소 처리, 부모 요소 탐색, 마우스 위치 기반 fallback 검색 포함

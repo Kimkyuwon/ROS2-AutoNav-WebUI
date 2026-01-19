@@ -455,7 +455,7 @@
                 <!-- Trace 선택 -->
                 <div class="form-group">
                     <label>Select Trace:</label>
-                    <select id="plot-settings-trace-select" onchange="loadTraceSettings(this.value)">
+                    <select id="plot-settings-trace-select">
                         <!-- Traces will be dynamically loaded here -->
                     </select>
                 </div>
@@ -480,8 +480,7 @@
                 <!-- 선 두께 -->
                 <div class="form-group">
                     <label>Line Width: <span id="plot-settings-line-width-value">2</span></label>
-                    <input type="range" id="plot-settings-line-width" min="1" max="5" value="2" step="0.5"
-                           oninput="updateLineWidthLabel(this.value)">
+                    <input type="range" id="plot-settings-line-width" min="1" max="5" value="2" step="0.5">
                 </div>
                 
                 <!-- 마커 스타일 -->
@@ -499,8 +498,7 @@
                 <!-- 마커 크기 -->
                 <div class="form-group">
                     <label>Marker Size: <span id="plot-settings-marker-size-value">4</span></label>
-                    <input type="range" id="plot-settings-marker-size" min="2" max="10" value="4" step="1"
-                           oninput="updateMarkerSizeLabel(this.value)">
+                    <input type="range" id="plot-settings-marker-size" min="2" max="10" value="4" step="1">
                 </div>
                 
                 <!-- 그리드 표시 -->

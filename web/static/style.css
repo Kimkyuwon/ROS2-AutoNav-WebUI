@@ -743,6 +743,115 @@ h3 {
     display: block;
 }
 
+/* Modal Base Styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 10000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-content {
+    background: linear-gradient(135deg, #1a1f2e 0%, #161b2a 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    max-width: 600px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Plot Settings Modal - 스크롤바 제거 */
+#plot-settings-modal .modal-content {
+    max-height: none;
+    overflow: visible;
+}
+
+#plot-settings-modal .modal-body {
+    max-height: none;
+    overflow: visible;
+}
+
+.modal-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.modal-header .close {
+    color: var(--muted);
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.modal-header .close:hover {
+    color: var(--accent);
+}
+
+.modal-body {
+    padding: 24px;
+    overflow: visible;
+    max-height: none;
+}
+
+.modal-footer {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+.modal-footer button {
+    padding: 10px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.modal-footer button:first-child {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #0f1726;
+}
+
+.modal-footer button:first-child:hover {
+    opacity: 0.9;
+    box-shadow: 0 4px 15px rgba(74, 214, 255, 0.3);
+}
+
+.modal-footer button:last-child {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.modal-footer button:last-child:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--accent);
+}
+
 /* Plot Settings Modal Styles */
 #plot-settings-modal .form-group {
     margin-bottom: 16px;

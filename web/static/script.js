@@ -2505,13 +2505,13 @@ window.openPlotSettings = function(plotId) {
     // 첫 번째 trace가 있으면 선택
     if (plotManager.traces.length > 0) {
         traceSelect.value = 0;
-        loadTraceSettings(plotManager, 0);
+        window.loadTraceSettings(0);
     }
     
     // Trace 선택 변경 시 현재 설정 로드
     traceSelect.onchange = () => {
         const selectedIndex = parseInt(traceSelect.value);
-        loadTraceSettings(plotManager, selectedIndex);
+        window.loadTraceSettings(selectedIndex);
     };
     
     // 슬라이더 값 업데이트 이벤트
@@ -2538,8 +2538,20 @@ window.openPlotSettings = function(plotId) {
     }
 };
 
-// 현재 trace의 설정 로드
-function loadTraceSettings(plotManager, traceIndex) {
+// 현재 trace의 설정 로드 (전역 함수)
+window.loadTraceSettings = function(traceIndex) {
+    if (!currentPlotSettingsPlotId) {
+        console.error('[loadTraceSettings] No plot ID set');
+        return;
+    }
+    
+    // 현재 플롯의 PlotlyPlotManager 가져오기
+    const plotManager = plotState.plotTabManager.getPlotManager(currentPlotSettingsPlotId);
+    if (!plotManager || !plotManager.isInitialized) {
+        console.error('[loadTraceSettings] Plot manager not found or not initialized');
+        return;
+    }
+    
     const trace = plotManager.traces[traceIndex];
     if (!trace) return;
     
@@ -2603,7 +2615,7 @@ function loadTraceSettings(plotManager, traceIndex) {
     if (yaxisLabelInput && plotManager.layout && plotManager.layout.yaxis) {
         yaxisLabelInput.value = plotManager.layout.yaxis.title?.text || '';
     }
-}
+};
 
 // Plot Settings 모달 닫기
 window.closePlotSettings = function() {

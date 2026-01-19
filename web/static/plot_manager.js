@@ -438,19 +438,6 @@ class PlotlyPlotManager {
                     click: (gd) => {
                         this.clearPlot();
                     }
-                },
-                {
-                    name: 'Plot Settings',
-                    icon: {
-                        width: 1000,
-                        height: 1000,
-                        // 톱니바퀴 아이콘
-                        path: 'M500,200 L550,300 L650,300 L600,400 L650,500 L550,500 L500,600 L450,500 L350,500 L400,400 L350,300 L450,300 Z M500,350 A50,50 0 1,1 500,450 A50,50 0 1,1 500,350',
-                        transform: 'matrix(1 0 0 -1 0 1000)'
-                    },
-                    click: (gd) => {
-                        this.openPlotSettings();
-                    }
                 }
             ]
         };
@@ -486,8 +473,6 @@ class PlotlyPlotManager {
             // 타이틀 더블클릭 이벤트 추가
             this.setupTitleEditor();
             
-            // 커스텀 컨텍스트 메뉴 추가
-            this.setupContextMenu();
             
             // 줌 제한 설정
             this.setupZoomLimiter();
@@ -681,8 +666,6 @@ class PlotlyPlotManager {
             // 타이틀 더블클릭 이벤트 추가
             this.setupTitleEditor();
             
-            // 커스텀 컨텍스트 메뉴 추가
-            this.setupContextMenu();
             
             // 줌 제한 설정
             this.setupZoomLimiter();
@@ -803,6 +786,7 @@ class PlotlyPlotManager {
             const menuItems = [
                 { label: '📷 Save plot to file', action: () => this.savePlotToFile() },
                 { label: '↔️ Auto Scale', action: () => this.zoomOutAutoScale() },
+                { label: '⚙️ Plot Settings', action: () => this.openPlotSettings() },
                 { separator: true },
                 { label: '➗ Split Horizontally (Coming soon)', action: () => console.log('Coming soon'), disabled: true },
                 { label: '➗ Split Vertically (Coming soon)', action: () => console.log('Coming soon'), disabled: true }
@@ -1068,7 +1052,7 @@ class PlotlyPlotManager {
                 }
             }
             
-            // Plot 데이터 또는 Legend 위에서만 메뉴 표시
+            // 1. Plot 데이터 또는 Legend 위: Delete plot 메뉴 표시
             if ((isPlotData || isLegend) && targetTraceIndex !== null && targetTraceIndex < this.traces.length) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1156,6 +1140,78 @@ class PlotlyPlotManager {
                 document.body.appendChild(menu);
                 
                 // 외부 클릭 시 메뉴 닫기
+                const closeMenu = (event) => {
+                    if (!menu.contains(event.target)) {
+                        menu.remove();
+                        document.removeEventListener('click', closeMenu);
+                    }
+                };
+                setTimeout(() => {
+                    document.addEventListener('click', closeMenu);
+                }, 100);
+                
+                return false; // 이벤트 전파 차단
+            } else {
+                // 2. 빈 plot 영역: 일반 컨텍스트 메뉴 표시 (Plot Settings, Auto Scale 등)
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const menu = document.createElement('div');
+                menu.id = 'plot-context-menu';
+                menu.style.cssText = `
+                    position: absolute;
+                    left: ${e.pageX}px;
+                    top: ${e.pageY}px;
+                    background: #ffffff;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                    z-index: 10000;
+                    font-size: 13px;
+                    min-width: 180px;
+                `;
+                
+                const menuItems = [
+                    { label: '⚙️ Plot Settings', action: () => this.openPlotSettings() },
+                    { label: '↔️ Auto Scale', action: () => this.zoomOutAutoScale() },
+                    { label: '🗑️ Clear Plot', action: () => this.clearPlot() },
+                    { separator: true },
+                    { label: '📷 Save plot to file', action: () => this.savePlotToFile() }
+                ];
+                
+                menuItems.forEach(item => {
+                    if (item.separator) {
+                        const separator = document.createElement('div');
+                        separator.style.cssText = 'height: 1px; background: #ddd; margin: 4px 0;';
+                        menu.appendChild(separator);
+                    } else {
+                        const menuItem = document.createElement('div');
+                        menuItem.textContent = item.label;
+                        menuItem.style.cssText = `
+                            padding: 8px 16px;
+                            cursor: pointer;
+                            color: #000;
+                            background: transparent;
+                        `;
+                        
+                        menuItem.onmouseenter = () => {
+                            menuItem.style.background = '#f0f0f0';
+                        };
+                        menuItem.onmouseleave = () => {
+                            menuItem.style.background = 'transparent';
+                        };
+                        menuItem.onclick = () => {
+                            item.action();
+                            menu.remove();
+                        };
+                        
+                        menu.appendChild(menuItem);
+                    }
+                });
+                
+                document.body.appendChild(menu);
+                
+                // 메뉴 외부 클릭 시 닫기
                 const closeMenu = (event) => {
                     if (!menu.contains(event.target)) {
                         menu.remove();
