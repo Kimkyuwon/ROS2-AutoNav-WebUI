@@ -415,9 +415,7 @@ h3 {
     flex: 1;
 }
 
-#latency-indicator {
-    /* Latency indicator is now in topbar, inherits chip styles */
-}
+/* Latency indicator is now in topbar, inherits chip styles */
 
 .status-banner {
     padding: 10px 14px;
@@ -590,6 +588,8 @@ h3 {
     border-radius: 10px;
     padding: 12px;
     position: relative;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .plot-panel h3 {
@@ -742,3 +742,4 @@ h3 {
 .plot-tab-area.active {
     display: block;
 }
+

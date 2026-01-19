@@ -199,6 +199,57 @@ class PlotlyPlotManager {
         return true;
     }
 
+    initEmptyPlot() {
+        if (!this.init()) {
+            return false;
+        }
+
+        // Plotly 대신 간단한 HTML로 안내 메시지 표시
+        const container = document.getElementById(this.containerId);
+        if (!container) {
+            console.error('[PlotlyPlotManager] Container not found:', this.containerId);
+            return false;
+        }
+
+        container.innerHTML = `
+            <div style="
+                width: 100%;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                background: linear-gradient(135deg, #f8f8f8 0%, #ffffff 100%);
+                border: 2px dashed #cccccc;
+                border-radius: 8px;
+                font-family: Arial, sans-serif;
+            ">
+                <div style="
+                    font-size: 24px;
+                    font-weight: 500;
+                    color: #666666;
+                    margin-bottom: 16px;
+                    text-align: center;
+                ">
+                    📊 Drag and drop topics to plot
+                </div>
+                <div style="
+                    font-size: 14px;
+                    color: #999999;
+                    text-align: center;
+                    max-width: 400px;
+                    line-height: 1.6;
+                ">
+                    Select topics from the left panel and drag them here to create real-time plots
+                </div>
+            </div>
+        `;
+
+        this.isInitialized = false;  // false로 설정하여 createPlot()이 제대로 동작하도록
+        console.log('[PlotlyPlotManager] Empty plot placeholder initialized (HTML only)');
+        return true;
+    }
+
     createPlot(paths) {
         if (!this.init()) {
             return false;
@@ -321,6 +372,7 @@ class PlotlyPlotManager {
         const config = {
             responsive: true,
             displayModeBar: true,
+            modeBarPosition: 'top right',  // 모드바를 오른쪽 상단에 위치
             modeBarButtonsToRemove: ['lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],  // +/-, reset axes 버튼 제거
             displaylogo: false,
             scrollZoom: true,  // 마우스 휠 줌 활성화 (일시정지 시에만 작동, dragmode로 제어)
@@ -397,6 +449,22 @@ class PlotlyPlotManager {
                 Plotly.relayout(this.containerId, { dragmode: false });
                 console.log('[PlotlyPlotManager] Initial dragmode set to false (playing mode)');
             }
+            
+            // 모드바 위치를 오른쪽 상단으로 강제 설정
+            setTimeout(() => {
+                const plotDiv = document.getElementById(this.containerId);
+                if (plotDiv) {
+                    const modebar = plotDiv.querySelector('.modebar-container') || 
+                                   plotDiv.querySelector('.modebar');
+                    if (modebar) {
+                        modebar.style.position = 'absolute';
+                        modebar.style.top = '0';
+                        modebar.style.right = '0';
+                        modebar.style.left = 'auto';
+                        console.log('[PlotlyPlotManager] Modebar position forced to top-right');
+                    }
+                }
+            }, 100);
             
             // 타이틀 더블클릭 이벤트 추가
             this.setupTitleEditor();
@@ -1743,11 +1811,23 @@ class PlotlyPlotManager {
             // ⚠️ 중요: Plotly.react를 사용하여 전체 traces를 다시 렌더링
             // Plotly.addTraces는 내부적으로 이상한 동작을 하므로 사용하지 않음
             const currentLayout = plotDiv.layout;
+            
+            // 제목 업데이트 (드래그한 메시지 제목으로 변경)
+            const totalPaths = Array.from(this.dataBuffers.keys());
+            currentLayout.title = {
+                text: totalPaths.length === 1 ? `Plot: ${totalPaths[0]}` : `Plot: ${totalPaths.length} items`,
+                font: {
+                    color: '#000000',
+                    size: 14
+                }
+            };
+            
             Plotly.react(this.containerId, this.traces, currentLayout);
             
             const afterCount = plotDiv.data ? plotDiv.data.length : 0;
             console.log(`[PlotlyPlotManager] AFTER adding: Plotly has ${afterCount} traces (expected ${this.traces.length})`);
             console.log(`[PlotlyPlotManager] Added ${newTraces.length} traces successfully`);
+            console.log(`[PlotlyPlotManager] Updated title to: ${currentLayout.title.text}`);
             
             // addTraces 후 plot 삭제 기능 재설정 (legend hover 이벤트 재설정)
             setTimeout(() => {
