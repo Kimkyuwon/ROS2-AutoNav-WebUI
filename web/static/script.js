@@ -293,6 +293,12 @@ function initEmptyPlot() {
         Plotly.newPlot('plot-area', [], layout, config);
         plotState.plotManager.isInitialized = true;
         
+        // 초기 상태 설정: 재생 중이면 dragmode를 false로 설정 (줌/팬 비활성화)
+        if (!plotState.plotManager.isPaused) {
+            Plotly.relayout('plot-area', { dragmode: false });
+            console.log('[initEmptyPlot] Initial dragmode set to false (playing mode)');
+        }
+        
         // 타이틀 더블클릭, contextmenu, zoom limiter 등 설정
         plotState.plotManager.setupTitleEditor();
         plotState.plotManager.setupContextMenu();

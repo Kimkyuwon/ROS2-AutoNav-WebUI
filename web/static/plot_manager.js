@@ -283,6 +283,13 @@ class PlotlyPlotManager {
             Plotly.newPlot(this.containerId, this.traces, layout, config);
             this.isInitialized = true;
             
+            // 초기 상태 설정: 재생 중이면 dragmode를 false로 설정 (줌/팬 비활성화)
+            if (!this.isPaused) {
+                const plotDiv = document.getElementById(this.containerId);
+                Plotly.relayout(this.containerId, { dragmode: false });
+                console.log('[PlotlyPlotManager] Initial dragmode set to false (playing mode)');
+            }
+            
             // 타이틀 더블클릭 이벤트 추가
             this.setupTitleEditor();
             
