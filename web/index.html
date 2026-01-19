@@ -286,7 +286,7 @@
                         <!-- 왼쪽 Display 창 (통합 트리 뷰) -->
                         <div class="plot-display-panel">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                                <h3>Timeseries List</h3>
+                                <h3>Topic List</h3>
                                 <div style="display: flex; gap: 8px;">
                                     <button onclick="expandAllPlotTree()" style="padding: 4px 12px; font-size: 11px;">Expand All</button>
                                     <button onclick="collapseAllPlotTree()" style="padding: 4px 12px; font-size: 11px;">Collapse All</button>
@@ -440,6 +440,90 @@
             <div class="modal-footer">
                 <button onclick="confirmSaveMap()">OK</button>
                 <button onclick="closeSaveMapModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Plot Settings Modal -->
+    <div id="plot-settings-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Plot Settings</h3>
+                <span class="close" onclick="closePlotSettings()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <!-- Trace 선택 -->
+                <div class="form-group">
+                    <label>Select Trace:</label>
+                    <select id="plot-settings-trace-select">
+                        <!-- Traces will be dynamically loaded here -->
+                    </select>
+                </div>
+                
+                <!-- 색상 선택 -->
+                <div class="form-group">
+                    <label>Color:</label>
+                    <input type="color" id="plot-settings-color" value="#1f77b4">
+                </div>
+                
+                <!-- 선 스타일 -->
+                <div class="form-group">
+                    <label>Line Style:</label>
+                    <select id="plot-settings-line-style">
+                        <option value="solid">Solid</option>
+                        <option value="dash">Dash</option>
+                        <option value="dot">Dot</option>
+                        <option value="dashdot">Dash-Dot</option>
+                    </select>
+                </div>
+                
+                <!-- 선 두께 -->
+                <div class="form-group">
+                    <label>Line Width: <span id="plot-settings-line-width-value">2</span></label>
+                    <input type="range" id="plot-settings-line-width" min="1" max="5" value="2" step="0.5">
+                </div>
+                
+                <!-- 마커 스타일 -->
+                <div class="form-group">
+                    <label>Marker Style:</label>
+                    <select id="plot-settings-marker-style">
+                        <option value="circle">Circle</option>
+                        <option value="square">Square</option>
+                        <option value="diamond">Diamond</option>
+                        <option value="cross">Cross</option>
+                        <option value="x">X</option>
+                    </select>
+                </div>
+                
+                <!-- 마커 크기 -->
+                <div class="form-group">
+                    <label>Marker Size: <span id="plot-settings-marker-size-value">4</span></label>
+                    <input type="range" id="plot-settings-marker-size" min="2" max="10" value="4" step="1">
+                </div>
+                
+                <!-- 그리드 표시 -->
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="plot-settings-show-grid" checked>
+                        Show Grid
+                    </label>
+                </div>
+                
+                <!-- X축 라벨 -->
+                <div class="form-group">
+                    <label>X-axis Label:</label>
+                    <input type="text" id="plot-settings-xaxis-label" placeholder="X-axis label">
+                </div>
+                
+                <!-- Y축 라벨 -->
+                <div class="form-group">
+                    <label>Y-axis Label:</label>
+                    <input type="text" id="plot-settings-yaxis-label" placeholder="Y-axis label">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="applyPlotSettings()">Apply</button>
+                <button onclick="closePlotSettings()">Cancel</button>
             </div>
         </div>
     </div>

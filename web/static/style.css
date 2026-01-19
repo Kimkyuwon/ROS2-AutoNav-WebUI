@@ -415,9 +415,7 @@ h3 {
     flex: 1;
 }
 
-#latency-indicator {
-    /* Latency indicator is now in topbar, inherits chip styles */
-}
+/* Latency indicator is now in topbar, inherits chip styles */
 
 .status-banner {
     padding: 10px 14px;
@@ -590,6 +588,8 @@ h3 {
     border-radius: 10px;
     padding: 12px;
     position: relative;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .plot-panel h3 {
@@ -742,3 +742,212 @@ h3 {
 .plot-tab-area.active {
     display: block;
 }
+
+/* Modal Base Styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 10000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-content {
+    background: linear-gradient(135deg, #1a1f2e 0%, #161b2a 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    max-width: 600px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Plot Settings Modal - 스크롤바 제거 */
+#plot-settings-modal .modal-content {
+    max-height: none;
+    overflow: visible;
+}
+
+#plot-settings-modal .modal-body {
+    max-height: none;
+    overflow: visible;
+}
+
+.modal-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.modal-header .close {
+    color: var(--muted);
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.modal-header .close:hover {
+    color: var(--accent);
+}
+
+.modal-body {
+    padding: 24px;
+    overflow: visible;
+    max-height: none;
+}
+
+.modal-footer {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+.modal-footer button {
+    padding: 10px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.modal-footer button:first-child {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #0f1726;
+}
+
+.modal-footer button:first-child:hover {
+    opacity: 0.9;
+    box-shadow: 0 4px 15px rgba(74, 214, 255, 0.3);
+}
+
+.modal-footer button:last-child {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.modal-footer button:last-child:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--accent);
+}
+
+/* Plot Settings Modal Styles */
+#plot-settings-modal .form-group {
+    margin-bottom: 16px;
+}
+
+#plot-settings-modal .form-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+#plot-settings-modal input[type="text"],
+#plot-settings-modal select {
+    width: 100%;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 14px;
+}
+
+#plot-settings-modal input[type="text"]:focus,
+#plot-settings-modal select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(74, 214, 255, 0.15);
+}
+
+#plot-settings-modal input[type="color"] {
+    width: 100%;
+    height: 40px;
+    padding: 4px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+#plot-settings-modal input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+
+#plot-settings-modal input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 6px;
+}
+
+#plot-settings-modal input[type="range"] {
+    width: 100%;
+    height: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 5px;
+    outline: none;
+    -webkit-appearance: none;
+}
+
+#plot-settings-modal input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: var(--accent);
+    cursor: pointer;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+#plot-settings-modal input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    background: var(--accent);
+    cursor: pointer;
+    border-radius: 50%;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+#plot-settings-modal input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    margin-right: 8px;
+    cursor: pointer;
+    accent-color: var(--accent);
+}
+
+#plot-settings-modal .form-group label:has(input[type="checkbox"]) {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+#plot-settings-line-width-value,
+#plot-settings-marker-size-value {
+    color: var(--accent);
+    font-weight: 600;
+}
+

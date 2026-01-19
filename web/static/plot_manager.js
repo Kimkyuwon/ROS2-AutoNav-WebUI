@@ -160,6 +160,7 @@ class DataBuffer {
 class PlotlyPlotManager {
     constructor(containerId, bufferTime = 5.0) {  // 기본 5초 (ROS time 기준)
         this.containerId = containerId;
+        this.plotId = containerId;  // plotId는 containerId와 동일
         this.container = null;
         this.bufferTime = bufferTime;  // 버퍼 시간 (초 단위, ROS time 기준)
         this.dataBuffers = new Map();  // path -> DataBuffer 매핑
@@ -180,6 +181,9 @@ class PlotlyPlotManager {
         this.panMousemoveHandler = null; // Pan mousemove 핸들러 (인스턴스 변수로 변경하여 제거 가능하도록)
         this.plotDeletionSetup = false;  // Plot 삭제 기능 설정 여부
         this.hoveredTraceIndex = null;   // 현재 hover된 trace index         // Pan 이벤트 핸들러 저장
+        this.isXYPlot = false;          // XY Plot 여부
+        this.xPath = null;              // X축 데이터 경로
+        this.yPath = null;              // Y축 데이터 경로
     }
 
     init() {
@@ -196,6 +200,57 @@ class PlotlyPlotManager {
         }
 
         console.log('[PlotlyPlotManager] Initialized');
+        return true;
+    }
+
+    initEmptyPlot() {
+        if (!this.init()) {
+            return false;
+        }
+
+        // Plotly 대신 간단한 HTML로 안내 메시지 표시
+        const container = document.getElementById(this.containerId);
+        if (!container) {
+            console.error('[PlotlyPlotManager] Container not found:', this.containerId);
+            return false;
+        }
+
+        container.innerHTML = `
+            <div style="
+                width: 100%;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                background: linear-gradient(135deg, #f8f8f8 0%, #ffffff 100%);
+                border: 2px dashed #cccccc;
+                border-radius: 8px;
+                font-family: Arial, sans-serif;
+            ">
+                <div style="
+                    font-size: 24px;
+                    font-weight: 500;
+                    color: #666666;
+                    margin-bottom: 16px;
+                    text-align: center;
+                ">
+                    📊 Drag and drop topics to plot
+                </div>
+                <div style="
+                    font-size: 14px;
+                    color: #999999;
+                    text-align: center;
+                    max-width: 400px;
+                    line-height: 1.6;
+                ">
+                    Select topics from the left panel and drag them here to create real-time plots
+                </div>
+            </div>
+        `;
+
+        this.isInitialized = false;  // false로 설정하여 createPlot()이 제대로 동작하도록
+        console.log('[PlotlyPlotManager] Empty plot placeholder initialized (HTML only)');
         return true;
     }
 
@@ -321,6 +376,7 @@ class PlotlyPlotManager {
         const config = {
             responsive: true,
             displayModeBar: true,
+            modeBarPosition: 'top right',  // 모드바를 오른쪽 상단에 위치
             modeBarButtonsToRemove: ['lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],  // +/-, reset axes 버튼 제거
             displaylogo: false,
             scrollZoom: true,  // 마우스 휠 줌 활성화 (일시정지 시에만 작동, dragmode로 제어)
@@ -398,11 +454,25 @@ class PlotlyPlotManager {
                 console.log('[PlotlyPlotManager] Initial dragmode set to false (playing mode)');
             }
             
+            // 모드바 위치를 오른쪽 상단으로 강제 설정
+            setTimeout(() => {
+                const plotDiv = document.getElementById(this.containerId);
+                if (plotDiv) {
+                    const modebar = plotDiv.querySelector('.modebar-container') || 
+                                   plotDiv.querySelector('.modebar');
+                    if (modebar) {
+                        modebar.style.position = 'absolute';
+                        modebar.style.top = '0';
+                        modebar.style.right = '0';
+                        modebar.style.left = 'auto';
+                        console.log('[PlotlyPlotManager] Modebar position forced to top-right');
+                    }
+                }
+            }, 100);
+            
             // 타이틀 더블클릭 이벤트 추가
             this.setupTitleEditor();
             
-            // 커스텀 컨텍스트 메뉴 추가
-            this.setupContextMenu();
             
             // 줌 제한 설정
             this.setupZoomLimiter();
@@ -427,6 +497,235 @@ class PlotlyPlotManager {
             console.error('[PlotlyPlotManager] Failed to create plot:', error);
             return false;
         }
+    }
+
+    createXYPlot(xPath, yPath) {
+        if (!this.init()) {
+            return false;
+        }
+
+        console.log('[PlotlyPlotManager] Creating XY Plot:', xPath, 'vs', yPath);
+
+        // 기존 Plot 초기화 (처음 생성 시에만)
+        this.clear();
+
+        // XY Plot 플래그 설정
+        this.isXYPlot = true;
+        this.xPath = xPath;
+        this.yPath = yPath;
+
+        // X, Y 각각 DataBuffer 생성
+        const xBuffer = new DataBuffer(this.bufferTime);
+        const yBuffer = new DataBuffer(this.bufferTime);
+        this.dataBuffers.set(xPath, xBuffer);
+        this.dataBuffers.set(yPath, yBuffer);
+        console.log(`[PlotlyPlotManager] Created buffers for X: "${xPath}", Y: "${yPath}"`);
+
+        // Plotly trace 생성 (XY Plot용)
+        const trace = {
+            x: [],
+            y: [],
+            mode: 'markers',  // XY Plot은 마커로 표시
+            name: `${yPath} vs ${xPath}`,
+            type: 'scatter',
+            marker: {
+                size: 6,
+                opacity: 0.8
+            },
+            line: {
+                width: 2
+            },
+            connectgaps: false
+        };
+        this.traces.push(trace);
+
+        // Plotly layout 설정
+        const layout = {
+            title: {
+                text: `XY Plot: ${yPath} vs ${xPath}`,
+                font: {
+                    color: '#000000',
+                    size: 14
+                }
+            },
+            xaxis: {
+                title: {
+                    text: xPath,  // X축 라벨은 데이터명
+                    font: { color: '#000000' }
+                },
+                showgrid: true,
+                gridcolor: '#cccccc',
+                gridwidth: 1,
+                zeroline: true,
+                zerolinecolor: '#000000',
+                zerolinewidth: 1,
+                tickfont: { color: '#000000' }
+            },
+            yaxis: {
+                title: {
+                    text: yPath,  // Y축 라벨은 데이터명
+                    font: { color: '#000000' }
+                },
+                showgrid: true,
+                gridcolor: '#cccccc',
+                gridwidth: 1,
+                zeroline: true,
+                zerolinecolor: '#000000',
+                zerolinewidth: 1,
+                tickfont: { color: '#000000' }
+            },
+            showlegend: true,
+            legend: {
+                x: 1,
+                xanchor: 'right',
+                y: 1,
+                yanchor: 'top',
+                bgcolor: 'rgba(255, 255, 255, 0.9)',
+                bordercolor: '#000000',
+                borderwidth: 1,
+                font: { color: '#000000' }
+            },
+            margin: {
+                l: 60,
+                r: 120,
+                b: 50,
+                t: 50
+            },
+            paper_bgcolor: '#ffffff',
+            plot_bgcolor: '#ffffff',
+            font: {
+                color: '#000000',
+                family: 'Arial, sans-serif'
+            }
+        };
+
+        // Plotly config 설정 (createPlot과 동일)
+        const config = {
+            responsive: true,
+            displayModeBar: true,
+            modeBarPosition: 'top right',
+            modeBarButtonsToRemove: ['lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
+            displaylogo: false,
+            scrollZoom: true,
+            hovermode: 'closest',
+            hoverlabel: {
+                bgcolor: 'rgba(255, 255, 255, 0.9)',
+                bordercolor: '#000',
+                font: { color: '#000', size: 12 }
+            },
+            modeBarButtonsToAdd: [
+                {
+                    name: 'Pause/Play',
+                    icon: {
+                        width: 1000,
+                        height: 1000,
+                        path: 'M300,200 L300,800 L400,800 L400,200 Z M600,200 L600,800 L700,800 L700,200 Z',
+                        transform: 'matrix(1 0 0 -1 0 1000)'
+                    },
+                    click: (gd) => {
+                        this.togglePause();
+                    }
+                },
+                {
+                    name: 'Zoom Out (Auto Scale)',
+                    icon: {
+                        width: 1000,
+                        height: 1000,
+                        path: 'M450,200 A250,250 0 1,1 450,700 A250,250 0 1,1 450,200 M350,450 L550,450 M600,650 L800,850',
+                        transform: 'matrix(1 0 0 -1 0 1000)'
+                    },
+                    click: (gd) => {
+                        this.zoomOutAutoScale();
+                    }
+                },
+                {
+                    name: 'Clear Plot (Reset)',
+                    icon: {
+                        width: 1000,
+                        height: 1000,
+                        path: 'M300,200 L300,800 L700,800 L700,200 Z M250,200 L750,200 M350,150 L650,150 M400,350 L400,700 M500,350 L500,700 M600,350 L600,700',
+                        transform: 'matrix(1 0 0 -1 0 1000)'
+                    },
+                    click: (gd) => {
+                        this.clearPlot();
+                    }
+                }
+            ]
+        };
+
+        // Plotly Plot 생성
+        try {
+            Plotly.newPlot(this.containerId, this.traces, layout, config);
+            this.isInitialized = true;
+            
+            // 초기 상태: 재생 중
+            if (!this.isPaused) {
+                Plotly.relayout(this.containerId, { dragmode: false });
+            }
+            
+            // 타이틀 더블클릭 이벤트 추가
+            this.setupTitleEditor();
+            
+            
+            // 줌 제한 설정
+            this.setupZoomLimiter();
+            
+            // 마우스 휠 제어
+            this.setupWheelControl();
+            
+            // 모드바 가드
+            this.setupModeBarGuards();
+            setTimeout(() => this.updateModeBarButtonStates(), 200);
+            
+            // Hover tooltip 커스터마이징
+            this.setupCustomHover();
+            
+            // Plot 삭제 기능
+            this.setupPlotDeletion();
+            
+            console.log('[PlotlyPlotManager] XY Plot created successfully');
+            return true;
+        } catch (error) {
+            console.error('[PlotlyPlotManager] Failed to create XY plot:', error);
+            return false;
+        }
+    }
+
+    synchronizeData(xBuffer, yBuffer) {
+        // 두 버퍼의 timestamp를 기준으로 데이터 동기화
+        // 같은 timestamp를 가진 데이터끼리 매칭 (허용 오차: ±0.01초)
+        const tolerance = 0.01;  // 10ms
+        
+        const xData = xBuffer.getData();
+        const yData = yBuffer.getData();
+        
+        const syncedX = [];
+        const syncedY = [];
+        
+        let yIndex = 0;
+        
+        // X 데이터를 기준으로 Y 데이터 매칭
+        for (let i = 0; i < xData.timestamps.length; i++) {
+            const xTimestamp = xData.timestamps[i];
+            
+            // Y 데이터에서 가장 가까운 timestamp 찾기
+            while (yIndex < yData.timestamps.length && 
+                   yData.timestamps[yIndex] < xTimestamp - tolerance) {
+                yIndex++;
+            }
+            
+            // 매칭되는 Y 데이터가 있으면 추가
+            if (yIndex < yData.timestamps.length && 
+                Math.abs(yData.timestamps[yIndex] - xTimestamp) <= tolerance) {
+                syncedX.push(xData.values[i]);
+                syncedY.push(yData.values[yIndex]);
+            }
+        }
+        
+        return {
+            x: syncedX,
+            y: syncedY
+        };
     }
 
     setupContextMenu() {
@@ -487,6 +786,7 @@ class PlotlyPlotManager {
             const menuItems = [
                 { label: '📷 Save plot to file', action: () => this.savePlotToFile() },
                 { label: '↔️ Auto Scale', action: () => this.zoomOutAutoScale() },
+                { label: '⚙️ Plot Settings', action: () => this.openPlotSettings() },
                 { separator: true },
                 { label: '➗ Split Horizontally (Coming soon)', action: () => console.log('Coming soon'), disabled: true },
                 { label: '➗ Split Vertically (Coming soon)', action: () => console.log('Coming soon'), disabled: true }
@@ -752,7 +1052,7 @@ class PlotlyPlotManager {
                 }
             }
             
-            // Plot 데이터 또는 Legend 위에서만 메뉴 표시
+            // 1. Plot 데이터 또는 Legend 위: Delete plot 메뉴 표시
             if ((isPlotData || isLegend) && targetTraceIndex !== null && targetTraceIndex < this.traces.length) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -840,6 +1140,78 @@ class PlotlyPlotManager {
                 document.body.appendChild(menu);
                 
                 // 외부 클릭 시 메뉴 닫기
+                const closeMenu = (event) => {
+                    if (!menu.contains(event.target)) {
+                        menu.remove();
+                        document.removeEventListener('click', closeMenu);
+                    }
+                };
+                setTimeout(() => {
+                    document.addEventListener('click', closeMenu);
+                }, 100);
+                
+                return false; // 이벤트 전파 차단
+            } else {
+                // 2. 빈 plot 영역: 일반 컨텍스트 메뉴 표시 (Plot Settings, Auto Scale 등)
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const menu = document.createElement('div');
+                menu.id = 'plot-context-menu';
+                menu.style.cssText = `
+                    position: absolute;
+                    left: ${e.pageX}px;
+                    top: ${e.pageY}px;
+                    background: #ffffff;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                    z-index: 10000;
+                    font-size: 13px;
+                    min-width: 180px;
+                `;
+                
+                const menuItems = [
+                    { label: '⚙️ Plot Settings', action: () => this.openPlotSettings() },
+                    { label: '↔️ Auto Scale', action: () => this.zoomOutAutoScale() },
+                    { label: '🗑️ Clear Plot', action: () => this.clearPlot() },
+                    { separator: true },
+                    { label: '📷 Save plot to file', action: () => this.savePlotToFile() }
+                ];
+                
+                menuItems.forEach(item => {
+                    if (item.separator) {
+                        const separator = document.createElement('div');
+                        separator.style.cssText = 'height: 1px; background: #ddd; margin: 4px 0;';
+                        menu.appendChild(separator);
+                    } else {
+                        const menuItem = document.createElement('div');
+                        menuItem.textContent = item.label;
+                        menuItem.style.cssText = `
+                            padding: 8px 16px;
+                            cursor: pointer;
+                            color: #000;
+                            background: transparent;
+                        `;
+                        
+                        menuItem.onmouseenter = () => {
+                            menuItem.style.background = '#f0f0f0';
+                        };
+                        menuItem.onmouseleave = () => {
+                            menuItem.style.background = 'transparent';
+                        };
+                        menuItem.onclick = () => {
+                            item.action();
+                            menu.remove();
+                        };
+                        
+                        menu.appendChild(menuItem);
+                    }
+                });
+                
+                document.body.appendChild(menu);
+                
+                // 메뉴 외부 클릭 시 닫기
                 const closeMenu = (event) => {
                     if (!menu.contains(event.target)) {
                         menu.remove();
@@ -1556,6 +1928,13 @@ class PlotlyPlotManager {
         }
 
         try {
+            // XY Plot인 경우
+            if (this.isXYPlot) {
+                this._updateXYPlot();
+                return;
+            }
+            
+            // 시계열 Plot인 경우 (기존 로직)
             // 각 trace의 데이터 업데이트
             const updateData = {
                 x: [],
@@ -1618,6 +1997,42 @@ class PlotlyPlotManager {
 
         } catch (error) {
             console.error('[PlotlyPlotManager] Failed to update plot:', error);
+        }
+    }
+    
+    _updateXYPlot() {
+        // XY Plot 전용 업데이트 로직
+        const xBuffer = this.dataBuffers.get(this.xPath);
+        const yBuffer = this.dataBuffers.get(this.yPath);
+        
+        if (!xBuffer || !yBuffer || xBuffer.isEmpty() || yBuffer.isEmpty()) {
+            return;
+        }
+        
+        // timestamp 기준으로 동기화
+        const syncedData = this.synchronizeData(xBuffer, yBuffer);
+        
+        if (syncedData.x.length === 0 || syncedData.y.length === 0) {
+            return;
+        }
+        
+        // Plotly.update() 호출
+        Plotly.update(this.containerId, {
+            x: [syncedData.x],
+            y: [syncedData.y]
+        }, {});
+        
+        // 오토스케일 범위 업데이트
+        this._updateAutoScaleRange({
+            x: [syncedData.x],
+            y: [syncedData.y]
+        });
+        
+        // 디버깅: 첫 10번만 로그
+        if (this.updateCount === undefined) this.updateCount = 0;
+        if (this.updateCount < 10) {
+            console.log(`[PlotlyPlotManager] XY Plot Update #${this.updateCount}: points=${syncedData.x.length}`);
+            this.updateCount++;
         }
     }
 
@@ -1743,11 +2158,23 @@ class PlotlyPlotManager {
             // ⚠️ 중요: Plotly.react를 사용하여 전체 traces를 다시 렌더링
             // Plotly.addTraces는 내부적으로 이상한 동작을 하므로 사용하지 않음
             const currentLayout = plotDiv.layout;
+            
+            // 제목 업데이트 (드래그한 메시지 제목으로 변경)
+            const totalPaths = Array.from(this.dataBuffers.keys());
+            currentLayout.title = {
+                text: totalPaths.length === 1 ? `Plot: ${totalPaths[0]}` : `Plot: ${totalPaths.length} items`,
+                font: {
+                    color: '#000000',
+                    size: 14
+                }
+            };
+            
             Plotly.react(this.containerId, this.traces, currentLayout);
             
             const afterCount = plotDiv.data ? plotDiv.data.length : 0;
             console.log(`[PlotlyPlotManager] AFTER adding: Plotly has ${afterCount} traces (expected ${this.traces.length})`);
             console.log(`[PlotlyPlotManager] Added ${newTraces.length} traces successfully`);
+            console.log(`[PlotlyPlotManager] Updated title to: ${currentLayout.title.text}`);
             
             // addTraces 후 plot 삭제 기능 재설정 (legend hover 이벤트 재설정)
             setTimeout(() => {
@@ -1988,6 +2415,103 @@ class PlotlyPlotManager {
             console.log('[PlotlyPlotManager] Plot immediately cleared.');
         } catch (error) {
             console.error('[PlotlyPlotManager] Failed to clear plot:', error);
+        }
+    }
+
+    openPlotSettings() {
+        console.log('[PlotlyPlotManager] Opening plot settings...');
+        
+        // 전역 함수 호출 (script.js에서 구현)
+        if (typeof window.openPlotSettings === 'function') {
+            window.openPlotSettings(this.plotId);
+        } else {
+            console.error('[PlotlyPlotManager] Global openPlotSettings() function not found');
+        }
+    }
+
+    applyTraceSettings(settings) {
+        console.log('[PlotlyPlotManager] Applying trace settings:', settings);
+        
+        if (!this.isInitialized) {
+            console.warn('[PlotlyPlotManager] Plot not initialized');
+            return;
+        }
+        
+        const { traceIndex, color, lineStyle, markerStyle, lineWidth, markerSize, showGrid, xaxisLabel, yaxisLabel } = settings;
+        
+        // trace가 유효한지 확인
+        if (traceIndex < 0 || traceIndex >= this.traces.length) {
+            console.error('[PlotlyPlotManager] Invalid trace index:', traceIndex);
+            return;
+        }
+        
+        // trace 업데이트 객체 준비
+        const traceUpdate = {};
+        
+        if (color) {
+            traceUpdate['line.color'] = color;
+            traceUpdate['marker.color'] = color;
+        }
+        
+        if (lineStyle) {
+            const dashMap = {
+                'solid': 'solid',
+                'dash': 'dash',
+                'dot': 'dot',
+                'dashdot': 'dashdot'
+            };
+            traceUpdate['line.dash'] = dashMap[lineStyle] || 'solid';
+        }
+        
+        if (markerStyle) {
+            const markerMap = {
+                'circle': 'circle',
+                'square': 'square',
+                'diamond': 'diamond',
+                'cross': 'cross',
+                'x': 'x',
+                'none': 'none'
+            };
+            traceUpdate['marker.symbol'] = markerMap[markerStyle] || 'circle';
+            
+            // 마커가 'none'이면 모드를 'lines'로, 아니면 'lines+markers'로 설정
+            if (markerStyle === 'none') {
+                traceUpdate['mode'] = 'lines';
+            } else {
+                traceUpdate['mode'] = 'lines+markers';
+            }
+        }
+        
+        if (lineWidth !== undefined) {
+            traceUpdate['line.width'] = lineWidth;
+        }
+        
+        if (markerSize !== undefined) {
+            traceUpdate['marker.size'] = markerSize;
+        }
+        
+        // layout 업데이트 객체 준비
+        const layoutUpdate = {};
+        
+        if (showGrid !== undefined) {
+            layoutUpdate['xaxis.showgrid'] = showGrid;
+            layoutUpdate['yaxis.showgrid'] = showGrid;
+        }
+        
+        if (xaxisLabel !== undefined) {
+            layoutUpdate['xaxis.title.text'] = xaxisLabel;
+        }
+        
+        if (yaxisLabel !== undefined) {
+            layoutUpdate['yaxis.title.text'] = yaxisLabel;
+        }
+        
+        try {
+            // Plotly.update()를 사용하여 trace와 layout을 동시에 업데이트
+            Plotly.update(this.containerId, traceUpdate, layoutUpdate, [traceIndex]);
+            console.log('[PlotlyPlotManager] ✓ Trace settings applied successfully');
+        } catch (error) {
+            console.error('[PlotlyPlotManager] Failed to apply trace settings:', error);
         }
     }
 

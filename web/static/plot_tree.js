@@ -159,6 +159,17 @@ class PlotJugglerTree {
                     this.setSelection(node);
                 }
             });
+            
+            // 우클릭 컨텍스트 메뉴 이벤트 (리프 노드만)
+            node.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const selectedPaths = this.getSelectedPaths();
+                if (selectedPaths.length === 2) {
+                    this.showContextMenu(e.clientX, e.clientY, selectedPaths);
+                }
+            });
         } else {
             // 비리프 노드는 더블클릭으로 재귀적 확장/축소
             node.addEventListener('dblclick', (e) => {
@@ -385,6 +396,88 @@ class PlotJugglerTree {
             }
         });
         this.selectedItems.clear();
+    }
+
+    showContextMenu(x, y, paths) {
+        // 기존 컨텍스트 메뉴 제거
+        this.hideContextMenu();
+        
+        // 컨텍스트 메뉴 생성
+        const menu = document.createElement('div');
+        menu.id = 'plot-tree-context-menu';
+        menu.style.cssText = `
+            position: fixed;
+            left: ${x}px;
+            top: ${y}px;
+            background: #ffffff;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 10000;
+            font-size: 13px;
+            min-width: 180px;
+            padding: 4px 0;
+        `;
+        
+        // 메뉴 항목: Create XY Plot
+        const menuItem = document.createElement('div');
+        menuItem.textContent = '📊 Create XY Plot';
+        menuItem.style.cssText = `
+            padding: 8px 16px;
+            cursor: pointer;
+            color: #000;
+            background: transparent;
+        `;
+        
+        menuItem.onmouseenter = () => {
+            menuItem.style.background = '#f0f0f0';
+        };
+        menuItem.onmouseleave = () => {
+            menuItem.style.background = 'transparent';
+        };
+        menuItem.onclick = () => {
+            this.createXYPlotFromSelection(paths);
+            this.hideContextMenu();
+        };
+        
+        menu.appendChild(menuItem);
+        document.body.appendChild(menu);
+        
+        // 외부 클릭 시 메뉴 닫기
+        const closeMenu = (event) => {
+            if (!menu.contains(event.target)) {
+                this.hideContextMenu();
+                document.removeEventListener('click', closeMenu);
+            }
+        };
+        setTimeout(() => {
+            document.addEventListener('click', closeMenu);
+        }, 100);
+        
+        console.log('[PlotJugglerTree] Context menu shown for paths:', paths);
+    }
+
+    hideContextMenu() {
+        const existingMenu = document.getElementById('plot-tree-context-menu');
+        if (existingMenu) {
+            existingMenu.remove();
+        }
+    }
+
+    createXYPlotFromSelection(paths) {
+        if (paths.length !== 2) {
+            console.warn('[PlotJugglerTree] XY Plot requires exactly 2 paths');
+            return;
+        }
+        
+        console.log('[PlotJugglerTree] Creating XY Plot:', paths);
+        
+        // script.js의 createXYPlot 함수 호출
+        if (typeof createXYPlot === 'function') {
+            createXYPlot(paths[0], paths[1]);
+        } else {
+            console.error('[PlotJugglerTree] createXYPlot function not found');
+        }
     }
 
     clear() {
