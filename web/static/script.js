@@ -2685,6 +2685,510 @@ window.addEventListener('click', (event) => {
 });
 
 // ==============================================================
+// Filter Dialog 관련 전역 함수들
+// ==============================================================
+let currentFilterPlotId = null;
+let currentFilterTraceIndex = null;
+let currentFilterType = null;
+
+// filter-type-items의 data-filter 값 → PlotlyPlotManager.applyFilter() filterType 매핑
+const FILTER_TYPE_MAP = {
+    'no_transform':    'noTransform',
+    'absolute':        'absolute',
+    'derivative':      'derivative',
+    'moving_average':  'movingAverage',
+    'moving_rms':      'movingRMS',
+    'moving_variance': 'movingVariance',
+    'scale_offset':    'scaleOffset'
+};
+
+// filter 표시 레이블 매핑
+const FILTER_LABEL_MAP = {
+    'no_transform':    'No Transform',
+    'absolute':        'Absolute Value',
+    'derivative':      'Derivative',
+    'moving_average':  'Moving Average',
+    'moving_rms':      'Moving RMS',
+    'moving_variance': 'Moving Variance',
+    'scale_offset':    'Scale / Offset'
+};
+
+/**
+ * 필터 종류에 맞는 파라미터 패널 HTML을 #filter-params-content에 렌더링한다.
+ * 각 입력값 변경 시 updateFilterPreview()를 호출하여 미리보기를 실시간 갱신한다.
+ * @param {string} filterType - 필터 종류 (HTML data-filter 값)
+ */
+function renderFilterParams(filterType) {
+    const container = document.getElementById('filter-params-content');
+    if (!container) return;
+
+    switch (filterType) {
+        case 'no_transform':
+            container.innerHTML = '<p class="filter-params-placeholder">Removes any applied filter and restores the original raw data stream.</p>';
+            break;
+        case 'absolute':
+            container.innerHTML = '<p class="filter-params-placeholder">No parameters required.</p>';
+            break;
+        case 'derivative':
+            container.innerHTML = `
+                <div class="filter-param-group">
+                    <label><input type="checkbox" id="fp-use-actual" checked> Use actual dt</label>
+                </div>
+                <div class="filter-param-group">
+                    <label>Custom dt (s):</label>
+                    <input type="number" id="fp-custom-dt" value="1.0" step="0.001" min="0.0001">
+                </div>`;
+            {
+                const useActualCb = document.getElementById('fp-use-actual');
+                const customDtInput = document.getElementById('fp-custom-dt');
+                if (useActualCb && customDtInput) {
+                    customDtInput.disabled = useActualCb.checked;
+                    useActualCb.onchange = () => {
+                        customDtInput.disabled = useActualCb.checked;
+                        updateFilterPreview();
+                    };
+                    customDtInput.oninput = () => updateFilterPreview();
+                }
+            }
+            break;
+        case 'moving_average':
+            container.innerHTML = `
+                <div class="filter-param-group">
+                    <label>Samples count:</label>
+                    <input type="number" id="fp-samples-count" value="10" step="1" min="1">
+                </div>
+                <div class="filter-param-group">
+                    <label><input type="checkbox" id="fp-compensate-offset"> Compensate offset</label>
+                </div>`;
+            document.getElementById('fp-samples-count')?.addEventListener('input', updateFilterPreview);
+            document.getElementById('fp-compensate-offset')?.addEventListener('change', updateFilterPreview);
+            break;
+        case 'moving_rms':
+            container.innerHTML = `
+                <div class="filter-param-group">
+                    <label>Samples count:</label>
+                    <input type="number" id="fp-samples-count" value="10" step="1" min="1">
+                </div>`;
+            document.getElementById('fp-samples-count')?.addEventListener('input', updateFilterPreview);
+            break;
+        case 'moving_variance':
+            container.innerHTML = `
+                <div class="filter-param-group">
+                    <label>Window size:</label>
+                    <input type="number" id="fp-window-size" value="10" step="1" min="1">
+                </div>
+                <div class="filter-param-group">
+                    <label><input type="checkbox" id="fp-apply-square-root"> Apply square root (std dev)</label>
+                </div>`;
+            document.getElementById('fp-window-size')?.addEventListener('input', updateFilterPreview);
+            document.getElementById('fp-apply-square-root')?.addEventListener('change', updateFilterPreview);
+            break;
+        case 'scale_offset':
+            container.innerHTML = `
+                <div class="filter-param-group">
+                    <label>Time offset (s):</label>
+                    <input type="number" id="fp-time-offset" value="0" step="0.001">
+                </div>
+                <div class="filter-param-group">
+                    <label>Value offset:</label>
+                    <input type="number" id="fp-value-offset" value="0" step="0.001">
+                </div>
+                <div class="filter-param-group">
+                    <label>Value multiplier:</label>
+                    <input type="number" id="fp-value-multiplier" value="1" step="0.001">
+                </div>
+                <div class="filter-param-group filter-conversion-btns">
+                    <label>Quick convert:</label>
+                    <div class="filter-btn-row">
+                        <button id="fp-btn-rad2deg" class="filter-convert-btn" title="Radians → Degrees (×180/π)">Rad→Deg</button>
+                        <button id="fp-btn-deg2rad" class="filter-convert-btn" title="Degrees → Radians (×π/180)">Deg→Rad</button>
+                    </div>
+                </div>`;
+            document.getElementById('fp-time-offset')?.addEventListener('input', updateFilterPreview);
+            document.getElementById('fp-value-offset')?.addEventListener('input', updateFilterPreview);
+            document.getElementById('fp-value-multiplier')?.addEventListener('input', updateFilterPreview);
+            document.getElementById('fp-btn-rad2deg')?.addEventListener('click', () => {
+                const multiplierInput = document.getElementById('fp-value-multiplier');
+                if (multiplierInput) {
+                    multiplierInput.value = (180 / Math.PI).toFixed(6);
+                    multiplierInput.dispatchEvent(new Event('input'));
+                }
+            });
+            document.getElementById('fp-btn-deg2rad')?.addEventListener('click', () => {
+                const multiplierInput = document.getElementById('fp-value-multiplier');
+                if (multiplierInput) {
+                    multiplierInput.value = (Math.PI / 180).toFixed(6);
+                    multiplierInput.dispatchEvent(new Event('input'));
+                }
+            });
+            break;
+        default:
+            container.innerHTML = '<p class="filter-params-placeholder">Select a filter to configure parameters.</p>';
+    }
+}
+
+/**
+ * 현재 파라미터 패널의 입력값을 읽어 params 객체로 반환한다.
+ * @param {string} filterType - 필터 종류 (HTML data-filter 값)
+ * @returns {object} 필터 파라미터 객체
+ */
+function readFilterParams(filterType) {
+    switch (filterType) {
+        case 'no_transform':
+            return {};
+        case 'derivative':
+            return {
+                useActual: document.getElementById('fp-use-actual')?.checked ?? true,
+                customDT: parseFloat(document.getElementById('fp-custom-dt')?.value || 1.0)
+            };
+        case 'moving_average':
+            return {
+                samplesCount: parseInt(document.getElementById('fp-samples-count')?.value || 10),
+                compensateOffset: document.getElementById('fp-compensate-offset')?.checked ?? false
+            };
+        case 'moving_rms':
+            return {
+                samplesCount: parseInt(document.getElementById('fp-samples-count')?.value || 10)
+            };
+        case 'moving_variance':
+            return {
+                windowSize: parseInt(document.getElementById('fp-window-size')?.value || 10),
+                applySquareRoot: document.getElementById('fp-apply-square-root')?.checked ?? false
+            };
+        case 'scale_offset':
+            return {
+                timeOffset: parseFloat(document.getElementById('fp-time-offset')?.value || 0),
+                valueOffset: parseFloat(document.getElementById('fp-value-offset')?.value || 0),
+                valueMultiplier: parseFloat(document.getElementById('fp-value-multiplier')?.value || 1)
+            };
+        default:
+            return {};
+    }
+}
+
+/**
+ * Alias 입력창을 현재 선택된 source trace 이름과 필터 레이블로 자동 갱신한다.
+ */
+function updateFilterAlias() {
+    if (!currentFilterPlotId || currentFilterTraceIndex === null) return;
+
+    const plotManager = plotState.plotTabManager.getPlotManager(currentFilterPlotId);
+    if (!plotManager) return;
+
+    const sourceTrace = plotManager.traces[currentFilterTraceIndex];
+    const aliasInput = document.getElementById('filter-alias-input');
+    if (aliasInput && sourceTrace) {
+        // 필터 체인: 항상 원본 topic 이름(bufferKey)을 베이스로 사용
+        const baseName = sourceTrace.bufferKey || sourceTrace.name;
+
+        if (currentFilterType === 'no_transform') {
+            // No Transform: 원본 이름으로 복원
+            aliasInput.value = baseName;
+        } else {
+            const label = currentFilterType
+                ? (FILTER_LABEL_MAP[currentFilterType] || currentFilterType)
+                : 'filtered';
+            aliasInput.value = `${baseName}[${label}]`;
+        }
+    }
+}
+
+/**
+ * #filter-preview-plot Plotly 차트를 현재 필터/파라미터 상태로 갱신한다.
+ * source trace 원본(회색)과 필터 결과(빨강)를 함께 표시한다.
+ */
+function updateFilterPreview() {
+    if (!currentFilterPlotId || currentFilterTraceIndex === null || !currentFilterType) return;
+
+    const plotManager = plotState.plotTabManager.getPlotManager(currentFilterPlotId);
+    if (!plotManager) return;
+
+    const sourceTrace = plotManager.traces[currentFilterTraceIndex];
+    if (!sourceTrace) return;
+
+    // bufferKey: 필터 적용된 trace의 원본 buffer 키
+    const bufferKey = sourceTrace.bufferKey || sourceTrace.name;
+    const buffer = plotManager.dataBuffers.get(bufferKey);
+    if (!buffer || buffer.isEmpty()) return;
+
+    const rawData = buffer.getData();
+    const { timestamps, values } = rawData;
+
+    const params = readFilterParams(currentFilterType);
+    const mappedType = FILTER_TYPE_MAP[currentFilterType];
+
+    let filteredData;
+    try {
+        switch (mappedType) {
+            case 'noTransform':
+                // 필터 없음: 원본 데이터 그대로 표시
+                filteredData = { timestamps: [...timestamps], values: [...values] };
+                break;
+            case 'absolute':
+                filteredData = PlotDataFilter.applyAbsolute(timestamps, values);
+                break;
+            case 'derivative':
+                filteredData = PlotDataFilter.applyDerivative(timestamps, values, params);
+                break;
+            case 'movingAverage':
+                filteredData = PlotDataFilter.applyMovingAverage(timestamps, values, params);
+                break;
+            case 'movingRMS':
+                filteredData = PlotDataFilter.applyMovingRMS(timestamps, values, params);
+                break;
+            case 'movingVariance':
+                filteredData = PlotDataFilter.applyMovingVariance(timestamps, values, params);
+                break;
+            case 'scaleOffset':
+                filteredData = PlotDataFilter.applyScaleOffset(timestamps, values, params);
+                break;
+            default:
+                return;
+        }
+    } catch (err) {
+        console.warn('[updateFilterPreview] Filter calculation error:', err);
+        return;
+    }
+
+    // t0 모드 적용: 상대 시간으로 변환
+    let xOrig = timestamps;
+    let xFiltered = filteredData.timestamps;
+    if (plotManager.t0Mode && plotManager.firstTimestamp !== null) {
+        xOrig = xOrig.map(t => t - plotManager.firstTimestamp);
+        xFiltered = xFiltered.map(t => t - plotManager.firstTimestamp);
+    }
+
+    const previewLayout = {
+        height: 200,
+        margin: { t: 10, b: 30, l: 50, r: 10 },
+        paper_bgcolor: '#1e1e2e',
+        plot_bgcolor: '#1e1e2e',
+        font: { color: '#cdd6f4', size: 11 },
+        showlegend: true,
+        legend: { x: 0, y: 1, font: { size: 10 } },
+        xaxis: { gridcolor: '#313244', zerolinecolor: '#45475a' },
+        yaxis: { gridcolor: '#313244', zerolinecolor: '#45475a' }
+    };
+
+    Plotly.react('filter-preview-plot', [
+        {
+            x: xOrig,
+            y: values,
+            name: sourceTrace.name,
+            type: 'scattergl',
+            mode: 'lines',
+            line: { color: '#95a5a6', width: 1 },
+            opacity: 0.5
+        },
+        {
+            x: xFiltered,
+            y: filteredData.values,
+            name: FILTER_LABEL_MAP[currentFilterType] || currentFilterType,
+            type: 'scattergl',
+            mode: 'lines',
+            line: { color: '#e74c3c', width: 2 }
+        }
+    ], previewLayout, { responsive: true, displayModeBar: false });
+}
+
+/**
+ * Filter Dialog 모달을 열고 초기 상태를 설정한다.
+ * plotManager로부터 trace 목록을 읽어 Source Curve 목록을 채우고,
+ * 필터 타입 선택 클릭 핸들러를 설정한다.
+ * @param {string} plotId      - 대상 Plot ID
+ * @param {number} traceIndex  - 기본 선택 trace 인덱스
+ */
+window.openFilterDialog = function(plotId, traceIndex) {
+    console.log('[openFilterDialog] Opening filter dialog for plot:', plotId, 'trace:', traceIndex);
+
+    currentFilterPlotId = plotId;
+    currentFilterTraceIndex = traceIndex;
+    currentFilterType = null;
+
+    const plotManager = plotState.plotTabManager.getPlotManager(plotId);
+    if (!plotManager || !plotManager.isInitialized) {
+        console.error('[openFilterDialog] Plot manager not found or not initialized:', plotId);
+        return;
+    }
+
+    // Source curve 목록 채우기
+    const sourceList = document.getElementById('filter-source-items');
+    if (sourceList) {
+        sourceList.innerHTML = '';
+        plotManager.traces.forEach((trace, idx) => {
+            const li = document.createElement('li');
+            li.textContent = trace.name || `Trace ${idx + 1}`;
+            li.className = 'filter-source-item';
+            if (idx === traceIndex) {
+                li.classList.add('active');
+            }
+            li.addEventListener('click', () => {
+                document.querySelectorAll('#filter-source-items .filter-source-item').forEach(el => el.classList.remove('active'));
+                li.classList.add('active');
+                currentFilterTraceIndex = idx;
+                updateFilterAlias();
+                updateFilterPreview();
+            });
+            sourceList.appendChild(li);
+        });
+    }
+
+    // Filter type 항목 클릭 핸들러 설정 (기존 active 초기화)
+    document.querySelectorAll('#filter-type-items .filter-type-item').forEach(item => {
+        item.classList.remove('active');
+        item.onclick = () => {
+            document.querySelectorAll('#filter-type-items .filter-type-item').forEach(el => el.classList.remove('active'));
+            item.classList.add('active');
+            currentFilterType = item.dataset.filter;
+            renderFilterParams(currentFilterType);
+            updateFilterAlias();
+            updateFilterPreview();
+        };
+    });
+
+    // 파라미터 패널 초기화
+    const paramsContent = document.getElementById('filter-params-content');
+    if (paramsContent) {
+        paramsContent.innerHTML = '<p class="filter-params-placeholder">Select a filter to configure parameters.</p>';
+    }
+
+    // Alias 초기화
+    const sourceTrace = plotManager.traces[traceIndex];
+    const aliasInput = document.getElementById('filter-alias-input');
+    if (aliasInput) {
+        const baseName = sourceTrace ? (sourceTrace.bufferKey || sourceTrace.name) : '';
+        aliasInput.value = baseName ? `${baseName}[filtered]` : '';
+    }
+
+    // 미리보기 플롯 초기화 (원본 trace만 표시)
+    const previewDiv = document.getElementById('filter-preview-plot');
+    if (previewDiv && sourceTrace) {
+        // bufferKey: 필터 적용된 trace의 원본 buffer 키
+        const bufferKey = sourceTrace.bufferKey || sourceTrace.name;
+        const buffer = plotManager.dataBuffers.get(bufferKey);
+        if (buffer && !buffer.isEmpty()) {
+            const rawData = buffer.getData();
+            let xData = rawData.timestamps;
+            if (plotManager.t0Mode && plotManager.firstTimestamp !== null) {
+                xData = xData.map(t => t - plotManager.firstTimestamp);
+            }
+            const initLayout = {
+                height: 200,
+                margin: { t: 10, b: 30, l: 50, r: 10 },
+                paper_bgcolor: '#1e1e2e',
+                plot_bgcolor: '#1e1e2e',
+                font: { color: '#cdd6f4', size: 11 },
+                showlegend: true,
+                legend: { x: 0, y: 1, font: { size: 10 } },
+                xaxis: { gridcolor: '#313244', zerolinecolor: '#45475a' },
+                yaxis: { gridcolor: '#313244', zerolinecolor: '#45475a' }
+            };
+            Plotly.react('filter-preview-plot', [{
+                x: xData,
+                y: rawData.values,
+                name: sourceTrace.name,
+                type: 'scattergl',
+                mode: 'lines',
+                line: { color: '#95a5a6', width: 1 }
+            }], initLayout, { responsive: true, displayModeBar: false });
+        } else {
+            // 데이터 없으면 빈 차트 표시
+            Plotly.react('filter-preview-plot', [], {
+                height: 200,
+                margin: { t: 10, b: 30, l: 50, r: 10 },
+                paper_bgcolor: '#1e1e2e',
+                plot_bgcolor: '#1e1e2e',
+                font: { color: '#cdd6f4', size: 11 },
+                annotations: [{ text: 'No data', x: 0.5, y: 0.5, xref: 'paper', yref: 'paper', showarrow: false, font: { color: '#6c7086' } }]
+            }, { responsive: true, displayModeBar: false });
+        }
+    }
+
+    // 모달 표시
+    const modal = document.getElementById('filter-dialog-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+    }
+};
+
+/**
+ * Filter Dialog 모달을 닫고 상태 변수를 초기화한다.
+ */
+window.closeFilterDialog = function() {
+    console.log('[closeFilterDialog] Closing filter dialog');
+
+    const modal = document.getElementById('filter-dialog-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+
+    currentFilterPlotId = null;
+    currentFilterTraceIndex = null;
+    currentFilterType = null;
+};
+
+/**
+ * 현재 선택된 필터를 대상 Plot에 적용하고 다이얼로그를 닫는다.
+ * PlotlyPlotManager.applyFilter()를 호출하여 isFiltered=true 정적 trace를 생성한다.
+ * Auto Zoom이 체크된 경우 적용 후 Plot 축을 자동 맞춤한다.
+ */
+window.saveFilter = function() {
+    console.log('[saveFilter] Saving filter');
+
+    if (!currentFilterPlotId || currentFilterTraceIndex === null) {
+        console.error('[saveFilter] No plot/trace selected');
+        return;
+    }
+
+    if (!currentFilterType) {
+        alert('Please select a filter type.');
+        return;
+    }
+
+    const plotManager = plotState.plotTabManager.getPlotManager(currentFilterPlotId);
+    if (!plotManager || !plotManager.isInitialized) {
+        console.error('[saveFilter] Plot manager not found or not initialized');
+        return;
+    }
+
+    const alias = document.getElementById('filter-alias-input')?.value?.trim() || '';
+    const autoZoom = document.getElementById('filter-autozoom')?.checked ?? true;
+    const params = readFilterParams(currentFilterType);
+    const mappedType = FILTER_TYPE_MAP[currentFilterType];
+
+    const success = plotManager.applyFilter(currentFilterTraceIndex, mappedType, params, alias);
+
+    if (success) {
+        console.log('[saveFilter] ✓ Filter applied successfully');
+
+        // Auto Zoom: 적용 후 축을 자동 맞춤
+        if (autoZoom) {
+            try {
+                Plotly.relayout(plotManager.containerId, {
+                    'xaxis.autorange': true,
+                    'yaxis.autorange': true
+                });
+            } catch (err) {
+                console.warn('[saveFilter] Auto zoom failed:', err);
+            }
+        }
+
+        window.closeFilterDialog();
+    } else {
+        console.error('[saveFilter] Failed to apply filter');
+        alert('Failed to apply filter. Make sure the trace has data.');
+    }
+};
+
+// Filter 다이얼로그 모달 외부 클릭 시 닫기
+window.addEventListener('click', (event) => {
+    const filterModal = document.getElementById('filter-dialog-modal');
+    if (event.target === filterModal) {
+        window.closeFilterDialog();
+    }
+});
+
+// ==============================================================
 // 페이지 로드 시 초기화
 // ==============================================================
 document.addEventListener('DOMContentLoaded', () => {

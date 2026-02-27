@@ -156,6 +156,200 @@ class DataBuffer {
     }
 }
 
+// PlotDataFilter 클래스 - 시계열 데이터 필터 적용 (정적 메서드 모음)
+class PlotDataFilter {
+
+    /**
+     * 타임스탬프 배열에서 중앙값 dt(샘플 간격)를 추정한다.
+     * 연속한 두 타임스탬프 간 차이들의 중앙값을 반환한다.
+     * @param {number[]} timestamps - 타임스탬프 배열 (초 단위)
+     * @returns {number} 중앙값 dt (초 단위). 데이터가 2개 미만이면 1.0 반환.
+     */
+    static guessMedianDT(timestamps) {
+        if (!timestamps || timestamps.length < 2) {
+            return 1.0;
+        }
+        const diffs = [];
+        for (let i = 1; i < timestamps.length; i++) {
+            const dt = timestamps[i] - timestamps[i - 1];
+            if (dt > 0) {
+                diffs.push(dt);
+            }
+        }
+        if (diffs.length === 0) {
+            return 1.0;
+        }
+        diffs.sort((a, b) => a - b);
+        const mid = Math.floor(diffs.length / 2);
+        return diffs.length % 2 === 0
+            ? (diffs[mid - 1] + diffs[mid]) / 2
+            : diffs[mid];
+    }
+
+    /**
+     * 절댓값 필터: 각 값에 Math.abs() 적용
+     * @param {number[]} timestamps - 타임스탬프 배열
+     * @param {number[]} values - 값 배열
+     * @returns {{timestamps: number[], values: number[]}}
+     */
+    static applyAbsolute(timestamps, values) {
+        return {
+            timestamps: [...timestamps],
+            values: values.map(v => Math.abs(v))
+        };
+    }
+
+    /**
+     * 미분 필터: 연속 샘플 간 변화율 (dy/dt) 계산
+     * @param {number[]} timestamps - 타임스탬프 배열
+     * @param {number[]} values - 값 배열
+     * @param {object} params
+     * @param {boolean} params.useActual - true면 실제 dt 사용, false면 customDT 사용
+     * @param {number}  params.customDT  - useActual=false 일 때 사용할 고정 dt (초)
+     * @returns {{timestamps: number[], values: number[]}}
+     */
+    static applyDerivative(timestamps, values, { useActual = true, customDT = 1.0 } = {}) {
+        if (timestamps.length < 2) {
+            return { timestamps: [...timestamps], values: [...values] };
+        }
+        const outTimestamps = [];
+        const outValues = [];
+        for (let i = 1; i < timestamps.length; i++) {
+            const dy = values[i] - values[i - 1];
+            const dt = useActual
+                ? (timestamps[i] - timestamps[i - 1]) || customDT
+                : customDT;
+            // dt가 0이면 스킵 (중복 타임스탬프)
+            if (dt === 0) continue;
+            outTimestamps.push(timestamps[i]);
+            outValues.push(dy / dt);
+        }
+        return { timestamps: outTimestamps, values: outValues };
+    }
+
+    /**
+     * 이동 평균 필터
+     * @param {number[]} timestamps - 타임스탬프 배열
+     * @param {number[]} values - 값 배열
+     * @param {object} params
+     * @param {number}  params.samplesCount     - 윈도우 샘플 수 (홀수 권장)
+     * @param {boolean} params.compensateOffset - true면 윈도우 중앙 타임스탬프 사용, false면 현재 타임스탬프
+     * @returns {{timestamps: number[], values: number[]}}
+     */
+    static applyMovingAverage(timestamps, values, { samplesCount = 10, compensateOffset = false } = {}) {
+        const n = Math.max(1, Math.round(samplesCount));
+        const outTimestamps = [];
+        const outValues = [];
+        for (let i = n - 1; i < timestamps.length; i++) {
+            let sum = 0;
+            for (let j = i - n + 1; j <= i; j++) {
+                sum += values[j];
+            }
+            outValues.push(sum / n);
+            // compensateOffset: 윈도우 시작과 끝의 중간 타임스탬프 사용
+            if (compensateOffset) {
+                const startIdx = i - n + 1;
+                outTimestamps.push((timestamps[startIdx] + timestamps[i]) / 2);
+            } else {
+                outTimestamps.push(timestamps[i]);
+            }
+        }
+        return { timestamps: outTimestamps, values: outValues };
+    }
+
+    /**
+     * 이동 RMS (Root Mean Square) 필터
+     * @param {number[]} timestamps - 타임스탬프 배열
+     * @param {number[]} values - 값 배열
+     * @param {object} params
+     * @param {number}  params.samplesCount - 윈도우 샘플 수
+     * @returns {{timestamps: number[], values: number[]}}
+     */
+    static applyMovingRMS(timestamps, values, { samplesCount = 10 } = {}) {
+        const n = Math.max(1, Math.round(samplesCount));
+        const outTimestamps = [];
+        const outValues = [];
+        for (let i = n - 1; i < timestamps.length; i++) {
+            let sumSq = 0;
+            for (let j = i - n + 1; j <= i; j++) {
+                sumSq += values[j] * values[j];
+            }
+            outValues.push(Math.sqrt(sumSq / n));
+            outTimestamps.push(timestamps[i]);
+        }
+        return { timestamps: outTimestamps, values: outValues };
+    }
+
+    /**
+     * 이동 분산 / 표준편차 필터
+     * @param {number[]} timestamps - 타임스탬프 배열
+     * @param {number[]} values - 값 배열
+     * @param {object} params
+     * @param {number}  params.windowSize      - 윈도우 샘플 수
+     * @param {boolean} params.applySquareRoot - true면 표준편차(sqrt(variance)) 반환, false면 분산 반환
+     * @returns {{timestamps: number[], values: number[]}}
+     */
+    static applyMovingVariance(timestamps, values, { windowSize = 10, applySquareRoot = false } = {}) {
+        const n = Math.max(1, Math.round(windowSize));
+        const outTimestamps = [];
+        const outValues = [];
+        for (let i = n - 1; i < timestamps.length; i++) {
+            let sum = 0;
+            for (let j = i - n + 1; j <= i; j++) {
+                sum += values[j];
+            }
+            const mean = sum / n;
+            let sumSqDiff = 0;
+            for (let j = i - n + 1; j <= i; j++) {
+                const diff = values[j] - mean;
+                sumSqDiff += diff * diff;
+            }
+            const variance = sumSqDiff / n;
+            outValues.push(applySquareRoot ? Math.sqrt(variance) : variance);
+            outTimestamps.push(timestamps[i]);
+        }
+        return { timestamps: outTimestamps, values: outValues };
+    }
+
+    /**
+     * 스케일 & 오프셋 필터: value = (원래값 × valueMultiplier) + valueOffset, timestamp += timeOffset
+     * @param {number[]} timestamps - 타임스탬프 배열
+     * @param {number[]} values - 값 배열
+     * @param {object} params
+     * @param {number} params.timeOffset      - 타임스탬프에 더할 오프셋 (초)
+     * @param {number} params.valueOffset     - 값에 더할 오프셋
+     * @param {number} params.valueMultiplier - 값에 곱할 스케일
+     * @returns {{timestamps: number[], values: number[]}}
+     */
+    static applyScaleOffset(timestamps, values, { timeOffset = 0.0, valueOffset = 0.0, valueMultiplier = 1.0 } = {}) {
+        return {
+            timestamps: timestamps.map(t => t + timeOffset),
+            values: values.map(v => v * valueMultiplier + valueOffset)
+        };
+    }
+
+    /**
+     * filterConfig 객체를 기반으로 적절한 필터를 디스패치한다.
+     * trace.filterConfig = { type: '...', params: {...} } 형식을 사용한다.
+     * @param {number[]} timestamps - 타임스탬프 배열
+     * @param {number[]} values - 값 배열
+     * @param {{type: string, params: object}} filterConfig - 필터 설정
+     * @returns {{timestamps: number[], values: number[]}}
+     */
+    static applyByConfig(timestamps, values, filterConfig) {
+        if (!filterConfig) return { timestamps: [...timestamps], values: [...values] };
+        switch (filterConfig.type) {
+            case 'absolute':      return PlotDataFilter.applyAbsolute(timestamps, values);
+            case 'derivative':    return PlotDataFilter.applyDerivative(timestamps, values, filterConfig.params);
+            case 'movingAverage': return PlotDataFilter.applyMovingAverage(timestamps, values, filterConfig.params);
+            case 'movingRMS':     return PlotDataFilter.applyMovingRMS(timestamps, values, filterConfig.params);
+            case 'movingVariance':return PlotDataFilter.applyMovingVariance(timestamps, values, filterConfig.params);
+            case 'scaleOffset':   return PlotDataFilter.applyScaleOffset(timestamps, values, filterConfig.params);
+            default:              return { timestamps: [...timestamps], values: [...values] };
+        }
+    }
+}
+
 // PlotlyPlotManager 클래스 - Plotly.js를 이용한 Plot 생성 및 업데이트
 class PlotlyPlotManager {
     constructor(containerId, bufferTime = 5.0) {  // 기본 5초 (ROS time 기준)
@@ -822,7 +1016,7 @@ class PlotlyPlotManager {
             `;
             
             const menuItems = [
-                { label: '📷 Save plot to file', action: () => this.savePlotToFile() },
+                { label: '📷 Export as PNG', action: () => this.exportToPNG() },
                 { label: '↔️ Auto Scale', action: () => this.zoomOutAutoScale() },
                 { label: '⚙️ Plot Settings', action: () => this.openPlotSettings() },
                 { separator: true },
@@ -1154,27 +1348,38 @@ class PlotlyPlotManager {
                     min-width: 150px;
                 `;
                 
-                const menuItem = document.createElement('div');
-                menuItem.textContent = '🗑️ Delete plot';
-                menuItem.style.cssText = `
-                    padding: 8px 16px;
-                    cursor: pointer;
-                    color: #000;
-                    background: transparent;
-                `;
-                
-                menuItem.onmouseenter = () => {
-                    menuItem.style.background = '#f0f0f0';
-                };
-                menuItem.onmouseleave = () => {
-                    menuItem.style.background = 'transparent';
-                };
-                menuItem.onclick = () => {
-                    this.deleteTrace(targetTraceIndex);
-                    menu.remove();
-                };
-                
-                menu.appendChild(menuItem);
+                // 메뉴 항목 목록: 🗑️ Delete plot
+                const traceMenuItems = [
+                    {
+                        label: '🗑️ Delete plot',
+                        action: () => {
+                            this.deleteTrace(targetTraceIndex);
+                            menu.remove();
+                        }
+                    }
+                ];
+
+                traceMenuItems.forEach(itemDef => {
+                    const menuItem = document.createElement('div');
+                    menuItem.textContent = itemDef.label;
+                    menuItem.style.cssText = `
+                        padding: 8px 16px;
+                        cursor: pointer;
+                        color: #000;
+                        background: transparent;
+                    `;
+
+                    menuItem.onmouseenter = () => {
+                        menuItem.style.background = '#f0f0f0';
+                    };
+                    menuItem.onmouseleave = () => {
+                        menuItem.style.background = 'transparent';
+                    };
+                    menuItem.onclick = itemDef.action;
+
+                    menu.appendChild(menuItem);
+                });
+
                 document.body.appendChild(menu);
                 
                 // 외부 클릭 시 메뉴 닫기
@@ -1219,7 +1424,9 @@ class PlotlyPlotManager {
                     ] : []),
                     { label: '⇕ Flip Vertical Axis', action: () => this.flipYAxis() },
                     { separator: true },
-                    { label: '📷 Save plot to file', action: () => this.savePlotToFile() }
+                    { label: '📷 Export as PNG', action: () => this.exportToPNG() },
+                    { separator: true },
+                    { label: '🔧 Apply Filter', action: () => this.openFilterDialog(0) }
                 ];
                 
                 menuItems.forEach(item => {
@@ -1280,9 +1487,10 @@ class PlotlyPlotManager {
         }
         
         const trace = this.traces[traceIndex];
-        const path = trace.name;
+        // bufferKey: 필터 적용 후 실제 buffer 키 (없으면 name 사용)
+        const path = trace.bufferKey || trace.name;
         
-        console.log(`[PlotlyPlotManager] Deleting trace: ${path} (index: ${traceIndex})`);
+        console.log(`[PlotlyPlotManager] Deleting trace: ${trace.name} (bufferKey: ${path}, index: ${traceIndex})`);
         
         // DataBuffer에서 제거
         if (this.dataBuffers.has(path)) {
@@ -1560,17 +1768,29 @@ class PlotlyPlotManager {
         console.log('[PlotlyPlotManager] Pan control disabled');
     }
 
-    savePlotToFile() {
-        console.log('[PlotlyPlotManager] Saving plot to file...');
+    exportToPNG() {
+        console.log('[PlotlyPlotManager] Exporting plot as PNG...');
+        
+        // 탭 제목 가져오기: containerId에서 탭 ID 추출 후 DOM에서 탭 제목 조회
+        const tabId = this.containerId.replace('plot-area-', '');
+        const titleEl = document.getElementById(`plot-tab-title-${tabId}`);
+        const plotTitle = titleEl ? titleEl.textContent.trim() : tabId;
+        
+        // 파일명: plot_{plotTitle}_{yyyymmdd_HHmmss}.png
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const safeTitle = plotTitle.replace(/[^a-zA-Z0-9가-힣_\-]/g, '_');
+        const filename = `plot_${safeTitle}_${timestamp}`;
         
         Plotly.downloadImage(this.containerId, {
             format: 'png',
             width: 1200,
             height: 800,
-            filename: `plot_${Date.now()}`
+            filename: filename
         });
         
-        console.log('[PlotlyPlotManager] Plot saved.');
+        console.log(`[PlotlyPlotManager] PNG export triggered: ${filename}.png`);
     }
 
     setupZoomLimiter() {
@@ -1978,7 +2198,8 @@ class PlotlyPlotManager {
             }
             
             // 시계열 Plot인 경우 (기존 로직)
-            // 각 trace의 데이터 업데이트
+            // 각 trace의 데이터 업데이트 (isFiltered trace 제외)
+            const traceIndices = [];  // 업데이트할 trace 인덱스 목록
             const updateData = {
                 x: [],
                 y: []
@@ -1992,18 +2213,37 @@ class PlotlyPlotManager {
             const maxPoints = forceFullData ? Infinity : 500;  // 재생: 500, 일시정지: 모든 데이터
             
             this.traces.forEach((trace, index) => {
-                // trace.name을 사용하여 올바른 buffer 찾기 (인덱스 매칭 대신)
-                const path = trace.name;
+                // bufferKey: 필터 적용된 trace는 원본 경로, 없으면 name 사용
+                const path = trace.bufferKey || trace.name;
                 const buffer = this.dataBuffers.get(path);
-                
-                if (buffer && !buffer.isEmpty()) {
+
+                // 버퍼가 없는 trace는 정적 데이터(legacy isFiltered) → 업데이트 제외
+                if (!buffer) {
+                    return;
+                }
+
+                traceIndices.push(index);
+
+                if (!buffer.isEmpty()) {
                     // 🚀 하이브리드 전략: 일시정지 시 모든 데이터, 재생 중 강력한 다운샘플링
                     const data = buffer.getDownsampledData(maxPoints, forceFullData);
-                    
-                    // t0 모드: 첫 timestamp를 0으로 만들어 상대 시간 표시
+
                     let timestamps = data.timestamps;
+                    let values = data.values;
+
+                    // 🔧 filterConfig가 있으면 실시간으로 필터 적용
+                    if (trace.filterConfig) {
+                        try {
+                            const filtered = PlotDataFilter.applyByConfig(timestamps, values, trace.filterConfig);
+                            timestamps = filtered.timestamps;
+                            values = filtered.values;
+                        } catch (filterErr) {
+                            console.warn('[_updatePlotly] Filter application error:', filterErr);
+                        }
+                    }
+
+                    // t0 모드: 첫 timestamp를 0으로 만들어 상대 시간 표시
                     if (this.t0Mode && t0 !== null) {
-                        // 배열 크기만큼 변환
                         const length = timestamps.length;
                         const converted = new Array(length);
                         for (let i = 0; i < length; i++) {
@@ -2011,22 +2251,24 @@ class PlotlyPlotManager {
                         }
                         timestamps = converted;
                     }
-                    
+
                     updateData.x.push(timestamps);
-                    updateData.y.push(data.values);
-                    totalPoints += data.timestamps.length;
+                    updateData.y.push(values);
+                    totalPoints += timestamps.length;
                 } else {
-                    // 버퍼가 없거나 비어있으면 빈 배열
+                    // 버퍼가 비어있으면 빈 배열
                     updateData.x.push([]);
                     updateData.y.push([]);
                 }
             });
 
-            // 🚀 최적화: 모든 trace를 한 번에 업데이트 (개별 restyle 대신 Plotly.update 사용)
-            Plotly.update(this.containerId, {
-                x: updateData.x,
-                y: updateData.y
-            }, {});
+            // 🚀 최적화: 비-필터 trace만 인덱스 지정하여 업데이트 (isFiltered trace 데이터 보존)
+            if (traceIndices.length > 0) {
+                Plotly.update(this.containerId, {
+                    x: updateData.x,
+                    y: updateData.y
+                }, {}, traceIndices);
+            }
 
             // 오토스케일 범위 업데이트 (줌 제한을 위해 데이터 범위 저장)
             this._updateAutoScaleRange(updateData);
@@ -2469,6 +2711,102 @@ class PlotlyPlotManager {
             window.openPlotSettings(this.plotId);
         } else {
             console.error('[PlotlyPlotManager] Global openPlotSettings() function not found');
+        }
+    }
+
+    /**
+     * Filter 다이얼로그를 열기 위해 script.js의 전역 함수를 호출한다.
+     * @param {number} traceIndex - Filter를 적용할 source trace 인덱스
+     */
+    openFilterDialog(traceIndex) {
+        console.log(`[PlotlyPlotManager] Opening filter dialog for trace index: ${traceIndex}`);
+
+        if (typeof window.openFilterDialog === 'function') {
+            window.openFilterDialog(this.plotId, traceIndex);
+        } else {
+            console.error('[PlotlyPlotManager] Global openFilterDialog() function not found');
+        }
+    }
+
+    /**
+     * 선택한 trace에 필터를 in-place로 적용한다.
+     * 기존 trace를 새로운 trace로 교체하는 것이 아니라, 해당 trace를 직접 수정한다.
+     * - trace.bufferKey : 실제 DataBuffer 키 (원본 topic 경로), 필터 체이닝 시 유지
+     * - trace.filterConfig : { type, params } → _updatePlotly()에서 실시간 적용
+     * - 'noTransform' filterType : 필터를 제거하고 원본으로 복원
+     *
+     * @param {number} traceIndex - Source trace 인덱스
+     * @param {string} filterType - 필터 종류 ('absolute'|'derivative'|'movingAverage'|'movingRMS'|'movingVariance'|'scaleOffset'|'noTransform')
+     * @param {object} params     - 필터 파라미터
+     * @param {string} alias      - 결과 trace 이름 (legend에 표시)
+     * @returns {boolean} 성공 여부
+     */
+    applyFilter(traceIndex, filterType, params, alias) {
+        if (!this.isInitialized) {
+            console.warn('[PlotlyPlotManager] Plot not initialized');
+            return false;
+        }
+
+        if (traceIndex < 0 || traceIndex >= this.traces.length) {
+            console.error('[PlotlyPlotManager] Invalid trace index for applyFilter:', traceIndex);
+            return false;
+        }
+
+        const sourceTrace = this.traces[traceIndex];
+
+        // bufferKey: 필터 체인 시 항상 원본 buffer를 가리킴
+        const bufferKey = sourceTrace.bufferKey || sourceTrace.name;
+        const buffer = this.dataBuffers.get(bufferKey);
+
+        if (!buffer || buffer.isEmpty()) {
+            console.warn('[PlotlyPlotManager] No data in buffer for trace:', bufferKey);
+            return false;
+        }
+
+        // ── No Transform: 필터 제거, 원본 이름 복원 ──────────────────────
+        if (filterType === 'noTransform') {
+            sourceTrace.name = bufferKey;
+            delete sourceTrace.bufferKey;
+            delete sourceTrace.filterConfig;
+
+            try {
+                const plotDiv = document.getElementById(this.containerId);
+                Plotly.react(this.containerId, this.traces, plotDiv.layout);
+                this.plotDeletionSetup = false;
+                setTimeout(() => this.setupPlotDeletion(), 100);
+                console.log(`[PlotlyPlotManager] ✓ Filter removed (No Transform): trace restored to "${bufferKey}"`);
+                return true;
+            } catch (error) {
+                console.error('[PlotlyPlotManager] Failed to remove filter:', error);
+                return false;
+            }
+        }
+
+        // ── 필터 적용: trace를 in-place로 수정 ──────────────────────────
+        const filteredName = alias || `${bufferKey}[${filterType}]`;
+
+        // trace 메타 업데이트
+        sourceTrace.name = filteredName;
+        sourceTrace.bufferKey = bufferKey;       // 원본 buffer 키 보존
+        sourceTrace.filterConfig = { type: filterType, params };
+
+        // 혹시 남아있는 legacy 필드 정리
+        delete sourceTrace.isFiltered;
+        sourceTrace.x = [];
+        sourceTrace.y = [];
+
+        try {
+            const plotDiv = document.getElementById(this.containerId);
+            Plotly.react(this.containerId, this.traces, plotDiv.layout);
+
+            this.plotDeletionSetup = false;
+            setTimeout(() => this.setupPlotDeletion(), 100);
+
+            console.log(`[PlotlyPlotManager] ✓ Filter applied in-place: type=${filterType}, name="${filteredName}"`);
+            return true;
+        } catch (error) {
+            console.error('[PlotlyPlotManager] Failed to apply filter:', error);
+            return false;
         }
     }
 
