@@ -94,13 +94,13 @@ description: ROS2 AUTONAV WEBUI 개발 일정 및 작업 계획 (Phase별 세부
   - ✅ **탭 상태 초기화** (페이지 새로고침 시 항상 초기화, 디폴트 1개 탭) 🆕 ✅ (2026-01-19)
   - ✅ **재생/일시정지 기능** (Plotly 모드바 통합) ✅ (2026-01-13)
   - ✅ **처음 plot 탭 진입 시 빈 plot 표시**: 탭 생성 시 빈 plot 자동 표시 (복원 완료) ✅ (2026-01-19)
-  - ⚠️ **XY Plot** (2026-01-19 부분 구현 - 기본 기능 완료, legend/축 반전/축 라벨 미완료)
+  - ⚠️ **XY Plot** (2026-02-27 부분 구현 - legend/Flip 완료, 축 이름/단위 미완료)
     - ✅ 컨텍스트 메뉴로 XY Plot 생성 (2개 선택 시)
     - ✅ 두 데이터 timestamp 동기화
     - ✅ XY Plot 실시간 업데이트
-    - ❌ XY Plot Legend 표시 (PlotJuggler 스타일) (미완료)
-    - ❌ 축 반전 기능 (Flip Horizontal/Vertical Axis) (미완료)
-    - ❌ 축 이름을 X, Y로 변경 (미완료)
+    - ✅ XY Plot Legend 표시 (PlotJuggler 스타일) (_buildXYLegendName() 구현) ✅ (2026-02-27)
+    - ✅ 축 반전 기능 (Flip Horizontal/Vertical Axis) (컨텍스트 메뉴) ✅ (2026-02-27)
+    - ❌ 축 이름을 X, Y로 변경 (미완료 - _getLastFieldName() 미구현)
     - ❌ 축 단위 표시 (m) (미완료)
   - ✅ **Plot 설정 기능** (2026-01-19 완료) 🆕 ✅
     - ✅ Plot 설정 모달 UI (Trace 선택, 색상, 선/마커 스타일, 두께, 크기, 그리드, 축 라벨)
@@ -109,8 +109,9 @@ description: ROS2 AUTONAV WEBUI 개발 일정 및 작업 계획 (Phase별 세부
     - ✅ PlotlyPlotManager.applyTraceSettings() 메서드 (Plotly.update 사용)
     - ✅ 모달 스크롤바 제거 (modal-content/modal-body overflow 제거)
   - ❌ Plot Export (PNG, CSV) **(🆕 제안 3번)**
+  - ❌ **Apply Filter** (Absolute, Derivative, Moving Average, Moving RMS, Moving Variance/Stdev, Scale/Offset) 🆕
 
-- **Plot 추가 기능**: 90% 구현 (Plot 설정 완료, XY Plot 부분 완료, Export 미구현)
+- **Plot 추가 기능**: 90% 구현 (Plot 설정 완료, XY Plot 부분 완료, Apply Filter/Export 미구현)
 
 - **3D Viewer**: 20% 구현
   - ✅ Three.js 기본 설정 (Scene, Camera, Renderer)
@@ -644,28 +645,26 @@ description: ROS2 AUTONAV WEBUI 개발 일정 및 작업 계획 (Phase별 세부
    - [x] 일시정지 시 Zoom/Pan 모드 활성화 ✅
    - [x] 재생 시 자동 오토스케일 및 상호작용 비활성화 ✅
 
-2. **XY Plot 기능** ⚠️ (2026-01-19 부분 완료)
+2. **XY Plot 기능** ⚠️ (2026-02-27 부분 완료 - legend/Flip 완료, 축 이름/단위 미완료)
    - [x] PlotJugglerTree의 복수 선택 기능 활용 ✅
    - [x] 선택된 데이터 표시 (시각적 피드백) ✅
    - [x] 컨텍스트 메뉴로 XY Plot 생성 (2개 선택 시 "Create XY Plot" 메뉴) ✅
    - [x] 두 데이터 동기화 (같은 timestamp 기준) ✅
    - [x] XY Plot 업데이트 ✅
-   - [ ] **XY Plot Legend 표시** 🆕 ⚠️ (미완료)
-     - PlotJuggler 스타일 legend (오른쪽 상단)
-     - 데이터 경로 표시 (예: "/Odometry/pose/pose/position/[x,y]")
-     - X, Y 데이터 경로를 [x,y] 형식으로 결합하여 표시
-   - [ ] **축 반전 기능 (Flip Axis)** 🆕 ⚠️ (미완료)
-     - Flip Horizontal Axis (수평 축 반전) 버튼 추가
-     - Flip Vertical Axis (수직 축 반전) 버튼 추가
-     - PlotJuggler 코드 참고하여 구현
-     - 버튼 클릭 시 해당 축의 데이터 방향 반전
-     - Plotly.js의 `autorange: 'reversed'` 옵션 활용
-   - [ ] **드래그 시 축 이름을 X, Y로 변경** 🆕 ⚠️ (미완료)
-     - X축: 첫 번째로 드래그된 데이터의 이름 또는 "X"
-     - Y축: 두 번째로 드래그된 데이터의 이름 또는 "Y"
-   - [ ] **축 단위 표시 (m)** 🆕 ⚠️ (미완료)
-     - X축 라벨: "X (m)" 또는 "{데이터명} (m)"
-     - Y축 라벨: "Y (m)" 또는 "{데이터명} (m)"
+   - [x] **XY Plot Legend 표시** 🆕 ✅ (2026-02-27 완료)
+     - PlotJuggler 스타일 legend (오른쪽 상단) ✅
+     - 데이터 경로 표시 (예: "/Odometry/pose/pose/position/[x,y]") ✅
+     - `_buildXYLegendName(xPath, yPath)` 헬퍼 메서드로 공통 prefix 추출 및 [x, y] 형식 결합 ✅
+   - [x] **축 반전 기능 (Flip Axis)** 🆕 ✅ (2026-02-27 완료)
+     - `isXFlipped`, `isYFlipped` 상태 변수 추가 ✅
+     - `flipXAxis()`, `flipYAxis()` 메서드 구현 (range swap 방식) ✅
+     - 컨텍스트 메뉴에 "⇔ Flip Horizontal Axis", "⇕ Flip Vertical Axis" 추가 ✅
+     - Plotly.js의 `xaxis.range` swap 및 `autorange: 'reversed'` 옵션 활용 ✅
+   - [ ] **축 이름을 X, Y로 변경** ⚠️ (미완료)
+     - `_getLastFieldName(path)` 헬퍼 미구현
+     - 현재 xaxis/yaxis title이 전체 경로 문자열 그대로 표시됨
+   - [ ] **축 단위 표시 (m)** ⚠️ (미완료)
+     - axis title에 "(m)" 단위 미부착
 
 3. **Plot 설정 기능** ✅ (2026-01-19 완료)
    - [x] Plot 설정 모달 HTML/CSS 구현 ✅
@@ -697,11 +696,198 @@ description: ROS2 AUTONAV WEBUI 개발 일정 및 작업 계획 (Phase별 세부
      - X축/Y축 라벨 업데이트
      - `Plotly.update()` 사용하여 trace와 layout 동시 업데이트
 
+4. **Apply Filter 기능** 🆕 (미완료)
+
+   **목표**: PlotJuggler Transform Editor 스타일의 데이터 필터 다이얼로그 구현.
+   선택된 trace의 원본 데이터에 필터를 적용한 새로운 trace를 생성하여 Plot에 추가한다.
+
+   **UI 구성** (PlotJuggler Transform Editor 참고):
+   - 우클릭 컨텍스트 메뉴에 "🔧 Apply Filter" 항목 추가
+     - hover된 trace가 있을 때만 활성화
+     - 재생 / 일시정지 상태 모두 표시
+   - 클릭 시 Filter 다이얼로그 모달 오픈
+     - **상단**: 필터 적용 결과 미리보기 Plot (Plotly.js, 200px 높이)
+       - 필터 선택 / 파라미터 변경 시 실시간 미리보기 업데이트
+     - **왼쪽**: Source curve 목록 (현재 Plot의 trace 이름 표시)
+       - 클릭 시 해당 trace 선택 (하이라이트)
+     - **중앙**: 필터 목록 (`<select>` 또는 스크롤 리스트)
+       - `-- NO Transform --` (초기 선택)
+       - `Absolute`
+       - `Derivative`
+       - `Moving Average`
+       - `Moving Root Mean Squared`
+       - `Moving Variance / Stdev`
+       - `Scale/Offset`
+     - **오른쪽**: 선택된 필터의 파라미터 입력 영역 (필터 선택 시 동적 렌더링)
+     - **하단**: Alias 입력 필드 + AutoZoom 체크박스 + Save / Cancel 버튼
+       - Alias: `"${원본_trace명}[${필터명}]"` 형식으로 자동 설정 (편집 가능)
+       - Save: 필터 적용 trace를 현재 Plot에 추가 + 다이얼로그 닫기
+       - Cancel: 다이얼로그 닫기
+
+   **지원 필터 및 파라미터** (PlotJuggler 참고):
+
+   4-1. **Absolute** (절대값)
+   - 파라미터 없음
+   - 알고리즘: `y[i] = Math.abs(y[i])`
+   - PlotJuggler 참고: `PluginAbsolute` (단순 절대값 변환)
+
+   4-2. **Derivative** (차분/미분)
+   - 파라미터 영역 - "Time Difference (dT):" 섹션:
+     - 라디오 버튼 1: `Actual` → `dT = t[i] - t[i-1]` (노이즈 발생 가능)
+     - 라디오 버튼 2: `Custom` (기본 선택) → 입력 필드 (`number`, 기본값 자동 계산)
+     - `Guess dT` 버튼: 전체 timestamp 배열의 중앙값으로 dT 자동 계산 후 Custom 입력에 설정
+   - 알고리즘:
+     ```
+     for i in 1..N-1:
+         dT = (actual 모드) ? (t[i] - t[i-1]) : customDT
+         y_out[i] = (dT > 0) ? (y[i] - y[i-1]) / dT : 0
+     y_out[0] = y_out[1]   // 첫 포인트는 두 번째 값으로 채움
+     ```
+   - Alias 기본값: `"${원본}[Derivative]"`
+   - PlotJuggler 참고: `TransformDerivative`
+
+   4-3. **Moving Average** (이동 평균)
+   - 파라미터 영역 - "Select the size of the window" 섹션:
+     - `Samples count:` 스피너 (`number`, min=1, 기본=10)
+     - `Compensate time offset` 체크박스 (체크 시 결과 timestamp를 윈도우 중앙으로 이동)
+   - 알고리즘 (causal):
+     ```
+     for i in 0..N-1:
+         window = y[max(0, i-sampleCount+1) .. i]
+         y_out[i] = mean(window)
+         t_out[i] = (compensate) ? t[i] - (window_size-1)/2 * dT : t[i]
+     ```
+   - Alias 기본값: `"${원본}[Moving Average]"`
+   - PlotJuggler 참고: `TransformMovingAverage`
+
+   4-4. **Moving Root Mean Squared** (이동 RMS)
+   - 파라미터 영역 - "Select the size of the window" 섹션:
+     - `Samples count:` 스피너 (`number`, min=1, 기본=10)
+   - 알고리즘:
+     ```
+     for i in 0..N-1:
+         window = y[max(0, i-sampleCount+1) .. i]
+         y_out[i] = sqrt(mean(window.map(v => v*v)))
+     ```
+   - Alias 기본값: `"${원본}[Moving Root Mean Squared]"`
+   - PlotJuggler 참고: `TransformMovingRMS`
+
+   4-5. **Moving Variance / Stdev** (이동 분산 / 표준편차)
+   - 파라미터 영역 - "Select the size of the window" 섹션:
+     - `Window size:` 스피너 (`number`, min=2, 기본=10)
+     - `Apply square root` 체크박스 (체크 시 표준편차로 변환, 텍스트: "(i.e., convert to standard deviation)")
+   - 알고리즘:
+     ```
+     for i in 0..N-1:
+         window = y[max(0, i-windowSize+1) .. i]
+         mean = mean(window)
+         variance = mean(window.map(v => (v-mean)^2))
+         y_out[i] = (applySquareRoot) ? sqrt(variance) : variance
+     ```
+   - Alias 기본값: `"${원본}[Moving Variance / Stdev]"`
+   - PlotJuggler 참고: `TransformMovingVariance`
+
+   4-6. **Scale/Offset** (스케일/오프셋)
+   - 파라미터 영역:
+     - **Apply offset** 섹션:
+       - `Time offset:` 입력 필드 (`number`, 기본=0.0) → timestamp에 더함
+       - `Value offset:` 입력 필드 (`number`, 기본=0.0) → y값에 더함
+     - **Scale (multiply value)** 섹션:
+       - `Value multiplier:` 입력 필드 (`number`, 기본=1.0) → y값에 곱함
+       - `Useful constants:` 버튼 2개:
+         - `Rad to Deg` → Value multiplier = `180 / Math.PI` 자동 입력
+         - `Deg to Rad` → Value multiplier = `Math.PI / 180` 자동 입력
+   - 알고리즘:
+     ```
+     t_out[i] = t[i] + timeOffset
+     y_out[i] = y[i] * valueMultiplier + valueOffset
+     ```
+   - Alias 기본값: `"${원본}[Scale/Offset]"`
+   - PlotJuggler 참고: `TransformScaleOffset`
+
+   **구현 계획** (수정 파일):
+
+   4-A. **`web/static/plot_manager.js`** — 필터 알고리즘 + 다이얼로그 로직
+   - `PlotDataFilter` 클래스 (standalone, PlotlyPlotManager와 독립):
+     ```
+     class PlotDataFilter {
+         static applyAbsolute(timestamps, values) { ... }
+         static applyDerivative(timestamps, values, { useActual, customDT }) { ... }
+         static applyMovingAverage(timestamps, values, { samplesCount, compensateOffset }) { ... }
+         static applyMovingRMS(timestamps, values, { samplesCount }) { ... }
+         static applyMovingVariance(timestamps, values, { windowSize, applySquareRoot }) { ... }
+         static applyScaleOffset(timestamps, values, { timeOffset, valueOffset, valueMultiplier }) { ... }
+         static guessMedianDT(timestamps) { ... }   // Derivative의 Guess dT용
+     }
+     ```
+   - `PlotlyPlotManager.openFilterDialog(traceIndex)` 메서드:
+     - 대상 trace의 DataBuffer에서 raw 데이터 추출
+     - 다이얼로그 모달 열기 + Source curve 목록 / 필터 목록 렌더링
+     - 필터 선택 / 파라미터 변경 시 미리보기 업데이트
+   - `PlotlyPlotManager.applyFilter(traceIndex, filterType, params, alias)` 메서드:
+     - 원본 DataBuffer 데이터에 필터 적용
+     - 필터 결과 데이터로 새로운 DataBuffer 및 trace 생성
+     - `Plotly.react()`로 trace 추가 후 다이얼로그 닫기
+     - 새 trace는 `isFiltered = true` 플래그 보유 (실시간 업데이트 차단)
+
+   4-B. **`web/index.html`** — Filter 다이얼로그 모달 HTML
+   - ID: `filter-dialog-modal`
+   - 구조:
+     ```html
+     <div id="filter-dialog-modal" class="modal" style="display:none">
+       <div class="filter-dialog-content">
+         <div id="filter-preview-plot"></div>         <!-- 미리보기 -->
+         <div class="filter-dialog-body">
+           <div id="filter-source-list">...</div>     <!-- Source curve -->
+           <div id="filter-type-list">...</div>       <!-- 필터 목록 -->
+           <div id="filter-params-panel">...</div>    <!-- 파라미터 입력 -->
+         </div>
+         <div class="filter-dialog-footer">
+           <label>Alias: <input id="filter-alias-input"></label>
+           <label><input type="checkbox" id="filter-autozoom"> AutoZoom</label>
+           <button onclick="window.saveFilter()">Save</button>
+           <button onclick="window.closeFilterDialog()">Cancel</button>
+         </div>
+       </div>
+     </div>
+     ```
+
+   4-C. **`web/static/style.css`** — Filter 다이얼로그 스타일
+   - `.filter-dialog-content`: 3-column grid 레이아웃 (source / filter-list / params)
+   - `#filter-preview-plot`: 상단 고정 높이 (200px)
+   - 필터 목록 hover / 선택 스타일
+
+   4-D. **`web/static/script.js`** — 컨텍스트 메뉴 연동
+   - `setupPlotDeletion()` 또는 컨텍스트 메뉴 핸들러에 "🔧 Apply Filter" 항목 추가
+   - `window.openFilterDialog(plotId, traceIndex)`: 전역 함수 노출
+   - `window.saveFilter()`: 필터 적용 후 다이얼로그 닫기
+   - `window.closeFilterDialog()`: 다이얼로그 닫기
+
+   **필터 적용 방식** (PlotJuggler 동작 참고):
+   - 필터는 원본 DataBuffer를 **변환하지 않음** (원본 보존)
+   - 필터 결과를 별도 정적 trace로 생성 (DataBuffer 없음, 고정 배열)
+   - 해당 trace는 실시간 구독 업데이트에서 제외 (`isFiltered = true` 플래그)
+   - 재구독하거나 Clear 시 필터 trace도 제거
+
+   **미리보기 동작**:
+   - 다이얼로그 오픈 시 `-- NO Transform --` 선택 → 원본 데이터 표시
+   - 필터 선택 / 파라미터 변경 시 자동으로 필터 알고리즘 적용 후 미리보기 plot 업데이트
+   - AutoZoom 체크 시 미리보기 plot의 Y축 자동 스케일 적용
+
 **완료 기준 (Definition of Done)**:
 - [x] 재생/일시정지 기능 구현 완료 ✅ (Phase 1.2에서 이미 완료)
 - [x] XY Plot 기능 구현 완료 ✅ (2026-01-19 완료, 축 이름/단위 표시 제외)
+- [x] XY Plot Legend 표시 완료 ✅ (2026-02-27 완료 - _buildXYLegendName() 구현)
+- [x] Flip Horizontal/Vertical Axis 완료 ✅ (2026-02-27 완료 - 컨텍스트 메뉴)
 - [x] Plot 설정 기능 구현 완료 ✅ (2026-01-19 완료)
-- [ ] 모든 작업 목록 완료 ⚠️ (XY Plot 축 이름/단위 표시 미완료)
+- [ ] **Apply Filter 기능 구현 완료** 🆕
+  - [ ] PlotDataFilter 클래스 (6종 필터 알고리즘) 구현
+  - [ ] Filter 다이얼로그 모달 HTML/CSS 구현
+  - [ ] 컨텍스트 메뉴에 "🔧 Apply Filter" 항목 추가
+  - [ ] 미리보기 Plot 실시간 업데이트
+  - [ ] Save 시 필터 trace 추가 (실시간 업데이트 차단)
+  - [ ] 6종 필터 테스트 (Absolute, Derivative, Moving Average, Moving RMS, Moving Variance/Stdev, Scale/Offset)
+- [ ] 모든 작업 목록 완료 ⚠️ (Apply Filter 미완료, XY Plot 축 이름/_getLastFieldName 미완료, 축 단위(m) 미완료)
 - [x] API 엔드포인트 구현 완료 ✅
 - [x] 빌드 성공 확인 ✅
 - [x] 기능 테스트 통과 ✅ (기본 XY Plot 동작)
@@ -1410,11 +1596,12 @@ description: ROS2 AUTONAV WEBUI 개발 일정 및 작업 계획 (Phase별 세부
     - Trace별 색상, 선 스타일, 마커 스타일, 선 두께, 마커 크기 조정
     - 그리드 표시/숨기기, X/Y축 라벨 설정
     - Plot 설정 모달 스크롤바 제거
+  - ✅ 추가 완료 항목 (2026-02-27):
+    - XY Plot Legend 표시 (_buildXYLegendName() 구현, "/path/[x, y]" 형식)
+    - 축 반전 기능 (flipXAxis/flipYAxis 메서드 + 컨텍스트 메뉴 버튼)
   - ⚠️ 미완료 항목:
-    - XY Plot Legend 표시 (PlotJuggler 스타일)
-    - 축 반전 기능 (Flip Horizontal/Vertical Axis)
-    - 축 이름을 X, Y로 변경
-    - 축 단위 표시 (m)
+    - 축 이름을 X, Y로 변경 (_getLastFieldName() 미구현)
+    - 축 단위 표시 (m) (axis title에 단위 미부착)
 - [ ] Phase 1.5: Plot Export 기능 **(🆕 추가)**
 - [ ] Phase 1.6: Plot 기능 테스트 및 최적화
 
@@ -1582,9 +1769,27 @@ description: ROS2 AUTONAV WEBUI 개발 일정 및 작업 계획 (Phase별 세부
 
 이 작업 계획을 기준으로 개발을 진행하고, 진행 상황을 정기적으로 업데이트합니다.
 
-**마지막 업데이트**: 2026-01-19
-**문서 버전**: 1.22
+**마지막 업데이트**: 2026-02-27
+**문서 버전**: 1.24
 **주요 변경사항**:
+- **Phase 1.4 Apply Filter 기능 Task 추가** (2026-02-27)
+  - PlotJuggler Transform Editor 스타일 다이얼로그 기획
+  - 지원 필터 6종: Absolute, Derivative, Moving Average, Moving RMS, Moving Variance/Stdev, Scale/Offset
+  - PlotDataFilter 클래스 설계 (static 메서드 6종 + guessMedianDT)
+  - Filter 다이얼로그 UI 구조 설계 (미리보기 Plot + Source/필터목록/파라미터 3-column)
+  - 각 필터별 파라미터 입력 UI 상세 명세 (PlotJuggler 이미지 참고)
+  - 필터 적용 방식: 원본 DataBuffer 보존, 결과를 정적 trace로 추가 (isFiltered 플래그)
+  - 수정 파일: plot_manager.js, index.html, style.css, script.js
+- **Phase 1.4 XY Plot Legend 및 Flip Axis 기능 구현 완료** (2026-02-27)
+  - `_buildXYLegendName(xPath, yPath)` 헬퍼 메서드 구현 완료
+    - 두 경로의 공통 prefix 추출 후 "/공통경로/[x_field, y_field]" 형식으로 legend 표시
+    - 예: "/odom/pose/pose/position/[x, y]"
+  - `isXFlipped`, `isYFlipped` 상태 변수 constructor에 추가 완료
+  - `flipXAxis()`, `flipYAxis()` 메서드 구현 완료
+    - 현재 range swap 방식 (매 클릭 시 반전) + `autorange: 'reversed'` fallback
+  - 컨텍스트 메뉴에 "⇔ Flip Horizontal Axis", "⇕ Flip Vertical Axis" 메뉴 추가 완료
+  - **여전히 미완료**: 축 이름 단순화(_getLastFieldName 미구현), 축 단위(m) 미부착
+  - "현재 구현 상태" 및 "작업 진행 추적" 섹션 업데이트 완료
 - **Phase 1.4 Plot 설정 기능 완료** (2026-01-19)
   - Plot 설정 모달 HTML/CSS 구현 완료
     - Trace 선택 드롭다운

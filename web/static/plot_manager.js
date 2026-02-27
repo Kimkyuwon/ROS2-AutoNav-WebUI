@@ -184,6 +184,8 @@ class PlotlyPlotManager {
         this.isXYPlot = false;          // XY Plot 여부
         this.xPath = null;              // X축 데이터 경로
         this.yPath = null;              // Y축 데이터 경로
+        this.isXFlipped = false;        // X축 반전 상태
+        this.isYFlipped = false;        // Y축 반전 상태
     }
 
     init() {
@@ -526,7 +528,7 @@ class PlotlyPlotManager {
             x: [],
             y: [],
             mode: 'markers',  // XY Plot은 마커로 표시
-            name: `${yPath} vs ${xPath}`,
+            name: this._buildXYLegendName(xPath, yPath),
             type: 'scatter',
             marker: {
                 size: 6,
@@ -649,7 +651,7 @@ class PlotlyPlotManager {
                     click: (gd) => {
                         this.clearPlot();
                     }
-                }
+                },
             ]
         };
 
@@ -689,6 +691,42 @@ class PlotlyPlotManager {
             console.error('[PlotlyPlotManager] Failed to create XY plot:', error);
             return false;
         }
+    }
+
+    flipXAxis() {
+        this.isXFlipped = !this.isXFlipped;
+        const plotDiv = document.getElementById(this.containerId);
+        const xRange = plotDiv && plotDiv.layout && plotDiv.layout.xaxis && plotDiv.layout.xaxis.range;
+        if (xRange && xRange.length === 2) {
+            // 현재 range를 swap하여 반전 (매 클릭마다 반전)
+            Plotly.relayout(this.containerId, {
+                'xaxis.range': [xRange[1], xRange[0]],
+                'xaxis.autorange': false
+            });
+        } else {
+            Plotly.relayout(this.containerId, {
+                'xaxis.autorange': this.isXFlipped ? 'reversed' : true
+            });
+        }
+        console.log(`[PlotlyPlotManager] X axis flipped: ${this.isXFlipped}`);
+    }
+
+    flipYAxis() {
+        this.isYFlipped = !this.isYFlipped;
+        const plotDiv = document.getElementById(this.containerId);
+        const yRange = plotDiv && plotDiv.layout && plotDiv.layout.yaxis && plotDiv.layout.yaxis.range;
+        if (yRange && yRange.length === 2) {
+            // 현재 range를 swap하여 반전 (매 클릭마다 반전)
+            Plotly.relayout(this.containerId, {
+                'yaxis.range': [yRange[1], yRange[0]],
+                'yaxis.autorange': false
+            });
+        } else {
+            Plotly.relayout(this.containerId, {
+                'yaxis.autorange': this.isYFlipped ? 'reversed' : true
+            });
+        }
+        console.log(`[PlotlyPlotManager] Y axis flipped: ${this.isYFlipped}`);
     }
 
     synchronizeData(xBuffer, yBuffer) {
@@ -1175,6 +1213,11 @@ class PlotlyPlotManager {
                     { label: '⚙️ Plot Settings', action: () => this.openPlotSettings() },
                     { label: '↔️ Auto Scale', action: () => this.zoomOutAutoScale() },
                     { label: '🗑️ Clear Plot', action: () => this.clearPlot() },
+                    { separator: true },
+                    ...(this.isXYPlot ? [
+                        { label: '⇔ Flip Horizontal Axis', action: () => this.flipXAxis() }
+                    ] : []),
+                    { label: '⇕ Flip Vertical Axis', action: () => this.flipYAxis() },
                     { separator: true },
                     { label: '📷 Save plot to file', action: () => this.savePlotToFile() }
                 ];
@@ -2541,5 +2584,47 @@ class PlotlyPlotManager {
             }
         }
         this.clear();
+    }
+
+    /**
+     * XY Plot legend 이름을 PlotJuggler 스타일로 생성한다.
+     * xPath와 yPath의 공통 prefix를 추출하여
+     * "/공통경로/[xField, yField]" 형식으로 반환한다.
+     *
+     * 예)
+     *   xPath: "/odom/pose/pose/position/x"
+     *   yPath: "/odom/pose/pose/position/y"
+     *   → "/odom/pose/pose/position/[x, y]"
+     *
+     * 공통 prefix가 없으면 단순히 "[xField, yField]" 형식으로 반환한다.
+     *
+     * @param {string} xPath - X축 토픽 경로
+     * @param {string} yPath - Y축 토픽 경로
+     * @returns {string} legend 표시용 이름
+     */
+    _buildXYLegendName(xPath, yPath) {
+        const xParts = xPath.split('/').filter(p => p.length > 0);
+        const yParts = yPath.split('/').filter(p => p.length > 0);
+
+        // 공통 prefix 길이 계산 (마지막 세그먼트 제외)
+        const minLen = Math.min(xParts.length, yParts.length);
+        let commonLen = 0;
+        for (let i = 0; i < minLen - 1; i++) {
+            if (xParts[i] === yParts[i]) {
+                commonLen = i + 1;
+            } else {
+                break;
+            }
+        }
+
+        const xField = xParts[xParts.length - 1] || xPath;
+        const yField = yParts[yParts.length - 1] || yPath;
+
+        if (commonLen > 0) {
+            const commonPrefix = '/' + xParts.slice(0, commonLen).join('/');
+            return `${commonPrefix}/[${xField}, ${yField}]`;
+        }
+
+        return `[${xField}, ${yField}]`;
     }
 }
