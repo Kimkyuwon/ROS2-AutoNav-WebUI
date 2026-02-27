@@ -529,6 +529,66 @@
     </div>
 
 
+    <!-- Filter Dialog Modal -->
+    <div id="filter-dialog-modal" class="modal" style="display:none;">
+        <div class="modal-content" id="filter-dialog-content">
+            <!-- 헤더 -->
+            <div class="modal-header filter-dialog-header">
+                <h3>🔧 Apply Filter</h3>
+                <span class="close" onclick="closeFilterDialog()">&times;</span>
+            </div>
+            <!-- 미리보기 Plot -->
+            <div id="filter-preview-plot"></div>
+            <!-- Info Bar: Alias + AutoZoom (미리보기 바로 아래) -->
+            <div class="filter-info-bar">
+                <div class="filter-alias-group">
+                    <label for="filter-alias-input">Alias:</label>
+                    <input type="text" id="filter-alias-input" placeholder="Filtered curve name">
+                </div>
+                <div class="filter-autozoom-group">
+                    <label>
+                        <input type="checkbox" id="filter-autozoom" checked>
+                        AutoZoom
+                    </label>
+                </div>
+            </div>
+            <!-- 3-column 레이아웃 (modal-body 없이 직접 배치) -->
+            <div class="filter-dialog-body">
+                <!-- 컬럼 1: Source curve 목록 -->
+                <div class="filter-source-list">
+                    <h4 class="filter-col-title">Source Curve</h4>
+                    <ul id="filter-source-items"></ul>
+                </div>
+                <!-- 컬럼 2: 필터 선택 -->
+                <div class="filter-type-list">
+                    <h4 class="filter-col-title">Filter Type</h4>
+                    <ul id="filter-type-items">
+                        <li class="filter-type-item" data-filter="no_transform">No Transform</li>
+                        <li class="filter-type-item" data-filter="absolute">Absolute Value</li>
+                        <li class="filter-type-item" data-filter="derivative">Derivative</li>
+                        <li class="filter-type-item" data-filter="moving_average">Moving Average</li>
+                        <li class="filter-type-item" data-filter="moving_rms">Moving RMS</li>
+                        <li class="filter-type-item" data-filter="moving_variance">Moving Variance / Stdev</li>
+                        <li class="filter-type-item" data-filter="scale_offset">Scale / Offset</li>
+                    </ul>
+                </div>
+                <!-- 컬럼 3: 파라미터 패널 -->
+                <div class="filter-params-panel" id="filter-params-panel">
+                    <h4 class="filter-col-title">Parameters</h4>
+                    <div id="filter-params-content">
+                        <p class="filter-params-placeholder">Select a filter to configure parameters.</p>
+                    </div>
+                </div>
+            </div>
+            <!-- 푸터: Cancel / Save 버튼만 -->
+            <div class="filter-dialog-footer">
+                <button class="filter-btn-cancel" onclick="closeFilterDialog()">Cancel</button>
+                <button class="filter-btn-save" onclick="saveFilter()">Save</button>
+            </div>
+        </div>
+    </div>
+
+
     <!-- Import Map for Three.js -->
     <script type="importmap">
     {
