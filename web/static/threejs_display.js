@@ -268,7 +268,17 @@ const viewer3DState = {
     selectedTFTopics: [],           // 선택된 TF 토픽 목록
     fixedFrame: 'map',              // FrameIDFilter 기준 프레임 (기본값: 'map')
     pcFrameGroups: new Map(),       // topicName → THREE.Group (PC2 frame 래퍼)
-    topicFrameIds: new Map()        // topicName → last received ROS frame_id
+    topicFrameIds: new Map(),       // topicName → last received ROS frame_id
+
+    // Phase 2.4: Views 패널 관련 상태
+    orthoCam: null,                    // OrthographicCamera (TopDown View용)
+    currentViewType: 'orbit',          // 'orbit' | 'topdown'
+    activeCamera: null,                // animate() 루프에서 사용하는 현재 활성 카메라
+    cameraTargetFrame: '<Fixed Frame>', // Views 패널 Target Frame
+    viewSettings: {
+        orbit:   { distance: 10, yaw: 0.785, pitch: 0.785, nearClip: 0.01 },
+        topdown: { scale: 1.0, nearClip: 0.01 }
+    }
 };
 
 // Get the active display container based on current subtab
@@ -375,10 +385,24 @@ function initThreeJSDisplay() {
     const containerHeight = container.clientHeight || 600;
     const aspect = containerWidth / containerHeight || 1.33;
     
-    // Create camera - positioned for top-view (looking down Z-axis)
+    // Create camera — ROS Z-up 좌표계: camera.up = (0,0,1) 이어야 OrbitControls가
+    // Z축 기준으로 orbit하여 RViz Orbit 뷰와 동일하게 동작한다.
     viewer3DState.camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 1000);
-    viewer3DState.camera.position.set(0, 0, 50);  // Top-view: looking down from +Z
+    viewer3DState.camera.up.set(0, 0, 1);           // ← Z-up (ROS/RViz 좌표계)
+    viewer3DState.camera.position.set(0, -10, 7);   // 뒤쪽(-Y) + 위쪽(+Z) 비스듬한 Orbit 초기 뷰
     viewer3DState.camera.lookAt(0, 0, 0);
+
+    // Phase 2.4: OrthographicCamera 초기화 (TopDown View용)
+    const frustumSize = 50;  // ±50m 범위
+    viewer3DState.orthoCam = new THREE.OrthographicCamera(
+        frustumSize * aspect / -2,  frustumSize * aspect / 2,
+        frustumSize / 2,            frustumSize / -2,
+        0.1, 1000
+    );
+    viewer3DState.orthoCam.up.set(0, 0, 1);         // ← Z-up
+    viewer3DState.orthoCam.position.set(0, 0, 100);
+    viewer3DState.orthoCam.lookAt(0, 0, 0);
+    viewer3DState.activeCamera = viewer3DState.camera;  // 기본: PerspectiveCamera
 
     // Create renderer
     viewer3DState.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -433,6 +457,9 @@ function initThreeJSDisplay() {
     // Connect to ROS
     connectToROS();
 
+    // Views 패널 초기 렌더링 (orbit 기본값에 맞는 파라미터 UI 표시)
+    renderViewsPanel();
+
     console.log('=== Three.js display initialized successfully ===');
     console.log('Scene:', viewer3DState.scene);
     console.log('Camera:', viewer3DState.camera);
@@ -440,13 +467,335 @@ function initThreeJSDisplay() {
     console.log('Container:', container);
 }
 
+// =============================================
+// Phase 2.4: Views 패널 — 뷰 타입 전환 & 카메라 추적
+// =============================================
+
+/**
+ * switchViewType(type)
+ * Orbit / TopDown 카메라 및 OrbitControls 전환
+ * @param {string} type - 'orbit' | 'topdown'
+ */
+function switchViewType(type) {
+    if (!viewer3DState.threeJSInitialized) return;
+    viewer3DState.currentViewType = type;
+
+    const controls = viewer3DState.controls;
+
+    if (type === 'orbit') {
+        // PerspectiveCamera 활성화 (Z-up 보장)
+        viewer3DState.activeCamera = viewer3DState.camera;
+        viewer3DState.camera.up.set(0, 0, 1);
+        if (controls) {
+            const tx = controls.target.x;
+            const ty = controls.target.y;
+            const tz = controls.target.z;
+            viewer3DState.camera.position.set(tx, ty - 10, tz + 7);
+            viewer3DState.camera.lookAt(tx, ty, tz);
+            controls.object = viewer3DState.camera;
+            controls.enableRotate = true;
+            controls.enablePan    = true;
+            controls.enableZoom   = true;
+            controls.enabled      = true;
+            controls.update();
+        }
+    } else if (type === 'topdown') {
+        // OrthographicCamera 활성화
+        viewer3DState.activeCamera = viewer3DState.orthoCam;
+        if (controls) {
+            controls.object = viewer3DState.orthoCam;
+            controls.enableRotate = false;
+            controls.enablePan    = true;
+            controls.enableZoom   = true;
+            controls.enabled      = true;
+            viewer3DState.orthoCam.position.set(
+                controls.target.x, controls.target.y, 100
+            );
+            viewer3DState.orthoCam.lookAt(controls.target);
+            controls.update();
+        }
+    }
+
+    // UI 동기화: view-type-select 드롭다운 값 업데이트
+    const sel = document.getElementById('view-type-select');
+    if (sel && sel.value !== type) sel.value = type;
+
+    // 뷰 타입별 파라미터 UI 갱신
+    renderViewsPanel();
+
+    console.log('[Views] Switched to view type:', type);
+}
+
+/**
+ * _getTopdownPixelsPerUnit()
+ * TopDown(OrthographicCamera) 뷰에서 1 월드단위 = ? 픽셀 인지 계산
+ * OrthographicCamera에서 Three.js는 sizeAttenuation 여부와 관계없이
+ * gl_PointSize = size (픽셀 단위)를 그대로 사용하므로,
+ * 월드단위 pointSize → 픽셀 변환 스케일이 필요하다.
+ * @returns {number} pixels per world unit
+ */
+function _getTopdownPixelsPerUnit() {
+    const cam      = viewer3DState.orthoCam;
+    const renderer = viewer3DState.renderer;
+    if (!cam || !renderer) return 40; // fallback
+    // OrthographicCamera frustum 높이 (월드단위), zoom 적용
+    const frustumH = (cam.top - cam.bottom) / (cam.zoom || 1);
+    const pixelH   = renderer.domElement.height || 680;
+    return pixelH / frustumH;  // pixels per world unit
+}
+
+/**
+ * updateTopdownPointSizes()
+ * TopDown 뷰에서 매 animate() 프레임 호출:
+ * OrthographicCamera zoom이 변할 때 포인트 픽셀 크기가 자동 갱신되도록
+ * 모든 포인트 mesh의 material.size를 frustum 스케일로 재계산한다.
+ * (sizeAttenuation 변경 없이 size 값만 조정 → 셰이더 재컴파일 없음)
+ */
+function updateTopdownPointSizes() {
+    const scale = _getTopdownPixelsPerUnit();
+
+    Object.keys(viewer3DState.pointCloudMeshes).forEach(function(topicName) {
+        const mesh = viewer3DState.pointCloudMeshes[topicName];
+        if (!mesh || !mesh.material) return;
+        const settings  = viewer3DState.topicSettings.get(topicName) || {};
+        const worldSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
+        mesh.material.size = Math.max(1, worldSize * scale);
+    });
+
+    viewer3DState.decayObjects.forEach(function(arr, topicName) {
+        const settings  = viewer3DState.topicSettings.get(topicName) || {};
+        const worldSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
+        const px = Math.max(1, worldSize * scale);
+        arr.forEach(function(item) {
+            if (item.points && item.points.material) {
+                item.points.material.size = px;
+            }
+        });
+    });
+}
+window.switchViewType = switchViewType;
+
+// ── Target Frame 추적 내부 상태 ──
+// 이전 프레임에서의 Target Frame 월드 좌표 (delta 계산용)
+let _tfTrackId  = null;  // 현재 추적 중인 frame ID
+let _tfLastPos  = null;  // THREE.Vector3 | null — 이전 프레임 Target Frame 위치
+
+/**
+ * updateOrbitTargetFrame()
+ * Orbit / TopDown 뷰: Target Frame의 실제 이동량(delta)만큼 camera와 controls.target을
+ * 같이 이동시켜 RViz처럼 카메라 오프셋(거리·방향)을 유지하며 추적.
+ *
+ * [핵심] lerp 방식 대신 delta 방식을 사용:
+ *  - 처음 Target Frame 선택 시 → 위치만 기억, 카메라 즉각 이동 없음
+ *  - 이후 매 프레임 → frame이 실제로 이동한 delta만큼만 camera·target 이동
+ *  - 사용자의 pan/rotate/zoom → OrbitControls가 spherical 상태로 보존하므로 유지됨
+ */
+function updateOrbitTargetFrame() {
+    const targetFrame = viewer3DState.cameraTargetFrame;
+    if (targetFrame === '<Fixed Frame>') {
+        // <Fixed Frame>으로 돌아오면 추적 상태 리셋
+        _tfTrackId = null;
+        return;
+    }
+
+    const controls = viewer3DState.controls;
+    if (!controls) return;
+
+    const transform = computeWorldTransform(targetFrame, viewer3DState.fixedFrame);
+    if (!transform) return;
+
+    const currPos = transform.position;
+
+    // 처음 선택하거나 프레임이 바뀐 경우: 위치만 저장하고 이 프레임은 이동 없음
+    if (_tfTrackId !== targetFrame || _tfLastPos === null) {
+        _tfTrackId = targetFrame;
+        _tfLastPos = new THREE.Vector3(currPos.x, currPos.y, currPos.z);
+        return;
+    }
+
+    // Target Frame의 실제 이동 delta
+    const dx = currPos.x - _tfLastPos.x;
+    const dy = currPos.y - _tfLastPos.y;
+    const dz = currPos.z - _tfLastPos.z;
+    _tfLastPos.set(currPos.x, currPos.y, currPos.z);
+
+    if (dx === 0 && dy === 0 && dz === 0) return;
+
+    // controls.target과 camera 모두 delta만큼 이동 → 상대 오프셋 유지
+    controls.target.x += dx;
+    controls.target.y += dy;
+    controls.target.z += dz;
+
+    const cam = viewer3DState.activeCamera || viewer3DState.camera;
+    cam.position.x += dx;
+    cam.position.y += dy;
+    cam.position.z += dz;
+}
+
+/**
+ * renderViewsPanel()
+ * 현재 뷰 타입에 맞는 파라미터 입력 UI를 #views-params-container에 동적 렌더링
+ */
+function renderViewsPanel() {
+    const container = document.getElementById('views-params-container');
+    if (!container) return;
+
+    const type     = viewer3DState.currentViewType;
+    const settings = viewer3DState.viewSettings[type] || {};
+    let html = '';
+
+    if (type === 'orbit') {
+        html = `
+            <div class="views-row">
+                <label>Distance:</label>
+                <input type="number" value="${settings.distance || 10}" step="0.5" min="0.1"
+                       onchange="onViewParamChange('orbit','distance', parseFloat(this.value))">
+            </div>
+            <div class="views-row">
+                <label>Yaw:</label>
+                <input type="number" value="${settings.yaw || 0.785}" step="0.05"
+                       onchange="onViewParamChange('orbit','yaw', parseFloat(this.value))">
+            </div>
+            <div class="views-row">
+                <label>Pitch:</label>
+                <input type="number" value="${settings.pitch || 0.785}" step="0.05"
+                       onchange="onViewParamChange('orbit','pitch', parseFloat(this.value))">
+            </div>`;
+    } else if (type === 'topdown') {
+        html = `
+            <div class="views-row">
+                <label>Scale:</label>
+                <input type="number" value="${settings.scale || 1.0}" step="0.1" min="0.01"
+                       onchange="onViewParamChange('topdown','scale', parseFloat(this.value))">
+            </div>`;
+    }
+
+    container.innerHTML = html;
+}
+window.renderViewsPanel = renderViewsPanel;
+
+/**
+ * updateViewTargetFrameOptions()
+ * _allKnownFrames를 사용해 #view-target-frame 드롭다운 갱신
+ * updateFixedFrameOptions() 호출 시 함께 호출
+ */
+function updateViewTargetFrameOptions() {
+    const sel = document.getElementById('view-target-frame');
+    if (!sel) return;
+
+    const current = viewer3DState.cameraTargetFrame || '<Fixed Frame>';
+    const frames  = Array.from(_allKnownFrames).sort();
+
+    // 기본 옵션 + 수집된 프레임 목록
+    let html = '<option value="<Fixed Frame>">&lt;Fixed Frame&gt;</option>';
+    frames.forEach(function(f) {
+        const selected = (f === current) ? ' selected' : '';
+        html += `<option value="${f}"${selected}>${f}</option>`;
+    });
+    sel.innerHTML = html;
+
+    // 현재 선택 값 복원
+    sel.value = current;
+}
+window.updateViewTargetFrameOptions = updateViewTargetFrameOptions;
+
+/**
+ * resetViewCamera()
+ * Views 패널 "Zero" 버튼: 카메라를 초기 위치로 리셋
+ */
+function resetViewCamera() {
+    const type = viewer3DState.currentViewType;
+    if (type === 'orbit') {
+        // RViz Orbit 초기화 시점: 뒤쪽(-Y) + 위쪽(+Z)에서 원점을 비스듬히 바라봄
+        // camera.up=(0,0,1) → Z가 화면 위쪽, OrbitControls가 Z축 기준으로 orbit
+        viewer3DState.camera.up.set(0, 0, 1);
+        viewer3DState.camera.position.set(0, -10, 7);
+        viewer3DState.camera.lookAt(0, 0, 0);
+        if (viewer3DState.controls) {
+            viewer3DState.controls.target.set(0, 0, 0);
+            viewer3DState.controls.update();
+        }
+    } else if (type === 'topdown') {
+        viewer3DState.orthoCam.position.set(0, 0, 100);
+        viewer3DState.orthoCam.lookAt(0, 0, 0);
+        if (viewer3DState.controls) {
+            viewer3DState.controls.target.set(0, 0, 0);
+            viewer3DState.controls.update();
+        }
+    }
+    console.log('[Views] Camera reset to zero for type:', type);
+}
+window.resetViewCamera = resetViewCamera;
+
+/**
+ * onViewNearClipChange(value)
+ * Near Clip 입력 변경 핸들러 — 활성 카메라의 near 값 갱신
+ */
+function onViewNearClipChange(value) {
+    const near = parseFloat(value);
+    if (isNaN(near) || near <= 0) return;
+
+    const type = viewer3DState.currentViewType;
+    if (viewer3DState.viewSettings[type]) {
+        viewer3DState.viewSettings[type].nearClip = near;
+    }
+    // PerspectiveCamera
+    if (viewer3DState.camera) {
+        viewer3DState.camera.near = near;
+        viewer3DState.camera.updateProjectionMatrix();
+    }
+    // OrthographicCamera
+    if (viewer3DState.orthoCam) {
+        viewer3DState.orthoCam.near = near;
+        viewer3DState.orthoCam.updateProjectionMatrix();
+    }
+}
+window.onViewNearClipChange = onViewNearClipChange;
+
+/**
+ * onViewTargetFrameChange(value)
+ * Target Frame 드롭다운 변경 핸들러
+ */
+function onViewTargetFrameChange(value) {
+    viewer3DState.cameraTargetFrame = value;
+    // 프레임 변경 시 delta 추적 상태 리셋 → 새 프레임의 첫 위치부터 추적 시작
+    _tfTrackId = null;
+    console.log('[Views] Target frame changed to:', value);
+}
+window.onViewTargetFrameChange = onViewTargetFrameChange;
+
+/**
+ * onViewParamChange(viewType, param, value)
+ * 뷰 파라미터 입력 변경 공통 핸들러
+ */
+function onViewParamChange(viewType, param, value) {
+    if (!viewer3DState.viewSettings[viewType]) return;
+    viewer3DState.viewSettings[viewType][param] = value;
+    console.log('[Views] Param changed:', viewType, param, value);
+}
+window.onViewParamChange = onViewParamChange;
+
 function onWindowResize() {
     const container = getActiveDisplayContainer();
     if (!container || !viewer3DState.camera || !viewer3DState.renderer) return;
 
-    viewer3DState.camera.aspect = container.clientWidth / container.clientHeight;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+
+    viewer3DState.camera.aspect = w / h;
     viewer3DState.camera.updateProjectionMatrix();
-    viewer3DState.renderer.setSize(container.clientWidth, container.clientHeight);
+    viewer3DState.renderer.setSize(w, h);
+
+    // Phase 2.4: OrthographicCamera resize 처리
+    if (viewer3DState.orthoCam) {
+        const frustumSize = 50;
+        const aspect = w / h;
+        viewer3DState.orthoCam.left   = frustumSize * aspect / -2;
+        viewer3DState.orthoCam.right  = frustumSize * aspect / 2;
+        viewer3DState.orthoCam.top    = frustumSize / 2;
+        viewer3DState.orthoCam.bottom = frustumSize / -2;
+        viewer3DState.orthoCam.updateProjectionMatrix();
+    }
 }
 
 /**
@@ -482,9 +831,22 @@ function animate() {
     if (viewer3DState.controls && viewer3DState.controls.update) {
         viewer3DState.controls.update();
     }
+
+    // 카메라 Target Frame 추적 (Orbit / TopDown 공통)
+    const vt = viewer3DState.currentViewType;
+    updateOrbitTargetFrame();
+
+    // TopDown 뷰: frustum zoom 변화에 맞춰 포인트 픽셀 크기 매 프레임 갱신
+    if (vt === 'topdown') {
+        updateTopdownPointSizes();
+    }
+
     tickDecayObjects();
-    if (viewer3DState.renderer && viewer3DState.scene && viewer3DState.camera) {
-        viewer3DState.renderer.render(viewer3DState.scene, viewer3DState.camera);
+
+    // Phase 2.4: activeCamera 사용 (없으면 기본 camera fallback)
+    const cam = viewer3DState.activeCamera || viewer3DState.camera;
+    if (viewer3DState.renderer && viewer3DState.scene && cam) {
+        viewer3DState.renderer.render(viewer3DState.scene, cam);
     }
 }
 
@@ -507,6 +869,8 @@ function connectToROS() {
     viewer3DState.ros.on('connection', function() {
         console.log('✓ Successfully connected to rosbridge:', rosbridgeUrl);
         viewer3DState.rosConnected = true;
+        // ROS 연결 후 백그라운드 TF frame 수집 시작
+        startBackgroundFrameCollection();
     });
 
     viewer3DState.ros.on('error', function(error) {
@@ -775,6 +1139,102 @@ function unsubscribeFromTopic(topicName) {
     }
 }
 
+// 단일 토픽의 시각화 오브젝트만 씬에서 제거 (구독/선택 상태는 유지)
+function clearTopicVisualization(topicName) {
+    // ── PointCloud2: pcFrameGroup은 클로저 참조 유지 → 내부 mesh/decay만 제거 ──
+    const pcFG = viewer3DState.pcFrameGroups.get(topicName);
+    if (pcFG) {
+        if (viewer3DState.pointCloudMeshes[topicName]) {
+            pcFG.remove(viewer3DState.pointCloudMeshes[topicName]);
+            viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
+            viewer3DState.pointCloudMeshes[topicName].material.dispose();
+            delete viewer3DState.pointCloudMeshes[topicName];
+        }
+        const decayArr = viewer3DState.decayObjects.get(topicName);
+        if (decayArr && decayArr.length > 0) {
+            decayArr.forEach(item => {
+                pcFG.remove(item.points);
+                item.points.geometry.dispose();
+                item.points.material.dispose();
+            });
+            viewer3DState.decayObjects.set(topicName, []);
+        }
+    }
+
+    // ── Path: scene에서 제거 + Map 삭제 → 다음 메시지에 콜백이 재생성 ──
+    const pathObj = viewer3DState.pathObjects.get(topicName);
+    if (pathObj) {
+        const rootObj = pathObj.frameGroup || pathObj.line;
+        viewer3DState.scene.remove(rootObj);
+        pathObj.line.geometry.dispose();
+        pathObj.line.material.dispose();
+        viewer3DState.pathObjects.delete(topicName);
+    }
+
+    // ── Odometry: scene에서 제거 + Map 삭제 → 다음 메시지에 콜백이 재생성 ──
+    const odomObj = viewer3DState.odomObjects.get(topicName);
+    if (odomObj) {
+        viewer3DState.scene.remove(odomObj.group);
+        odomObj.group.traverse(function(child) {
+            if (child.isMesh) {
+                child.geometry.dispose();
+                if (Array.isArray(child.material)) {
+                    child.material.forEach(m => m.dispose());
+                } else if (child.material) {
+                    child.material.dispose();
+                }
+            }
+        });
+        viewer3DState.odomObjects.delete(topicName);
+    }
+
+    // ── Trajectory: scene에서 제거 + Map 삭제 → 다음 메시지에 콜백이 재생성 ──
+    const trajObj = viewer3DState.trajectoryObjects.get(topicName);
+    if (trajObj) {
+        trajObj.axesGroupList.forEach(ag => {
+            trajObj.parentGroup.remove(ag);
+            disposeAxesGroup(ag);
+        });
+        viewer3DState.scene.remove(trajObj.parentGroup);
+        viewer3DState.trajectoryObjects.delete(topicName);
+    }
+
+    // ── TF: scene에서 제거 + Map 삭제 → 다음 TF 메시지에 rebuildTFScene이 재생성 ──
+    const tfObj = viewer3DState.tfObjects.get(topicName);
+    if (tfObj) {
+        viewer3DState.scene.remove(tfObj.group);
+        tfObj.group.traverse(function(child) {
+            if (child.isLine || child.isSprite) {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    if (child.material.map) child.material.map.dispose();
+                    child.material.dispose();
+                }
+            }
+        });
+        viewer3DState.tfObjects.delete(topicName);
+    }
+}
+
+// 시각화 데이터 리셋: 구독/선택 상태는 유지하고 씬의 시각화 오브젝트만 초기화
+// → 다음 수신 메시지부터 각 콜백이 오브젝트를 자동 재생성하여 새 데이터부터 표시
+function resetAll3DViewer() {
+    const allTopics = [
+        ...viewer3DState.displaySelectedTopics,
+        ...viewer3DState.selectedPathTopics,
+        ...viewer3DState.selectedOdomTopics,
+        ...viewer3DState.selectedTFTopics,
+    ];
+
+    // 각 토픽의 시각화 오브젝트만 씬에서 제거 (GPU 메모리 해제)
+    allTopics.forEach(topicName => clearTopicVisualization(topicName));
+
+    // TF 프레임 트리 초기화 → 다음 TF 메시지 수신 시 처음부터 재구축
+    viewer3DState.tfFrameTree.clear();
+
+    console.log('[resetAll3DViewer] Visualization cleared. Subscriptions maintained. Awaiting fresh data.');
+}
+
 // Subscribe to PointCloud2 topic
 function subscribeToPointCloud(topicName) {
     if (!viewer3DState.rosConnected) {
@@ -842,11 +1302,18 @@ function subscribeToPointCloud(topicName) {
         frameCount++;
 
         // ── Helper: PointsMaterial 생성 ──
+        // ── Helper: PointsMaterial 생성 ──
+        // TopDown(OrthographicCamera) 시 gl_PointSize = size(픽셀)이므로 frustum 스케일 적용
+        // Orbit(PerspectiveCamera) 시 sizeAttenuation:true → 원근감 자동 적용
         function makeMaterial(sz, a) {
+            let renderSz = sz;
+            if (viewer3DState.currentViewType === 'topdown') {
+                renderSz = Math.max(1, sz * _getTopdownPixelsPerUnit());
+            }
             return new THREE.PointsMaterial({
-                size: sz,
+                size: renderSz,
                 vertexColors: true,
-                sizeAttenuation: true,
+                sizeAttenuation: true,   // 항상 true 유지 (셰이더 재컴파일 방지)
                 transparent: a < 1.0,
                 opacity: a,
             });
@@ -1403,8 +1870,14 @@ function renderDisplayPanel() {
                 const v = parseFloat(this.value);
                 decayLabelEl.textContent = `Decay Time: ${v.toFixed(1)}s`;
                 updateTopicSetting(topicName, 'decayTime', v);
-                // decay time을 0으로 낮추면 기존 누적 mesh 즉시 정리
-                if (v === 0) clearDecayObjects(topicName);
+                // decay time이 0이면 누적 mesh 전부 즉시 제거
+                // 값이 줄어든 경우도 만료된 항목을 즉시 제거 (tickDecayObjects 다음 프레임까지 기다리지 않음)
+                if (v <= 0) {
+                    clearDecayObjects(topicName);
+                } else {
+                    // 새 decay time보다 오래된 decay 오브젝트 즉시 제거
+                    _pruneExpiredDecayObjects(topicName, v);
+                }
             });
 
             decayRow.appendChild(decayLabelEl);
@@ -2365,16 +2838,19 @@ function updatePathColor(topicName, colorHex) {
  */
 function updatePointSize(topicName, size) {
     updateTopicSetting(topicName, 'pointSize', size);
+    // TopDown 뷰: frustum 기반 픽셀 스케일 적용
+    // Orbit: 월드단위 그대로 사용 (sizeAttenuation:true → 원근감 자동 처리)
+    const isTopdown = viewer3DState.currentViewType === 'topdown';
+    const renderSize = isTopdown ? Math.max(1, size * _getTopdownPixelsPerUnit()) : size;
+
     const mesh = viewer3DState.pointCloudMeshes[topicName];
     if (mesh) {
-        mesh.material.size = size;
-        mesh.material.needsUpdate = true;
+        mesh.material.size = renderSize;
     }
     // decay 모드의 누적 mesh들도 즉시 반영
     const arr = viewer3DState.decayObjects.get(topicName);
     if (arr) arr.forEach(item => {
-        item.points.material.size = size;
-        item.points.material.needsUpdate = true;
+        item.points.material.size = renderSize;
     });
 }
 
@@ -2401,18 +2877,48 @@ function updatePointAlpha(topicName, alpha) {
 
 /**
  * Decay Time 변경 시 해당 토픽의 누적 decay mesh 전체 제거
+ * decay 포인트들은 pcFrameGroup에 추가되므로 pcFrameGroup에서 제거해야 한다.
  * @param {string} topicName
  */
 function clearDecayObjects(topicName) {
     const arr = viewer3DState.decayObjects.get(topicName);
-    if (arr) {
-        arr.forEach(item => {
-            viewer3DState.scene.remove(item.points);
-            item.points.geometry.dispose();
-            item.points.material.dispose();
-        });
-        viewer3DState.decayObjects.set(topicName, []);
+    if (!arr || arr.length === 0) return;
+
+    // decay 오브젝트는 pcFrameGroup 에 추가된 것 → 그곳에서 제거
+    const pcFG = viewer3DState.pcFrameGroups.get(topicName);
+    arr.forEach(item => {
+        if (pcFG) pcFG.remove(item.points);
+        else      viewer3DState.scene.remove(item.points); // fallback
+        item.points.geometry.dispose();
+        item.points.material.dispose();
+    });
+    viewer3DState.decayObjects.set(topicName, []);
+}
+
+/**
+ * _pruneExpiredDecayObjects(topicName, newDecaySec)
+ * decay time이 줄어들 때, 새 decay time 기준보다 오래된 항목을 즉시 제거
+ * @param {string} topicName
+ * @param {number} newDecaySec - 새 decay time (초)
+ */
+function _pruneExpiredDecayObjects(topicName, newDecaySec) {
+    const arr = viewer3DState.decayObjects.get(topicName);
+    if (!arr || arr.length === 0) return;
+
+    const pcFG  = viewer3DState.pcFrameGroups.get(topicName);
+    const now   = performance.now();
+    const limitMs = newDecaySec * 1000;
+
+    for (let i = arr.length - 1; i >= 0; i--) {
+        if (now - arr[i].time > limitMs) {
+            if (pcFG) pcFG.remove(arr[i].points);
+            else      viewer3DState.scene.remove(arr[i].points);
+            arr[i].points.geometry.dispose();
+            arr[i].points.material.dispose();
+            arr.splice(i, 1);
+        }
     }
+    viewer3DState.decayObjects.set(topicName, arr);
 }
 
 // =============================================
@@ -2951,31 +3457,324 @@ function rebuildTFScene(topicName) {
 }
 
 /**
- * Fixed Frame input의 datalist를 현재 tfFrameTree 프레임 ID로 업데이트.
- * TF 구독 중일 때 rebuildTFScene에서 호출되어 자동으로 최신 목록 유지.
+ * 현재 알려진 모든 TF 프레임 ID 수집
+ * - tfFrameTree: TF 구독 시 파싱된 child/parent 프레임
+ * - topicFrameIds: PointCloud2/Path/Odometry 메시지 헤더에서 수집된 frame_id
  */
-function updateFixedFrameOptions() {
-    const datalist = document.getElementById('fixed-frame-list');
-    if (!datalist) return;
+// ── 백그라운드 TF frame 수집 (토픽 구독 없이도 프레임 목록 제공) ──
+// 시각화 구독(topicSubscriptions)과 완전히 분리된 별도 구독 Map
+const _bgFrameSubs = new Map();           // topicName → ROSLIB.Topic
+const _allKnownFrames = new Set();        // 수집된 모든 frame ID
 
-    // 모든 알려진 frame ID 수집 (child + parent)
-    const frames = new Set();
+/**
+ * ROS 연결 시 /tf, /tf_static 을 1Hz로 백그라운드 구독하여
+ * frame ID 만 수집한다 (씬 렌더링 없음).
+ */
+function startBackgroundFrameCollection() {
+    // /tf (동적 변환): 10Hz — 실시간 좌표 변환에 충분한 빈도
+    // /tf_static (정적 변환): 0.2Hz — 거의 변하지 않으므로 저속으로 충분
+    const BG_TOPICS = [
+        { name: '/tf',        throttle: 100  },
+        { name: '/tf_static', throttle: 5000 },
+    ];
+
+    // reapplyAllFrameTransforms throttle 핸들 (두 토픽 콜백이 공유)
+    let _reapplyTimer = null;
+
+    BG_TOPICS.forEach(function(config) {
+        if (_bgFrameSubs.has(config.name)) return;
+        try {
+            const topic = new ROSLIB.Topic({
+                ros:           viewer3DState.ros,
+                name:          config.name,
+                messageType:   'tf2_msgs/msg/TFMessage',
+                throttle_rate: config.throttle,
+                queue_length:  1
+            });
+
+            topic.subscribe(function(message) {
+                if (!message.transforms) return;
+
+                // ① frame ID 수집 (_allKnownFrames → 드롭다운 표시용)
+                let frameChanged = false;
+                message.transforms.forEach(function(tf) {
+                    const parentId = tf.header && tf.header.frame_id;
+                    const childId  = tf.child_frame_id;
+                    if (parentId && !_allKnownFrames.has(parentId)) {
+                        _allKnownFrames.add(parentId); frameChanged = true;
+                    }
+                    if (childId  && !_allKnownFrames.has(childId)) {
+                        _allKnownFrames.add(childId);  frameChanged = true;
+                    }
+                });
+
+                // ② tfFrameTree 업데이트 (PointCloud2/Path/Odometry 좌표 변환에 사용)
+                parseTFMessage(message);
+
+                // ③ 구독 중인 시각화 오브젝트에 변환 재적용 (100ms throttle)
+                if (_reapplyTimer === null) {
+                    _reapplyTimer = setTimeout(function() {
+                        _reapplyTimer = null;
+                        reapplyAllFrameTransforms();
+                    }, 100);
+                }
+
+                // ④ 새 프레임이 추가됐고 드롭다운이 열려 있으면 갱신
+                if (frameChanged) {
+                    const dd = document.getElementById('fixed-frame-dropdown');
+                    if (dd && dd.style.display !== 'none') {
+                        if (_ffShowAll) {
+                            renderFixedFrameDropdown('');
+                        } else {
+                            const inp = document.getElementById('fixed-frame-input');
+                            renderFixedFrameDropdown(inp ? inp.value : '');
+                        }
+                    }
+                    // Views 패널 Target Frame 드롭다운도 함께 갱신
+                    updateViewTargetFrameOptions();
+                }
+            });
+
+            _bgFrameSubs.set(config.name, topic);
+            console.log('[BG-TF] Background TF transform collection started for', config.name);
+        } catch(e) {
+            console.warn('[BG-TF] Failed to start background TF collection for', config.name, e);
+        }
+    });
+}
+
+/**
+ * 현재 알려진 모든 TF 프레임 ID 수집
+ * - _allKnownFrames : 백그라운드 /tf, /tf_static 구독으로 수집
+ * - tfFrameTree     : 사용자가 구독한 TF 토픽 파싱 결과
+ * - topicFrameIds   : PC2 / Path / Odom 메시지 헤더의 frame_id
+ */
+function getAvailableFrames() {
+    const frames = new Set(_allKnownFrames);
+
     viewer3DState.tfFrameTree.forEach(function(entry, childId) {
         frames.add(childId);
         if (entry.parentId && entry.parentId !== '') frames.add(entry.parentId);
     });
-
-    // 현재 datalist 옵션과 비교 — 변경이 있을 때만 재렌더
-    const existing = new Set(Array.from(datalist.options).map(o => o.value));
-    if (frames.size === existing.size && [...frames].every(f => existing.has(f))) return;
-
-    datalist.innerHTML = '';
-    const sorted = Array.from(frames).sort();
-    sorted.forEach(function(frameId) {
-        const option = document.createElement('option');
-        option.value = frameId;
-        datalist.appendChild(option);
+    viewer3DState.topicFrameIds.forEach(function(frameId, key) {
+        if (frameId && frameId !== '' && !key.endsWith('_traj')) {
+            frames.add(frameId);
+        }
     });
+    return Array.from(frames).sort();
+}
+
+// ── 내부 상태: 드롭다운 키보드 탐색 + 모드 플래그 ──
+let _ffHighlightIdx = -1;
+let _ffSelecting    = false;   // mousedown 선택 직후 oninput 버그 차단
+let _ffShowAll      = false;   // true = ▾ 버튼으로 연 '전체 목록' 모드
+                               // false = 사용자 타이핑으로 연 '필터' 모드
+let _ffBlurTimer    = null;    // onblur setTimeout 핸들 (clearTimeout용)
+
+/**
+ * Fixed Frame 드롭다운 패널 렌더링
+ * @param {string} [filterText] - 필터 문자열 (빈 문자열/undefined → 전체 표시)
+ */
+function renderFixedFrameDropdown(filterText) {
+    const dropdown = document.getElementById('fixed-frame-dropdown');
+    if (!dropdown) return;
+
+    const frames  = getAvailableFrames();
+    const filter  = (filterText !== undefined && filterText !== null)
+                    ? filterText.toLowerCase().trim() : '';
+    const filtered = filter
+                    ? frames.filter(f => f.toLowerCase().includes(filter))
+                    : frames;
+
+    _ffHighlightIdx = -1;
+    dropdown.innerHTML = '';
+
+    if (filtered.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'fixed-frame-dropdown-empty';
+        empty.textContent = frames.length === 0
+            ? '/tf 또는 /tf_static 데이터 대기 중...'
+            : '일치하는 프레임 없음';
+        dropdown.appendChild(empty);
+        dropdown.style.display = 'block';
+        return;
+    }
+
+    filtered.forEach(function(frameId) {
+        const item = document.createElement('div');
+        item.className = 'fixed-frame-dropdown-item'
+            + (frameId === viewer3DState.fixedFrame ? ' active' : '');
+        item.textContent = frameId;
+        item.dataset.frame = frameId;
+
+        item.addEventListener('mousedown', function(e) {
+            e.preventDefault();  // input blur 방지
+            _ffSelecting = true; // oninput 이벤트 차단 시작
+
+            const input = document.getElementById('fixed-frame-input');
+            if (input) input.value = frameId;
+            setFixedFrame(frameId);
+            closeFixedFrameDropdown();
+
+            // 다음 렌더 프레임 이후 플래그 해제 (브라우저 이벤트 큐 처리 후)
+            requestAnimationFrame(function() { _ffSelecting = false; });
+        });
+        dropdown.appendChild(item);
+    });
+
+    dropdown.style.display = 'block';
+
+    // 현재 fixedFrame 항목으로 스크롤
+    const activeEl = dropdown.querySelector('.active');
+    if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+}
+
+/**
+ * 드롭다운 열기/닫기 토글
+ * - ▾ 버튼 클릭 시: _ffShowAll=true로 설정하고 전체 목록 표시
+ *   → TF 데이터 수신으로 updateFixedFrameOptions() 가 호출되어도
+ *     전체 목록 모드를 유지하므로 필터링되지 않음
+ */
+function toggleFixedFrameDropdown() {
+    const dropdown = document.getElementById('fixed-frame-dropdown');
+    if (!dropdown) return;
+
+    // 열려 있는 경우: 닫기
+    if (dropdown.style.display !== 'none') {
+        closeFixedFrameDropdown();
+        return;
+    }
+
+    // 닫혀 있는 경우: 전체 목록 표시
+    // 진행 중인 blur 닫기 타이머 취소 (▾ 클릭이 blur보다 뒤에 처리될 때 방지)
+    if (_ffBlurTimer !== null) {
+        clearTimeout(_ffBlurTimer);
+        _ffBlurTimer = null;
+    }
+
+    _ffShowAll = true;  // 전체 목록 모드
+    renderFixedFrameDropdown('');
+
+    const input = document.getElementById('fixed-frame-input');
+    if (input) input.focus();
+}
+
+/**
+ * 드롭다운 닫기
+ */
+function closeFixedFrameDropdown() {
+    if (_ffBlurTimer !== null) {
+        clearTimeout(_ffBlurTimer);
+        _ffBlurTimer = null;
+    }
+    const dropdown = document.getElementById('fixed-frame-dropdown');
+    if (dropdown) dropdown.style.display = 'none';
+    _ffHighlightIdx = -1;
+    _ffShowAll = false;
+}
+
+/**
+ * 키보드 하이라이트 항목 갱신
+ */
+function _ffUpdateHighlight(dropdown) {
+    const items = dropdown.querySelectorAll('.fixed-frame-dropdown-item');
+    items.forEach((el, i) => {
+        el.classList.toggle('highlighted', i === _ffHighlightIdx);
+        if (i === _ffHighlightIdx) el.scrollIntoView({ block: 'nearest' });
+    });
+}
+
+/* ── HTML 이벤트 핸들러 (index.html에서 호출) ── */
+
+/**
+ * input oninput 핸들러: 입력 글자로 필터링 후 드롭다운 표시
+ * _ffSelecting이 true면 mousedown 선택 직후이므로 무시
+ */
+function onFixedFrameInput(value) {
+    if (_ffSelecting) return;
+    _ffShowAll = false;  // 사용자가 직접 타이핑 → 필터 모드로 전환
+    renderFixedFrameDropdown(value);
+}
+
+/**
+ * input onkeydown 핸들러: 화살표 / Enter / Escape 처리
+ */
+function onFixedFrameKeydown(event) {
+    const dropdown = document.getElementById('fixed-frame-dropdown');
+    const input    = document.getElementById('fixed-frame-input');
+    const isOpen   = dropdown && dropdown.style.display !== 'none';
+
+    if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (!isOpen) { renderFixedFrameDropdown(''); return; }
+        const items = dropdown.querySelectorAll('.fixed-frame-dropdown-item');
+        if (items.length === 0) return;
+        _ffHighlightIdx = Math.min(_ffHighlightIdx + 1, items.length - 1);
+        _ffUpdateHighlight(dropdown);
+
+    } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (!isOpen) return;
+        const items = dropdown.querySelectorAll('.fixed-frame-dropdown-item');
+        _ffHighlightIdx = Math.max(_ffHighlightIdx - 1, 0);
+        _ffUpdateHighlight(dropdown);
+
+    } else if (event.key === 'Enter') {
+        event.preventDefault();
+        if (isOpen && _ffHighlightIdx >= 0) {
+            const items = dropdown.querySelectorAll('.fixed-frame-dropdown-item');
+            if (items[_ffHighlightIdx]) {
+                const frameId = items[_ffHighlightIdx].dataset.frame;
+                _ffSelecting = true;
+                if (input) input.value = frameId;
+                setFixedFrame(frameId);
+                requestAnimationFrame(function() { _ffSelecting = false; });
+            }
+        } else if (input) {
+            setFixedFrame(input.value.trim());
+        }
+        closeFixedFrameDropdown();
+
+    } else if (event.key === 'Escape') {
+        closeFixedFrameDropdown();
+        if (input) input.blur();
+    }
+}
+
+/**
+ * input onblur 핸들러: 드롭다운 외부 클릭 시 닫기
+ * _ffSelecting 중이거나 combo 내부로 포커스 이동 시 닫지 않음
+ * toggleFixedFrameDropdown()에서 clearTimeout으로 취소 가능하도록
+ * _ffBlurTimer에 핸들을 저장
+ */
+function onFixedFrameBlur(event) {
+    if (_ffSelecting) return;
+    const combo = document.getElementById('fixed-frame-combo');
+    if (combo && combo.contains(event.relatedTarget)) return;
+    _ffBlurTimer = setTimeout(function() {
+        _ffBlurTimer = null;
+        closeFixedFrameDropdown();
+    }, 120);
+}
+
+/**
+ * Fixed Frame input의 datalist를 현재 tfFrameTree 프레임 ID로 업데이트.
+ * TF 구독 중일 때 rebuildTFScene에서 호출되어 자동으로 최신 목록 유지.
+ * 드롭다운이 열려 있으면 실시간 갱신.
+ */
+function updateFixedFrameOptions() {
+    // 드롭다운이 열려 있을 때만 갱신
+    const dropdown = document.getElementById('fixed-frame-dropdown');
+    if (!dropdown || dropdown.style.display === 'none') return;
+
+    if (_ffShowAll) {
+        // ▾ 버튼으로 연 전체 목록 모드 → 필터 없이 전체 재렌더
+        renderFixedFrameDropdown('');
+    } else {
+        // 타이핑 필터 모드 → 현재 입력값 기준 재렌더
+        const input = document.getElementById('fixed-frame-input');
+        renderFixedFrameDropdown(input ? input.value : '');
+    }
 }
 
 /**
@@ -3037,6 +3836,12 @@ function setFixedFrame(newFrame) {
 
     viewer3DState.fixedFrame = newFrame;
     console.log('[TF] Fixed frame changed to:', newFrame);
+
+    // input 값 동기화 (외부에서 호출 시 UI 반영)
+    const fixedFrameInput = document.getElementById('fixed-frame-input');
+    if (fixedFrameInput && fixedFrameInput.value !== newFrame) {
+        fixedFrameInput.value = newFrame;
+    }
 
     // 구독 중인 모든 TF 토픽 씬 재빌드
     viewer3DState.selectedTFTopics.forEach(function(topicName) {
@@ -3187,9 +3992,271 @@ function confirmTFTopicSelection() {
     console.log('[TF] Selected topics:', viewer3DState.selectedTFTopics);
 }
 
+// ============================================================
+// Views 패널 접기/펼치기
+// ============================================================
+
+/**
+ * Views 패널 접기/펼치기 토글
+ * - 패널 본문(#views-body)을 숨기거나 표시
+ * - .viewer-layout의 3번째 열 너비를 28px(접힘) / 200px(펼침)로 전환
+ * - 화살표 버튼 방향을 ◀(접힘) / ▶(펼침)로 전환
+ */
+function toggleViewsPanel() {
+    const panel = document.getElementById('viewer-views-panel');
+    const layout = document.querySelector('.viewer-layout');
+    const isCollapsed = panel.classList.toggle('collapsed');
+    layout.style.gridTemplateColumns = isCollapsed
+        ? '260px 1fr 28px'
+        : '260px 1fr 200px';
+    const btn = document.getElementById('views-collapse-btn');
+    if (btn) btn.textContent = isCollapsed ? '◀' : '▶';
+    // CSS transition(0.2s) 완료 후 Three.js 렌더러 크기 재조정
+    setTimeout(onWindowResize, 220);
+}
+window.toggleViewsPanel = toggleViewsPanel;
+
+// =============================================
+// 통합 Add Display 다이얼로그 (RViz 스타일)
+// =============================================
+
+/**
+ * 각 메시지 타입별 카테고리 정의
+ */
+const ADD_DISPLAY_CATEGORIES = [
+    {
+        type: 'PointCloud2',
+        msgType: 'sensor_msgs/PointCloud2',
+        description: 'Displays PointCloud2 messages as a set of colored points in 3D space.',
+        color: '#4ad6ff',
+        stateKey: 'displaySelectedTopics',
+        fetchTopics: null,   // 초기화 후 할당
+        subscribeFn: null
+    },
+    {
+        type: 'Path',
+        msgType: 'nav_msgs/Path',
+        description: 'Displays a nav_msgs/Path message as a series of connected line segments in 3D space.',
+        color: '#4dff7c',
+        stateKey: 'selectedPathTopics',
+        fetchTopics: null,
+        subscribeFn: null
+    },
+    {
+        type: 'Odometry',
+        msgType: 'nav_msgs/Odometry',
+        description: 'Displays odometry data from a nav_msgs/Odometry message as an arrow showing pose and optional trajectory trail.',
+        color: '#ff9f4d',
+        stateKey: 'selectedOdomTopics',
+        fetchTopics: null,
+        subscribeFn: null
+    },
+    {
+        type: 'TF',
+        msgType: 'tf2_msgs/TFMessage',
+        description: 'Displays the TF transform tree, showing coordinate frames and their relationships as axes in 3D space.',
+        color: '#c0a0ff',
+        stateKey: 'selectedTFTopics',
+        fetchTopics: null,
+        subscribeFn: null
+    }
+];
+
+// 카테고리별 현재 로드된 토픽 목록 (모달 내부 상태)
+let _addDisplayTopics = [[], [], [], []];
+
+/**
+ * Add Display 통합 다이얼로그 열기 (RViz 스타일)
+ */
+async function openAddDisplayModal() {
+    if (!viewer3DState.rosConnected) {
+        alert('Not connected to ROS. Make sure rosbridge_server is running:\n\nros2 launch rosbridge_server rosbridge_websocket_launch.xml');
+        return;
+    }
+
+    // fetchTopics 함수 할당 (순환 참조 방지를 위해 런타임에 할당)
+    ADD_DISPLAY_CATEGORIES[0].fetchTopics = getAvailablePointCloudTopics;
+    ADD_DISPLAY_CATEGORIES[0].subscribeFn = subscribeToPointCloud;
+    ADD_DISPLAY_CATEGORIES[1].fetchTopics = getAvailablePathTopics;
+    ADD_DISPLAY_CATEGORIES[1].subscribeFn = subscribeToPath;
+    ADD_DISPLAY_CATEGORIES[2].fetchTopics = getAvailableOdometryTopics;
+    ADD_DISPLAY_CATEGORIES[2].subscribeFn = subscribeToOdometry;
+    ADD_DISPLAY_CATEGORIES[3].fetchTopics = getAvailableTFTopics;
+    ADD_DISPLAY_CATEGORIES[3].subscribeFn = subscribeToTF;
+
+    const modal = document.getElementById('add-display-modal');
+    const tree  = document.getElementById('add-display-tree');
+    if (!modal || !tree) return;
+
+    // 버튼 로딩 표시
+    const btn = document.getElementById('viewer-add-display-btn');
+    if (btn) { btn.textContent = 'Loading...'; btn.disabled = true; }
+
+    tree.innerHTML = '<div class="add-display-loading">Loading topics...</div>';
+    modal.style.display = 'block';
+
+    // 모든 토픽 타입 병렬 로딩
+    try {
+        const results = await Promise.all(
+            ADD_DISPLAY_CATEGORIES.map(cat => cat.fetchTopics())
+        );
+        _addDisplayTopics = results;
+    } catch (err) {
+        console.error('[AddDisplay] Failed to load topics:', err);
+        _addDisplayTopics = [[], [], [], []];
+    } finally {
+        if (btn) { btn.textContent = '+ Add'; btn.disabled = false; }
+    }
+
+    renderAddDisplayTree();
+}
+
+/**
+ * Add Display 트리 렌더링
+ */
+function renderAddDisplayTree() {
+    const tree = document.getElementById('add-display-tree');
+    if (!tree) return;
+
+    tree.innerHTML = '';
+
+    ADD_DISPLAY_CATEGORIES.forEach(function(cat, catIdx) {
+        const currentTopics = viewer3DState[cat.stateKey] || [];
+        const availableTopics = _addDisplayTopics[catIdx] || [];
+
+        // 카테고리 컨테이너
+        const catDiv = document.createElement('div');
+        catDiv.className = 'add-display-category';
+
+        // 카테고리 헤더
+        const catHeader = document.createElement('div');
+        catHeader.className = 'add-display-cat-header';
+        catHeader.innerHTML =
+            '<span class="add-display-cat-arrow" id="add-display-cat-arrow-' + catIdx + '">▾</span>' +
+            '<span class="add-display-cat-dot" style="background:' + cat.color + '"></span>' +
+            '<span class="add-display-cat-name">' + cat.type + '</span>' +
+            '<span class="add-display-cat-type">' + cat.msgType + '</span>';
+        catHeader.onclick = function() { toggleAddDisplayCategory(catIdx); };
+        catDiv.appendChild(catHeader);
+
+        // 토픽 목록
+        const topicList = document.createElement('div');
+        topicList.className = 'add-display-topic-list';
+        topicList.id = 'add-display-topics-' + catIdx;
+
+        if (availableTopics.length === 0) {
+            const noTopic = document.createElement('div');
+            noTopic.className = 'add-display-no-topics';
+            noTopic.textContent = 'No topics available';
+            topicList.appendChild(noTopic);
+        } else {
+            availableTopics.forEach(function(topic) {
+                const topicDiv = document.createElement('div');
+                topicDiv.className = 'add-display-topic-item';
+
+                const cb = document.createElement('input');
+                cb.type    = 'checkbox';
+                cb.id      = 'add-display-cb-' + catIdx + '-' + topic;
+                cb.value   = topic;
+                cb.checked = currentTopics.includes(topic);
+                cb.onchange = function() { updateAddDisplayDescription(cat.description); };
+
+                const lbl = document.createElement('label');
+                lbl.htmlFor     = cb.id;
+                lbl.textContent = topic;
+                lbl.onclick = function() { updateAddDisplayDescription(cat.description); };
+
+                topicDiv.appendChild(cb);
+                topicDiv.appendChild(lbl);
+                topicList.appendChild(topicDiv);
+            });
+        }
+
+        catDiv.appendChild(topicList);
+        tree.appendChild(catDiv);
+    });
+
+    // 설명 초기화
+    updateAddDisplayDescription('');
+}
+
+/**
+ * 카테고리 접기/펼치기
+ */
+function toggleAddDisplayCategory(catIdx) {
+    const list  = document.getElementById('add-display-topics-' + catIdx);
+    const arrow = document.getElementById('add-display-cat-arrow-' + catIdx);
+    if (!list) return;
+    const isCollapsed = list.style.display === 'none';
+    list.style.display = isCollapsed ? 'block' : 'none';
+    if (arrow) arrow.textContent = isCollapsed ? '▾' : '▸';
+}
+
+/**
+ * 설명 텍스트 업데이트
+ */
+function updateAddDisplayDescription(text) {
+    const el = document.getElementById('add-display-desc-text');
+    if (el) el.textContent = text;
+}
+
+/**
+ * Add Display 다이얼로그 닫기
+ */
+function closeAddDisplayModal() {
+    const modal = document.getElementById('add-display-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+/**
+ * Add Display 선택 확인: 모든 카테고리의 체크된 토픽 구독/해제 처리
+ */
+function confirmAddDisplaySelection() {
+    ADD_DISPLAY_CATEGORIES.forEach(function(cat, catIdx) {
+        const checkboxes = document.querySelectorAll(
+            '#add-display-topics-' + catIdx + ' input[type="checkbox"]'
+        );
+        const newTopics = [];
+        checkboxes.forEach(function(cb) { if (cb.checked) newTopics.push(cb.value); });
+
+        const currentTopics = viewer3DState[cat.stateKey] || [];
+
+        // 제거된 토픽: 구독 해제
+        currentTopics.forEach(function(topic) {
+            if (!newTopics.includes(topic)) {
+                unsubscribeFromTopic(topic);
+            }
+        });
+
+        // 신규 토픽: 구독 시작
+        newTopics.forEach(function(topic) {
+            if (!currentTopics.includes(topic)) {
+                cat.subscribeFn(topic);
+            }
+        });
+
+        viewer3DState[cat.stateKey] = newTopics;
+    });
+
+    closeAddDisplayModal();
+    renderDisplayPanel();
+    console.log('[AddDisplay] Confirmed. State:', {
+        pointcloud: viewer3DState.displaySelectedTopics,
+        path: viewer3DState.selectedPathTopics,
+        odometry: viewer3DState.selectedOdomTopics,
+        tf: viewer3DState.selectedTFTopics
+    });
+}
+
 // Expose functions to global scope for onclick handlers
 window.initThreeJSDisplay = initThreeJSDisplay;
 window.initialize3DViewer = initialize3DViewer;
+// 통합 Add Display 다이얼로그
+window.openAddDisplayModal = openAddDisplayModal;
+window.closeAddDisplayModal = closeAddDisplayModal;
+window.confirmAddDisplaySelection = confirmAddDisplaySelection;
+window.toggleAddDisplayCategory = toggleAddDisplayCategory;
+// 기존 개별 함수 (하위 호환성 유지)
 window.selectDisplayTopics = selectDisplayTopics;
 window.closeDisplayTopicSelection = closeDisplayTopicSelection;
 window.confirmDisplayTopicSelection = confirmDisplayTopicSelection;
@@ -3224,6 +4291,14 @@ window.closeTFTopicSelection = closeTFTopicSelection;
 window.confirmTFTopicSelection = confirmTFTopicSelection;
 window.rebuildTFScene = rebuildTFScene;
 window.updateFixedFrameOptions = updateFixedFrameOptions;
+// Fixed Frame 커스텀 드롭다운 핸들러
+window.getAvailableFrames = getAvailableFrames;
+window.startBackgroundFrameCollection = startBackgroundFrameCollection;
+window.toggleFixedFrameDropdown = toggleFixedFrameDropdown;
+window.closeFixedFrameDropdown = closeFixedFrameDropdown;
+window.onFixedFrameInput = onFixedFrameInput;
+window.onFixedFrameKeydown = onFixedFrameKeydown;
+window.onFixedFrameBlur = onFixedFrameBlur;
 
 console.log('=== Three.js Display script loaded ===');
 console.log('Functions exposed:', {

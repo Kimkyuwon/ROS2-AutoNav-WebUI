@@ -329,30 +329,42 @@
 
             <!-- 3D Viewer Sub-Tab -->
             <div id="3d-viewer-subtab" class="subtab-content">
-                <div class="section card">
+                <div class="section card" style="position: relative;">
                     <h2>3D Viewer</h2>
+                    <!-- Reset 버튼: 카드 우상단 오버레이 -->
+                    <button id="viewer-reset-btn"
+                            onclick="resetAll3DViewer()"
+                            title="모든 토픽 구독 해제 및 씬 초기화"
+                            style="position:absolute; top:14px; right:18px; z-index:10;
+                                   padding:4px 12px; font-size:12px; cursor:pointer;
+                                   background:rgba(40,40,40,0.85); color:#fff;
+                                   border:1px solid rgba(255,255,255,0.25); border-radius:6px;">
+                        Reset
+                    </button>
                     <div class="viewer-layout">
                         <!-- 왼쪽: Display 패널 -->
                         <div class="viewer-display-panel">
                             <h3>Displays</h3>
-                            <!-- Fixed Frame 입력 (datalist로 TF 프레임 목록 선택 가능) -->
+                            <!-- Fixed Frame 입력 (RViz 스타일 커스텀 드롭다운) -->
                             <div class="fixed-frame-row">
                                 <label class="fixed-frame-label">Fixed Frame:</label>
-                                <input id="fixed-frame-input" class="fixed-frame-input"
-                                       list="fixed-frame-list"
-                                       value="map"
-                                       placeholder="e.g. map"
-                                       title="TF 기준 프레임 (클릭 또는 직접 입력)"
-                                       onchange="setFixedFrame(this.value)" />
-                                <datalist id="fixed-frame-list">
-                                    <!-- TF 프레임 목록이 JS로 동적 추가됨 -->
-                                </datalist>
+                                <div class="fixed-frame-combo" id="fixed-frame-combo">
+                                    <input id="fixed-frame-input" class="fixed-frame-input"
+                                           value="map"
+                                           placeholder="e.g. map"
+                                           title="TF 기준 프레임 (클릭 또는 직접 입력)"
+                                           oninput="onFixedFrameInput(this.value)"
+                                           onkeydown="onFixedFrameKeydown(event)"
+                                           onblur="onFixedFrameBlur(event)"
+                                           autocomplete="off" />
+                                    <button class="fixed-frame-dropdown-btn"
+                                            onmousedown="event.preventDefault(); toggleFixedFrameDropdown();"
+                                            title="사용 가능한 TF 프레임 목록">▾</button>
+                                    <div id="fixed-frame-dropdown" class="fixed-frame-dropdown" style="display:none;"></div>
+                                </div>
                             </div>
                             <div class="viewer-add-btn-group">
-                                <button id="viewer-add-topic-btn" onclick="selectDisplayTopics()">+ PointCloud2</button>
-                                <button id="viewer-add-path-btn" onclick="selectPathTopics()">+ Path</button>
-                                <button id="viewer-add-odom-btn" onclick="selectOdometryTopics()">+ Odometry</button>
-                                <button id="viewer-add-tf-btn" onclick="selectTFTopics()">+ TF</button>
+                                <button id="viewer-add-display-btn" onclick="openAddDisplayModal()">+ Add</button>
                             </div>
                             <div id="viewer-display-panel-content">
                                 <!-- renderDisplayPanel()로 동적 렌더링 -->
@@ -364,6 +376,46 @@
                                 <!-- Three.js canvas will be inserted here -->
                                 <div id="3d-viewer-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 14px;">
                                     Initializing 3D Viewer...
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 신규: Views 패널 -->
+                        <div id="viewer-views-panel" class="viewer-views-panel">
+                            <!-- 패널 헤더 (항상 표시) -->
+                            <div class="views-panel-header">
+                                <h3>Views</h3>
+                                <button id="views-collapse-btn"
+                                        class="views-collapse-btn"
+                                        onclick="toggleViewsPanel()"
+                                        title="Views 패널 접기/펼치기">▶</button>
+                            </div>
+                            <!-- 패널 본문 (접히면 숨김) -->
+                            <div id="views-body" class="views-body">
+                                <div class="views-type-row">
+                                    <label>Type:</label>
+                                    <select id="view-type-select" onchange="switchViewType(this.value)">
+                                        <option value="orbit">Orbit</option>
+                                        <option value="topdown">TopDown</option>
+                                    </select>
+                                    <button onclick="resetViewCamera()">Zero</button>
+                                </div>
+                                <div class="views-section">
+                                    <div class="views-current-label">Current View</div>
+                                    <div class="views-row">
+                                        <label>Near Clip:</label>
+                                        <input type="number" id="view-near-clip" value="0.01" step="0.001"
+                                               onchange="onViewNearClipChange(this.value)">
+                                    </div>
+                                    <div class="views-row">
+                                        <label>Target Frame:</label>
+                                        <select id="view-target-frame" onchange="onViewTargetFrameChange(this.value)">
+                                            <option value="<Fixed Frame>">&lt;Fixed Frame&gt;</option>
+                                        </select>
+                                    </div>
+                                    <div id="views-params-container">
+                                        <!-- renderViewsPanel()로 동적 렌더링 -->
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -434,77 +486,27 @@
     </div>
 
     <!-- Display Topic Selection Modal (3D Viewer) -->
-    <div id="display-topic-modal" class="modal" style="display:none;">
-        <div class="modal-content">
+    <!-- Add Display Modal (RViz 스타일 통합 토픽 선택) -->
+    <div id="add-display-modal" class="modal" style="display:none;">
+        <div class="modal-content add-display-modal-content">
             <div class="modal-header">
-                <h3>Add PointCloud2 Topic</h3>
-                <span class="close" onclick="closeDisplayTopicSelection()">&times;</span>
+                <h3>Add Display</h3>
+                <span class="close" onclick="closeAddDisplayModal()">&times;</span>
             </div>
-            <div class="modal-body">
-                <div class="topic-list" id="display-topic-list">
-                    <!-- PointCloud2 topic checkboxes will be loaded here -->
+            <div class="add-display-body-container">
+                <!-- 토픽 트리 영역 -->
+                <div class="add-display-tree-container" id="add-display-tree">
+                    <div class="add-display-loading">Loading topics...</div>
+                </div>
+                <!-- 설명 영역 -->
+                <div class="add-display-description">
+                    <div class="add-display-desc-label">Description:</div>
+                    <div class="add-display-desc-text" id="add-display-desc-text"></div>
                 </div>
             </div>
             <div class="modal-footer">
-                <button onclick="confirmDisplayTopicSelection()">Confirm</button>
-                <button onclick="closeDisplayTopicSelection()">Cancel</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Path Topic Select Modal -->
-    <div id="path-topic-modal" class="modal" style="display:none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Add Path Topic</h3>
-                <span class="close" onclick="closePathTopicSelection()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <div class="topic-list" id="path-topic-list">
-                    <!-- nav_msgs/Path topic checkboxes will be loaded here -->
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button onclick="confirmPathTopicSelection()">Confirm</button>
-                <button onclick="closePathTopicSelection()">Cancel</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Odometry Topic Select Modal -->
-    <div id="odom-topic-modal" class="modal" style="display:none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Add Odometry Topic</h3>
-                <span class="close" onclick="closeOdometryTopicSelection()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <div class="topic-list" id="odom-topic-list">
-                    <!-- nav_msgs/Odometry topic checkboxes will be loaded here -->
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button onclick="confirmOdometryTopicSelection()">Confirm</button>
-                <button onclick="closeOdometryTopicSelection()">Cancel</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- TF Topic Select Modal -->
-    <div id="tf-topic-modal" class="modal" style="display:none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Add TF Topic</h3>
-                <span class="close" onclick="closeTFTopicSelection()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <div class="topic-list" id="tf-topic-list">
-                    <!-- tf2_msgs/TFMessage topic checkboxes will be loaded here -->
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button onclick="confirmTFTopicSelection()">Confirm</button>
-                <button onclick="closeTFTopicSelection()">Cancel</button>
+                <button onclick="closeAddDisplayModal()">Cancel</button>
+                <button onclick="confirmAddDisplaySelection()">OK</button>
             </div>
         </div>
     </div>

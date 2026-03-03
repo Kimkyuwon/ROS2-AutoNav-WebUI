@@ -1199,9 +1199,10 @@ h3 {
 
 .viewer-layout {
     display: grid;
-    grid-template-columns: 260px 1fr;
+    grid-template-columns: 260px 1fr 200px;
     gap: 16px;
     height: 680px;
+    transition: grid-template-columns 0.2s ease;
 }
 
 .viewer-display-panel {
@@ -1505,6 +1506,112 @@ h3 {
 }
 
 /* ======================================
+   Views 패널
+   ====================================== */
+
+/* Views 패널 */
+.viewer-views-panel {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    min-width: 0;
+}
+
+/* 패널 헤더: h3 + 화살표 버튼 가로 배치 */
+.views-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+}
+
+.views-panel-header h3 {
+    margin: 0;
+    font-size: 13px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+/* 화살표 버튼 */
+.views-collapse-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.views-collapse-btn:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+/* 접힌 상태: 본문 숨김 */
+.viewer-views-panel.collapsed .views-body { display: none; }
+.viewer-views-panel.collapsed .views-panel-header h3 { display: none; }
+
+/* 본문 */
+.views-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+}
+
+.views-type-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.views-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.views-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px;
+}
+
+.views-current-label {
+    font-weight: bold;
+    color: var(--accent);
+    margin: 4px 0 2px;
+}
+
+/* Views 패널 내 입력 요소 크기 조정 */
+.views-body select,
+.views-body input[type="number"] {
+    font-size: 11px;
+    padding: 2px 4px;
+    max-width: 100px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+}
+
+.views-body button {
+    font-size: 11px;
+    padding: 2px 6px;
+}
+
+/* ======================================
    Fixed Frame 입력 행
    ====================================== */
 .fixed-frame-row {
@@ -1521,11 +1628,19 @@ h3 {
     flex-shrink: 0;
 }
 
+/* 커스텀 콤보박스 래퍼 */
+.fixed-frame-combo {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+}
+
 .fixed-frame-input {
     flex: 1;
     background: rgba(255, 255, 255, 0.07);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 6px 0 0 6px;
     color: var(--text);
     font-size: 12px;
     padding: 4px 8px;
@@ -1538,8 +1653,82 @@ h3 {
     box-shadow: 0 0 0 2px rgba(74, 214, 255, 0.1);
 }
 
+/* ▾ 드롭다운 열기 버튼 */
+.fixed-frame-dropdown-btn {
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 6px 6px 0;
+    cursor: pointer;
+    padding: 0 7px;
+    font-size: 11px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+}
+.fixed-frame-dropdown-btn:hover {
+    background: rgba(74, 214, 255, 0.15);
+    color: var(--text);
+}
+
+/* 드롭다운 패널 */
+.fixed-frame-dropdown {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    background: #1a1e2e;
+    border: 1px solid rgba(74, 214, 255, 0.3);
+    border-radius: 6px;
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 9999;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+
+.fixed-frame-dropdown::-webkit-scrollbar {
+    width: 4px;
+}
+.fixed-frame-dropdown::-webkit-scrollbar-track {
+    background: transparent;
+}
+.fixed-frame-dropdown::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.2);
+    border-radius: 2px;
+}
+
+/* 드롭다운 항목 */
+.fixed-frame-dropdown-item {
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 0.1s;
+}
+.fixed-frame-dropdown-item:hover,
+.fixed-frame-dropdown-item.highlighted {
+    background: rgba(74, 214, 255, 0.12);
+}
+.fixed-frame-dropdown-item.active {
+    background: rgba(74, 214, 255, 0.22);
+    color: #4ad6ff;
+    font-weight: 600;
+}
+
+/* 드롭다운 빈 상태 메시지 */
+.fixed-frame-dropdown-empty {
+    padding: 8px 10px;
+    font-size: 11px;
+    color: var(--muted);
+    font-style: italic;
+}
+
 /* ======================================
-   Add 버튼 그룹 (PointCloud2 / Path / Odometry)
+   Add 버튼 그룹 (통합 + Add 버튼)
    ====================================== */
 .viewer-add-btn-group {
     display: flex;
@@ -1548,11 +1737,8 @@ h3 {
     margin-bottom: 4px;
 }
 
-/* 공통 Add 버튼 스타일 (기존 #viewer-add-topic-btn 기반) */
-#viewer-add-topic-btn,
-#viewer-add-path-btn,
-#viewer-add-odom-btn,
-#viewer-add-tf-btn {
+/* 통합 Add 버튼 스타일 */
+#viewer-add-display-btn {
     background: linear-gradient(135deg, #1f3a56, #1b3046);
     color: var(--text);
     border: 1px solid var(--border);
@@ -1566,20 +1752,159 @@ h3 {
     width: 100%;
 }
 
-#viewer-add-topic-btn:hover,
-#viewer-add-path-btn:hover,
-#viewer-add-odom-btn:hover,
-#viewer-add-tf-btn:hover {
+#viewer-add-display-btn:hover {
     border-color: rgba(74, 214, 255, 0.5);
     box-shadow: 0 4px 16px rgba(74, 214, 255, 0.18);
 }
 
-#viewer-add-topic-btn:disabled,
-#viewer-add-path-btn:disabled,
-#viewer-add-odom-btn:disabled,
-#viewer-add-tf-btn:disabled {
+#viewer-add-display-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+}
+
+/* ======================================
+   Add Display Modal (RViz 스타일)
+   ====================================== */
+.add-display-modal-content {
+    max-width: 500px;
+    width: 92%;
+}
+
+.add-display-body-container {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* 토픽 트리 영역 */
+.add-display-tree-container {
+    overflow-y: auto;
+    min-height: 180px;
+    max-height: 340px;
+    border-bottom: 1px solid var(--border);
+    padding: 6px 0;
+}
+
+.add-display-loading {
+    text-align: center;
+    padding: 24px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+/* 카테고리 */
+.add-display-category {
+    margin-bottom: 1px;
+}
+
+.add-display-cat-header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    user-select: none;
+}
+
+.add-display-cat-header:hover {
+    background: rgba(74, 214, 255, 0.06);
+}
+
+.add-display-cat-arrow {
+    font-size: 11px;
+    color: var(--muted);
+    width: 12px;
+    flex-shrink: 0;
+}
+
+.add-display-cat-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.2);
+}
+
+.add-display-cat-name {
+    font-weight: 700;
+    flex: 1;
+    font-size: 13px;
+}
+
+.add-display-cat-type {
+    font-size: 11px;
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* 토픽 목록 */
+.add-display-topic-list {
+    padding: 3px 0 3px 36px;
+    background: rgba(0, 0, 0, 0.15);
+}
+
+.add-display-topic-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px 4px 0;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.add-display-topic-item:hover {
+    background: rgba(74, 214, 255, 0.07);
+}
+
+.add-display-topic-item input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: #4ad6ff;
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+.add-display-topic-item label {
+    cursor: pointer;
+    color: var(--text);
+    flex: 1;
+    font-family: monospace;
+    font-size: 12px;
+}
+
+.add-display-no-topics {
+    padding: 5px 10px;
+    font-size: 12px;
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* 설명 영역 */
+.add-display-description {
+    padding: 10px 14px;
+    min-height: 56px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.add-display-desc-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.add-display-desc-text {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 28px;
 }
 
 /* ======================================
