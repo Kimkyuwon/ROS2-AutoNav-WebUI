@@ -951,130 +951,49 @@ h3 {
     font-weight: 600;
 }
 
-
 /* ============================================================
    Filter Dialog Modal Styles
    ============================================================ */
 
-/* ── 모달 컨테이너 ── */
+/* 모달 너비 확장 */
 #filter-dialog-modal .modal-content {
-    max-width: 860px;
-    width: 92vw;
-    height: 640px;
-    max-height: 92vh;
+    max-width: 900px;
+    max-height: 90vh;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    padding: 0;
 }
 
-/* ── 헤더 ── */
-.filter-dialog-header {
-    padding: 14px 20px;
-    flex-shrink: 0;
-}
-
-.filter-dialog-header h3 {
-    font-size: 16px !important;
-}
-
-/* ── 미리보기 Plot 영역 ── */
+/* 미리보기 Plot 영역 */
 #filter-preview-plot {
-    height: 220px;
-    min-height: 220px;
-    flex-shrink: 0;
-    background: #0d1320;
+    height: 200px;
+    min-height: 200px;
     border-bottom: 1px solid var(--border);
-}
-
-/* ── Info Bar: Alias + AutoZoom ── */
-.filter-info-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 16px;
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.2);
     flex-shrink: 0;
 }
 
-.filter-alias-group {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+/* modal-body 스크롤 제거 */
+#filter-dialog-modal .modal-body {
+    padding: 0;
+    overflow: visible;
+    max-height: none;
     flex: 1;
-    min-width: 0;
+    overflow-y: auto;
 }
 
-.filter-alias-group label {
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--muted);
-    white-space: nowrap;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-}
-
-#filter-alias-input {
-    flex: 1;
-    min-width: 0;
-    padding: 5px 10px;
-    background: rgba(0, 0, 0, 0.35);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 13px;
-    transition: border-color 0.15s, box-shadow 0.15s;
-}
-
-#filter-alias-input:focus {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(74, 214, 255, 0.15);
-}
-
-.filter-autozoom-group {
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-}
-
-.filter-autozoom-group label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--muted);
-    cursor: pointer;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    white-space: nowrap;
-}
-
-.filter-autozoom-group input[type="checkbox"] {
-    width: 15px;
-    height: 15px;
-    accent-color: var(--accent);
-    cursor: pointer;
-    flex-shrink: 0;
-}
-
-/* ── 3-column 그리드 레이아웃 ── */
+/* 3-column 그리드 레이아웃 */
 .filter-dialog-body {
     display: grid;
-    grid-template-columns: 190px 210px 1fr;
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-    border-bottom: 1px solid var(--border);
+    grid-template-columns: 1fr 1fr 2fr;
+    min-height: 220px;
 }
 
-/* ── 공통 컬럼 스타일 ── */
+/* 공통 컬럼 스타일 */
 .filter-source-list,
 .filter-type-list,
 .filter-params-panel {
-    padding: 12px 14px;
+    padding: 16px;
     overflow-y: auto;
 }
 
@@ -1083,47 +1002,44 @@ h3 {
     border-right: 1px solid var(--border);
 }
 
-/* ── 컬럼 제목 ── */
+/* 컬럼 제목 */
 .filter-col-title {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     color: var(--muted);
-    margin: 0 0 8px 0;
-    padding-bottom: 6px;
-    border-bottom: 1px solid rgba(32, 52, 79, 0.6);
+    margin: 0 0 10px 0;
 }
 
-/* ── Source curve 목록 ── */
+/* Source curve 목록 */
 #filter-source-items {
     list-style: none;
     padding: 0;
     margin: 0;
 }
 
-.filter-source-item {
-    padding: 6px 8px;
-    border-radius: 5px;
-    font-size: 12px;
+#filter-source-items li {
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 13px;
     color: var(--text);
     cursor: pointer;
-    transition: background 0.12s;
+    transition: background 0.15s;
     word-break: break-all;
-    line-height: 1.4;
 }
 
-.filter-source-item:hover {
-    background: rgba(74, 214, 255, 0.08);
+#filter-source-items li:hover {
+    background: rgba(74, 214, 255, 0.1);
 }
 
-.filter-source-item.active {
-    background: rgba(74, 214, 255, 0.16);
+#filter-source-items li.active {
+    background: rgba(74, 214, 255, 0.18);
     color: var(--accent);
     font-weight: 600;
 }
 
-/* ── 필터 타입 목록 ── */
+/* 필터 타입 목록 */
 #filter-type-items {
     list-style: none;
     padding: 0;
@@ -1131,26 +1047,25 @@ h3 {
 }
 
 .filter-type-item {
-    padding: 7px 10px;
-    border-radius: 5px;
+    padding: 8px 10px;
+    border-radius: 6px;
     font-size: 13px;
     color: var(--text);
     cursor: pointer;
-    transition: background 0.12s;
-    line-height: 1.4;
+    transition: background 0.15s;
 }
 
 .filter-type-item:hover {
-    background: rgba(74, 214, 255, 0.08);
+    background: rgba(74, 214, 255, 0.1);
 }
 
 .filter-type-item.active {
-    background: rgba(74, 214, 255, 0.16);
+    background: rgba(74, 214, 255, 0.18);
     color: var(--accent);
     font-weight: 600;
 }
 
-/* ── 파라미터 패널 ── */
+/* 파라미터 패널 */
 #filter-params-content {
     font-size: 13px;
 }
@@ -1158,30 +1073,27 @@ h3 {
 .filter-params-placeholder {
     color: var(--muted);
     font-style: italic;
-    font-size: 12px;
-    margin-top: 6px;
+    margin-top: 8px;
 }
 
-/* ── 파라미터 form 그룹 ── */
+/* 파라미터 form 그룹 */
 .filter-param-group {
     margin-bottom: 14px;
 }
 
 .filter-param-group label {
-    display: flex;
-    align-items: center;
+    display: block;
     margin-bottom: 5px;
     font-size: 12px;
     font-weight: 500;
     color: var(--muted);
-    cursor: default;
 }
 
 .filter-param-group input[type="number"],
 .filter-param-group input[type="text"],
 .filter-param-group select {
     width: 100%;
-    padding: 6px 10px;
+    padding: 7px 10px;
     background: rgba(0, 0, 0, 0.3);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -1195,96 +1107,591 @@ h3 {
 .filter-param-group select:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(74, 214, 255, 0.15);
-}
-
-.filter-param-group input[type="number"]:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
+    box-shadow: 0 0 0 3px rgba(74, 214, 255, 0.15);
 }
 
 .filter-param-group input[type="checkbox"] {
-    width: 15px;
-    height: 15px;
+    width: 16px;
+    height: 16px;
     margin-right: 7px;
     cursor: pointer;
     accent-color: var(--accent);
-    flex-shrink: 0;
+    vertical-align: middle;
 }
 
-.filter-param-group label:has(input[type="checkbox"]) {
-    cursor: pointer;
-    color: var(--text);
-    margin-bottom: 0;
-}
-
-/* ── 푸터: Cancel / Save 버튼만 ── */
-.filter-dialog-footer {
+.filter-param-group label.checkbox-label {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text);
+}
+
+/* 푸터 레이아웃 */
+.filter-dialog-footer {
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
-    padding: 12px 20px;
     flex-shrink: 0;
 }
 
-.filter-btn-cancel,
-.filter-btn-save {
-    padding: 8px 22px;
-    border: none;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.filter-btn-cancel {
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--text);
-    border: 1px solid var(--border);
-}
-
-.filter-btn-cancel:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: var(--accent);
-}
-
-.filter-btn-save {
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: #0f1726;
-}
-
-.filter-btn-save:hover {
-    opacity: 0.9;
-    box-shadow: 0 4px 15px rgba(74, 214, 255, 0.35);
-}
-
-/* Filter dialog - Rad2Deg / Deg2Rad conversion buttons */
-.filter-conversion-btns {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-}
-
-.filter-btn-row {
+.filter-alias-group {
     display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 200px;
+}
+
+.filter-alias-group label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+#filter-alias-input {
+    flex: 1;
+    padding: 7px 10px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+#filter-alias-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(74, 214, 255, 0.15);
+}
+
+.filter-autozoom-group {
+    display: flex;
+    align-items: center;
+}
+
+.filter-autozoom-group label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.filter-autozoom-group input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.filter-footer-buttons {
+    display: flex;
+    gap: 10px;
+}
+/* ============================================================
+   3D Viewer Display Panel 스타일
+   ============================================================ */
+
+.viewer-layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 16px;
+    height: 680px;
+}
+
+.viewer-display-panel {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     gap: 8px;
 }
 
-.filter-convert-btn {
-    padding: 5px 12px;
-    border: 1px solid var(--accent);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--accent);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
+.viewer-display-panel h3 {
+    margin: 0 0 4px 0;
+    font-size: 14px;
+    color: var(--muted);
 }
 
-.filter-convert-btn:hover {
+/* #viewer-add-topic-btn 스타일은 하단 .viewer-add-btn-group 내 그룹 선택자로 통합 */
+
+#viewer-display-panel-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.display-topic-item {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.display-topic-item-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.display-topic-item-header input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.display-topic-item-name {
+    font-size: 12px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+.display-topic-item-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 20px;
+}
+
+.display-topic-item-settings select {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12px;
+    padding: 4px 6px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.display-topic-item-settings select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.display-topic-item-settings label {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+/* Solid 색상 피커 - 스와치 버튼 */
+.solid-color-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.solid-color-swatch {
+    width: 32px;
+    height: 20px;
+    border: 2px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+    transition: border-color 0.15s, transform 0.1s;
+}
+
+.solid-color-swatch:hover {
+    border-color: var(--accent);
+    transform: scale(1.08);
+}
+
+.solid-color-swatch:active {
+    transform: scale(0.96);
+}
+
+.solid-color-hex {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: monospace;
+    letter-spacing: 0.5px;
+    user-select: all;
+}
+
+/* ======================================
+   RViz 스타일 색상 팔레트 팝업
+   ====================================== */
+.solid-color-picker-popup {
+    position: fixed;
+    z-index: 99999;
+    background: #2e2e2e;
+    border: 1px solid #505050;
+    border-radius: 10px;
+    padding: 12px;
+    width: 280px;
+    box-shadow: 0 10px 36px rgba(0, 0, 0, 0.6);
+    user-select: none;
+}
+
+/* 헤더 */
+.scp-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.scp-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e0e0e0;
+    letter-spacing: 0.2px;
+}
+
+.scp-btn {
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 6px;
+    border: 1px solid #555;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background 0.15s;
+}
+
+.scp-cancel {
+    background: #3a3a3a;
+    color: #ccc;
+}
+
+.scp-cancel:hover {
+    background: #4a4a4a;
+}
+
+.scp-select {
+    background: #28a745;
+    color: #fff;
+    border-color: #28a745;
+}
+
+.scp-select:hover {
+    background: #218838;
+}
+
+/* 색상 그리드 */
+.scp-grid {
+    display: grid;
+    grid-template-columns: repeat(9, 1fr);
+    gap: 4px;
+    margin-bottom: 12px;
+}
+
+.scp-color-cell {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border: 2px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0;
+    position: relative;
+    transition: transform 0.1s, border-color 0.1s;
+    outline: none;
+}
+
+.scp-color-cell:hover {
+    transform: scale(1.18);
+    border-color: rgba(255, 255, 255, 0.8);
+    z-index: 1;
+}
+
+/* 선택된 셀: 체크마크 */
+.scp-color-cell.scp-selected::after {
+    content: '✓';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 0 4px rgba(0, 0, 0, 0.9), 0 1px 2px rgba(0, 0, 0, 0.8);
+    pointer-events: none;
+}
+
+/* 사용자 지정 섹션 */
+.scp-custom-section {
+    border-top: 1px solid #444;
+    padding-top: 10px;
+}
+
+.scp-custom-label {
+    font-size: 11px;
+    color: #999;
+    margin-bottom: 6px;
+}
+
+.scp-custom-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+}
+
+.scp-add-btn {
+    width: 28px;
+    height: 28px;
+    background: #3a3a3a;
+    border: 1px solid #555;
+    border-radius: 6px;
+    color: #ccc;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    flex-shrink: 0;
+    padding: 0;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.scp-add-btn:hover {
+    background: #4a4a4a;
+    border-color: #777;
+}
+
+.scp-custom-swatch {
+    width: 44px;
+    height: 28px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: transparent;
+    transition: background 0.15s;
+}
+
+.viewer-canvas-panel {
+    position: relative;
+    min-width: 0;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+/* ======================================
+   Add 버튼 그룹 (PointCloud2 / Path / Odometry)
+   ====================================== */
+.viewer-add-btn-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 4px;
+}
+
+/* 공통 Add 버튼 스타일 (기존 #viewer-add-topic-btn 기반) */
+#viewer-add-topic-btn,
+#viewer-add-path-btn,
+#viewer-add-odom-btn {
+    background: linear-gradient(135deg, #1f3a56, #1b3046);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 7px 12px;
+    cursor: pointer;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    text-align: left;
+    width: 100%;
+}
+
+#viewer-add-topic-btn:hover,
+#viewer-add-path-btn:hover,
+#viewer-add-odom-btn:hover {
+    border-color: rgba(74, 214, 255, 0.5);
+    box-shadow: 0 4px 16px rgba(74, 214, 255, 0.18);
+}
+
+#viewer-add-topic-btn:disabled,
+#viewer-add-path-btn:disabled,
+#viewer-add-odom-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* ======================================
+   Display Panel 섹션 레이블
+   ====================================== */
+.display-panel-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent);
+    padding: 2px 2px 2px 0;
+    border-bottom: 1px solid rgba(74, 214, 255, 0.2);
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
+
+/* ======================================
+   Path 아이템 스타일 (display-topic-item 확장)
+   ====================================== */
+.display-path-item {
+    border-left: 2px solid #00cc44;
+}
+
+/* ======================================
+   Odometry 아이템 스타일 (display-topic-item 확장)
+   ====================================== */
+.display-odom-item {
+    border-left: 2px solid #0088ff;
+}
+
+/* ======================================
+   Path / Odometry 설정 행 공통
+   ====================================== */
+
+/* 색상 행: label + color input */
+.display-item-color-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.display-item-color-row label {
+    font-size: 11px;
+    color: var(--muted);
+    flex-shrink: 0;
+    min-width: 50px;
+}
+
+/* HTML5 color input 스타일 */
+.display-item-color-input {
+    width: 36px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.display-item-color-input:hover {
+    border-color: var(--accent);
+}
+
+/* 궤적 토글 행: checkbox + label */
+.display-item-traj-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.display-item-traj-row input[type="checkbox"] {
+    width: 13px;
+    height: 13px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.display-item-traj-row label {
+    font-size: 11px;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+/* 최대 포인트 행: label + range slider */
+.display-item-maxpts-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.display-item-maxpts-row label {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.display-item-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+    accent-color: var(--accent);
+    transition: background 0.15s;
+}
+
+.display-item-slider:hover {
+    background: rgba(74, 214, 255, 0.25);
+}
+
+.display-item-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
     background: var(--accent);
-    color: #1e1e2e;
+    cursor: pointer;
+    border: 2px solid #1a2a3a;
+    box-shadow: 0 0 4px rgba(74, 214, 255, 0.4);
+}
+
+.display-item-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid #1a2a3a;
+    box-shadow: 0 0 4px rgba(74, 214, 255, 0.4);
+}
+
+/* Axes length / radius 숫자 입력 */
+.display-item-number-input {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    padding: 2px 6px;
+    outline: none;
+    text-align: right;
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+}
+
+.display-item-number-input:hover,
+.display-item-number-input:focus {
+    border-color: var(--accent);
+    background: rgba(74, 214, 255, 0.08);
+}
+
+/* PointCloud2 Size / Alpha / Decay Time row */
+.pc2-setting-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 6px;
+}
+
+.pc2-setting-row label {
+    font-size: 11px;
+    color: var(--muted);
+    user-select: none;
 }

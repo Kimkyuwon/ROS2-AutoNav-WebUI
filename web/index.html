@@ -331,14 +331,28 @@
             <div id="3d-viewer-subtab" class="subtab-content">
                 <div class="section card">
                     <h2>3D Viewer</h2>
-                    <div id="3d-viewer-container" style="width: 100%; height: 600px; background: #2a2a2a; border-radius: 8px; position: relative; overflow: hidden;">
-                        <!-- Three.js canvas will be inserted here -->
-                        <div id="3d-viewer-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 14px;">
-                            Initializing 3D Viewer...
+                    <div class="viewer-layout">
+                        <!-- 왼쪽: Display 패널 -->
+                        <div class="viewer-display-panel">
+                            <h3>Displays</h3>
+                            <div class="viewer-add-btn-group">
+                                <button id="viewer-add-topic-btn" onclick="selectDisplayTopics()">+ PointCloud2</button>
+                                <button id="viewer-add-path-btn" onclick="selectPathTopics()">+ Path</button>
+                                <button id="viewer-add-odom-btn" onclick="selectOdometryTopics()">+ Odometry</button>
+                            </div>
+                            <div id="viewer-display-panel-content">
+                                <!-- renderDisplayPanel()로 동적 렌더링 -->
+                            </div>
                         </div>
-                    </div>
-                    <div style="margin-top: 16px;">
-                        <button onclick="selectDisplayTopics()">Select PointCloud2 Topics</button>
+                        <!-- 오른쪽: 3D 뷰어 캔버스 -->
+                        <div class="viewer-canvas-panel">
+                            <div id="3d-viewer-container" style="width: 100%; height: 100%; background: #2a2a2a; border-radius: 8px; position: relative; overflow: hidden;">
+                                <!-- Three.js canvas will be inserted here -->
+                                <div id="3d-viewer-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 14px;">
+                                    Initializing 3D Viewer...
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -405,21 +419,59 @@
         </div>
     </div>
 
-    <!-- 3D Viewer Topic Selection Modal -->
+    <!-- Display Topic Selection Modal (3D Viewer) -->
     <div id="display-topic-modal" class="modal" style="display:none;">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Select PointCloud2 Topics</h3>
+                <h3>Add PointCloud2 Topic</h3>
                 <span class="close" onclick="closeDisplayTopicSelection()">&times;</span>
             </div>
             <div class="modal-body">
                 <div class="topic-list" id="display-topic-list">
-                    <!-- Display topic checkboxes will be loaded here -->
+                    <!-- PointCloud2 topic checkboxes will be loaded here -->
                 </div>
             </div>
             <div class="modal-footer">
                 <button onclick="confirmDisplayTopicSelection()">Confirm</button>
                 <button onclick="closeDisplayTopicSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Path Topic Select Modal -->
+    <div id="path-topic-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add Path Topic</h3>
+                <span class="close" onclick="closePathTopicSelection()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="topic-list" id="path-topic-list">
+                    <!-- nav_msgs/Path topic checkboxes will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="confirmPathTopicSelection()">Confirm</button>
+                <button onclick="closePathTopicSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Odometry Topic Select Modal -->
+    <div id="odom-topic-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add Odometry Topic</h3>
+                <span class="close" onclick="closeOdometryTopicSelection()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="topic-list" id="odom-topic-list">
+                    <!-- nav_msgs/Odometry topic checkboxes will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="confirmOdometryTopicSelection()">Confirm</button>
+                <button onclick="closeOdometryTopicSelection()">Cancel</button>
             </div>
         </div>
     </div>
