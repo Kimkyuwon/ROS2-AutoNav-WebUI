@@ -1575,6 +1575,31 @@ function createTopicNodes() {
 }
 
 // rosbridge 연결
+/**
+ * rosbridge 연결 상태를 topbar chip에 반영
+ * @param {'connected'|'disconnected'|'reconnecting'} state - 연결 상태
+ */
+function updateRosbridgeStatusChip(state) {
+    const chip = document.getElementById('rosbridge-status-chip');
+    if (!chip) return;
+
+    // 상태별 클래스/텍스트 맵
+    const stateMap = {
+        connected:    { cls: 'chip-connected',    text: 'rosbridge: connected' },
+        disconnected: { cls: 'chip-disconnected',  text: 'rosbridge: error' },
+        reconnecting: { cls: 'chip-reconnecting',  text: 'rosbridge: reconnecting...' }
+    };
+
+    const config = stateMap[state];
+    if (!config) return;
+
+    // 기존 상태 클래스 제거 후 새 클래스 적용
+    chip.classList.remove('chip-soft', 'chip-connected', 'chip-disconnected', 'chip-reconnecting');
+    chip.classList.add(config.cls);
+    chip.textContent = config.text;
+}
+window.updateRosbridgeStatusChip = updateRosbridgeStatusChip;
+
 function initRosbridge() {
     if (typeof ROSLIB === 'undefined') {
         console.error('ROSLIB not loaded');
@@ -1588,11 +1613,13 @@ function initRosbridge() {
 
         plotState.ros.on('connection', () => {
             console.log('[rosbridge] Connected to rosbridge');
+            updateRosbridgeStatusChip('connected');
             loadPlotTopics();
         });
 
         plotState.ros.on('error', (error) => {
             console.error('[rosbridge] Connection error:', error);
+            updateRosbridgeStatusChip('disconnected');
             // 연결 실패 메시지 표시
             const container = domCache.get('plot-tree');
             if (container) {
@@ -1602,6 +1629,7 @@ function initRosbridge() {
 
         plotState.ros.on('close', () => {
             console.log('[rosbridge] Connection closed. Attempting to reconnect...');
+            updateRosbridgeStatusChip('reconnecting');
             // 연결 끊김 메시지 표시
             const container = domCache.get('plot-tree');
             if (container) {

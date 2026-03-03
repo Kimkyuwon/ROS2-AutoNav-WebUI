@@ -19,7 +19,7 @@
             <div class="topbar-status">
                 <span class="chip" id="ros-domain-chip">ROS DOMAIN ID: 0</span>
                 <span class="chip chip-soft">Web: 8080</span>
-                <span class="chip chip-soft">rosbridge: 9090</span>
+                <span class="chip chip-soft" id="rosbridge-status-chip">rosbridge: 9090</span>
                 <span class="chip chip-soft" id="latency-indicator">latency: --ms</span>
             </div>
         </header>
@@ -331,16 +331,25 @@
             <div id="3d-viewer-subtab" class="subtab-content">
                 <div class="section card" style="position: relative;">
                     <h2>3D Viewer</h2>
-                    <!-- Reset 버튼: 카드 우상단 오버레이 -->
-                    <button id="viewer-reset-btn"
-                            onclick="resetAll3DViewer()"
-                            title="모든 토픽 구독 해제 및 씬 초기화"
-                            style="position:absolute; top:14px; right:18px; z-index:10;
-                                   padding:4px 12px; font-size:12px; cursor:pointer;
-                                   background:rgba(40,40,40,0.85); color:#fff;
-                                   border:1px solid rgba(255,255,255,0.25); border-radius:6px;">
-                        Reset
-                    </button>
+                    <!-- Reset / Snapshot 버튼: 카드 우상단 오버레이 -->
+                    <div style="position:absolute; top:14px; right:18px; z-index:10; display:flex; gap:6px;">
+                        <button id="viewer-snapshot-btn"
+                                onclick="take3DSnapshot()"
+                                title="현재 3D 뷰 PNG 저장"
+                                style="padding:4px 12px; font-size:12px; cursor:pointer;
+                                       background:rgba(40,40,40,0.85); color:#fff;
+                                       border:1px solid rgba(255,255,255,0.25); border-radius:6px;">
+                            Snapshot
+                        </button>
+                        <button id="viewer-reset-btn"
+                                onclick="resetAll3DViewer()"
+                                title="모든 토픽 구독 해제 및 씬 초기화"
+                                style="padding:4px 12px; font-size:12px; cursor:pointer;
+                                       background:rgba(40,40,40,0.85); color:#fff;
+                                       border:1px solid rgba(255,255,255,0.25); border-radius:6px;">
+                            Reset
+                        </button>
+                    </div>
                     <div class="viewer-layout">
                         <!-- 왼쪽: Display 패널 -->
                         <div class="viewer-display-panel">

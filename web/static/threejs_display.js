@@ -405,7 +405,7 @@ function initThreeJSDisplay() {
     viewer3DState.activeCamera = viewer3DState.camera;  // 기본: PerspectiveCamera
 
     // Create renderer
-    viewer3DState.renderer = new THREE.WebGLRenderer({ antialias: true });
+    viewer3DState.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     
     // Ensure container has valid dimensions
     if (containerWidth === 0 || containerHeight === 0) {
@@ -869,6 +869,9 @@ function connectToROS() {
     viewer3DState.ros.on('connection', function() {
         console.log('✓ Successfully connected to rosbridge:', rosbridgeUrl);
         viewer3DState.rosConnected = true;
+        if (typeof updateRosbridgeStatusChip === 'function') {
+            updateRosbridgeStatusChip('connected');
+        }
         // ROS 연결 후 백그라운드 TF frame 수집 시작
         startBackgroundFrameCollection();
     });
@@ -877,12 +880,18 @@ function connectToROS() {
         console.error('✗ Error connecting to rosbridge:', rosbridgeUrl);
         console.error('Error details:', error);
         viewer3DState.rosConnected = false;
+        if (typeof updateRosbridgeStatusChip === 'function') {
+            updateRosbridgeStatusChip('disconnected');
+        }
     });
 
     viewer3DState.ros.on('close', function() {
         console.log('✗ Connection to rosbridge closed');
         viewer3DState.rosConnected = false;
         console.log('Will retry in 3 seconds...');
+        if (typeof updateRosbridgeStatusChip === 'function') {
+            updateRosbridgeStatusChip('reconnecting');
+        }
         // Try to reconnect after 3 seconds
         setTimeout(connectToROS, 3000);
     });
@@ -4299,6 +4308,20 @@ window.closeFixedFrameDropdown = closeFixedFrameDropdown;
 window.onFixedFrameInput = onFixedFrameInput;
 window.onFixedFrameKeydown = onFixedFrameKeydown;
 window.onFixedFrameBlur = onFixedFrameBlur;
+
+// ─── Snapshot ────────────────────────────────────────────────────────────────
+function take3DSnapshot() {
+    if (!viewer3DState.renderer || !viewer3DState.scene) return;
+    const cam = viewer3DState.activeCamera || viewer3DState.camera;
+    viewer3DState.renderer.render(viewer3DState.scene, cam); // 최신 프레임 보장
+    const ts = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 15);
+    const dataURL = viewer3DState.renderer.domElement.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = dataURL;
+    a.download = `snapshot_${ts}.png`;
+    a.click();
+}
+window.take3DSnapshot = take3DSnapshot;
 
 console.log('=== Three.js Display script loaded ===');
 console.log('Functions exposed:', {
