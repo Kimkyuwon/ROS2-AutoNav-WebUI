@@ -262,7 +262,13 @@ const viewer3DState = {
     selectedPathTopics: [],         // 선택된 Path 토픽 목록
     selectedOdomTopics: [],         // 선택된 Odometry 토픽 목록
     trajectoryMaxPoints: 1000,      // 궤적 최대 포인트 수
-    decayObjects: new Map()         // topicName → [{ points: THREE.Points, time: DOMHighResTimeStamp }]
+    decayObjects: new Map(),        // topicName → [{ points: THREE.Points, time: DOMHighResTimeStamp }]
+    tfFrameTree: new Map(),         // childFrameId → { parentId, translation, quaternion, stamp }
+    tfObjects: new Map(),           // topicName → { group: THREE.Group, visible: boolean }
+    selectedTFTopics: [],           // 선택된 TF 토픽 목록
+    fixedFrame: 'map',              // FrameIDFilter 기준 프레임 (기본값: 'map')
+    pcFrameGroups: new Map(),       // topicName → THREE.Group (PC2 frame 래퍼)
+    topicFrameIds: new Map()        // topicName → last received ROS frame_id
 };
 
 // Get the active display container based on current subtab
@@ -407,8 +413,8 @@ function initThreeJSDisplay() {
     gridHelper.rotation.x = Math.PI / 2;  // Rotate to XY plane
     viewer3DState.scene.add(gridHelper);
 
-    // Add axes helper (X=red/forward, Y=green/left, Z=blue/up)
-    const axesHelper = new THREE.AxesHelper(5);
+    // Add axes helper (X=red/forward, Y=green/left, Z=blue/up) — 격자 2칸 크기
+    const axesHelper = new THREE.AxesHelper(2);
     viewer3DState.scene.add(axesHelper);
 
     // Add lights
@@ -455,10 +461,12 @@ function tickDecayObjects() {
         const decayMs   = (settings.decayTime || 0) * 1000;
         if (decayMs <= 0) return;
 
+        const pcFG = viewer3DState.pcFrameGroups.get(topicName);
         let removed = false;
         for (let i = arr.length - 1; i >= 0; i--) {
             if (now - arr[i].time > decayMs) {
-                viewer3DState.scene.remove(arr[i].points);
+                if (pcFG) pcFG.remove(arr[i].points);
+                else viewer3DState.scene.remove(arr[i].points);
                 arr[i].points.geometry.dispose();
                 arr[i].points.material.dispose();
                 arr.splice(i, 1);
@@ -664,29 +672,54 @@ function unsubscribeFromTopic(topicName) {
         viewer3DState.topicSubscriptions.delete(topicName);
     }
 
-    // Scene에서 PointCloud2 mesh 제거 및 GPU 리소스 dispose
-    if (viewer3DState.pointCloudMeshes[topicName]) {
-        viewer3DState.scene.remove(viewer3DState.pointCloudMeshes[topicName]);
-        viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
-        viewer3DState.pointCloudMeshes[topicName].material.dispose();
-        delete viewer3DState.pointCloudMeshes[topicName];
-        console.log('Removed point cloud mesh for topic:', topicName);
+    // PointCloud2 frameGroup 및 children 정리
+    const pcFG = viewer3DState.pcFrameGroups.get(topicName);
+    if (pcFG) {
+        // 일반 모드 mesh
+        if (viewer3DState.pointCloudMeshes[topicName]) {
+            pcFG.remove(viewer3DState.pointCloudMeshes[topicName]);
+            viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
+            viewer3DState.pointCloudMeshes[topicName].material.dispose();
+            delete viewer3DState.pointCloudMeshes[topicName];
+        }
+        // Decay 모드 누적 mesh
+        const decayArr = viewer3DState.decayObjects.get(topicName);
+        if (decayArr && decayArr.length > 0) {
+            decayArr.forEach(item => {
+                pcFG.remove(item.points);
+                item.points.geometry.dispose();
+                item.points.material.dispose();
+            });
+            viewer3DState.decayObjects.delete(topicName);
+        }
+        viewer3DState.scene.remove(pcFG);
+        viewer3DState.pcFrameGroups.delete(topicName);
+        console.log('Removed PC2 frame group for topic:', topicName);
+    } else {
+        // fallback: frameGroup 없는 경우 (이전 버전 호환)
+        if (viewer3DState.pointCloudMeshes[topicName]) {
+            viewer3DState.scene.remove(viewer3DState.pointCloudMeshes[topicName]);
+            viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
+            viewer3DState.pointCloudMeshes[topicName].material.dispose();
+            delete viewer3DState.pointCloudMeshes[topicName];
+        }
+        const decayArr = viewer3DState.decayObjects.get(topicName);
+        if (decayArr && decayArr.length > 0) {
+            decayArr.forEach(item => {
+                viewer3DState.scene.remove(item.points);
+                item.points.geometry.dispose();
+                item.points.material.dispose();
+            });
+            viewer3DState.decayObjects.delete(topicName);
+        }
     }
-    // Decay 모드 누적 mesh 정리
-    const decayArr = viewer3DState.decayObjects.get(topicName);
-    if (decayArr && decayArr.length > 0) {
-        decayArr.forEach(item => {
-            viewer3DState.scene.remove(item.points);
-            item.points.geometry.dispose();
-            item.points.material.dispose();
-        });
-        viewer3DState.decayObjects.delete(topicName);
-    }
+    viewer3DState.topicFrameIds.delete(topicName);
 
-    // Path 객체 정리
+    // Path 객체 정리 (frameGroup 래퍼 포함)
     const pathObj = viewer3DState.pathObjects.get(topicName);
     if (pathObj) {
-        viewer3DState.scene.remove(pathObj.line);
+        const rootObj = pathObj.frameGroup || pathObj.line;
+        viewer3DState.scene.remove(rootObj);
         pathObj.line.geometry.dispose();
         pathObj.line.material.dispose();
         viewer3DState.pathObjects.delete(topicName);
@@ -723,6 +756,23 @@ function unsubscribeFromTopic(topicName) {
         viewer3DState.trajectoryObjects.delete(topicName);
         console.log('Removed trajectory object for topic:', topicName);
     }
+
+    // TF 객체 정리 (group 내 모든 Line/Sprite GPU 리소스 해제)
+    const tfObj = viewer3DState.tfObjects.get(topicName);
+    if (tfObj) {
+        viewer3DState.scene.remove(tfObj.group);
+        tfObj.group.traverse(function(child) {
+            if (child.isLine || child.isSprite) {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    if (child.material.map) child.material.map.dispose();
+                    child.material.dispose();
+                }
+            }
+        });
+        viewer3DState.tfObjects.delete(topicName);
+        console.log('Removed TF object for topic:', topicName);
+    }
 }
 
 // Subscribe to PointCloud2 topic
@@ -755,10 +805,24 @@ function subscribeToPointCloud(topicName) {
 
     viewer3DState.topicSubscriptions.set(topicName, topic);
 
+    // PC2 frame 래퍼 그룹 (frame_id → fixedFrame 변환 적용 대상)
+    let pcFrameGroup = viewer3DState.pcFrameGroups.get(topicName);
+    if (!pcFrameGroup) {
+        pcFrameGroup = new THREE.Group();
+        viewer3DState.scene.add(pcFrameGroup);
+        viewer3DState.pcFrameGroups.set(topicName, pcFrameGroup);
+    }
+
     topic.subscribe(function(message) {
         // 숨겨진 토픽은 파싱 자체를 건너뜀 (CPU 절약)
         const mesh = viewer3DState.pointCloudMeshes[topicName];
         if (mesh && mesh.visible === false) return;
+
+        // frame_id 저장 및 frame 변환 적용
+        const frameId = (message.header && message.header.frame_id) ? message.header.frame_id : '';
+        viewer3DState.topicFrameIds.set(topicName, frameId);
+        applyFrameTransformToObject(pcFrameGroup, frameId);
+        if (!pcFrameGroup.visible) return;  // TF 없으면 파싱 스킵
 
         const settings   = viewer3DState.topicSettings.get(topicName) || {};
         const pointSize  = settings.pointSize  !== undefined ? settings.pointSize  : 0.1;
@@ -790,9 +854,9 @@ function subscribeToPointCloud(topicName) {
 
         if (decayTime > 0) {
             // ═══ DECAY 모드: 매 프레임 독립 Points 객체 생성·누적 ═══
-            // 기존 단일 mesh가 있으면 scene에서 제거 (모드 전환)
+            // 기존 단일 mesh가 있으면 frameGroup에서 제거 (모드 전환)
             if (viewer3DState.pointCloudMeshes[topicName]) {
-                viewer3DState.scene.remove(viewer3DState.pointCloudMeshes[topicName]);
+                pcFrameGroup.remove(viewer3DState.pointCloudMeshes[topicName]);
                 viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
                 viewer3DState.pointCloudMeshes[topicName].material.dispose();
                 viewer3DState.pointCloudMeshes[topicName] = null;
@@ -807,7 +871,7 @@ function subscribeToPointCloud(topicName) {
             geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
 
             const decayPoints = new THREE.Points(geo, makeMaterial(pointSize, alpha));
-            viewer3DState.scene.add(decayPoints);
+            pcFrameGroup.add(decayPoints);
 
             const arr = viewer3DState.decayObjects.get(topicName) || [];
             arr.push({ points: decayPoints, time: performance.now() });
@@ -819,7 +883,7 @@ function subscribeToPointCloud(topicName) {
             const decayArr = viewer3DState.decayObjects.get(topicName);
             if (decayArr && decayArr.length > 0) {
                 decayArr.forEach(item => {
-                    viewer3DState.scene.remove(item.points);
+                    pcFrameGroup.remove(item.points);
                     item.points.geometry.dispose();
                     item.points.material.dispose();
                 });
@@ -846,7 +910,7 @@ function subscribeToPointCloud(topicName) {
 
                 const newMesh = new THREE.Points(geometry, makeMaterial(pointSize, alpha));
                 viewer3DState.pointCloudMeshes[topicName] = newMesh;
-                viewer3DState.scene.add(newMesh);
+                pcFrameGroup.add(newMesh);
                 console.log('[PC2] Mesh added:', topicName, '|', count, 'pts');
 
             } else {
@@ -1125,8 +1189,9 @@ function renderDisplayPanel() {
     const pcTopics   = viewer3DState.displaySelectedTopics;
     const pathTopics = viewer3DState.selectedPathTopics;
     const odomTopics = viewer3DState.selectedOdomTopics;
+    const tfTopics   = viewer3DState.selectedTFTopics;
 
-    const hasAny = pcTopics.length > 0 || pathTopics.length > 0 || odomTopics.length > 0;
+    const hasAny = pcTopics.length > 0 || pathTopics.length > 0 || odomTopics.length > 0 || tfTopics.length > 0;
 
     if (!hasAny) {
         container.innerHTML = '<div style="font-size:12px; color: var(--muted); padding: 4px 2px;">구독 중인 토픽 없음</div>';
@@ -1365,7 +1430,8 @@ function renderDisplayPanel() {
             const pathLineWidth = settings.pathLineWidth || 2;
             const pathAlpha     = settings.pathAlpha     !== undefined ? settings.pathAlpha : 1.0;
             const pathObj       = viewer3DState.pathObjects.get(topicName);
-            const visible       = pathObj ? pathObj.line.visible !== false : true;
+            const _pathRoot     = pathObj ? (pathObj.frameGroup || pathObj.line) : null;
+            const visible       = _pathRoot ? _pathRoot.visible !== false : true;
 
             const item = document.createElement('div');
             item.className = 'display-topic-item display-path-item';
@@ -1629,6 +1695,149 @@ function renderDisplayPanel() {
             container.appendChild(item);
         });
     }
+
+    // ── TF 섹션 ──
+    if (tfTopics.length > 0) {
+        const tfLabel = document.createElement('div');
+        tfLabel.className = 'display-panel-section-label';
+        tfLabel.textContent = 'TF';
+        container.appendChild(tfLabel);
+
+        tfTopics.forEach(function(topicName) {
+            const tfObj   = viewer3DState.tfObjects.get(topicName);
+            const visible = tfObj ? tfObj.visible !== false : true;
+            const tfSettings = viewer3DState.topicSettings.get(topicName) || {};
+            const curAxesSize = tfSettings.tfAxesSize !== undefined ? tfSettings.tfAxesSize : 0.3;
+
+            const item = document.createElement('div');
+            item.className = 'display-topic-item display-tf-item';
+            item.dataset.topicName = topicName;
+
+            // 헤더: 체크박스 + 토픽명 + 제거 버튼
+            const header = document.createElement('div');
+            header.className = 'display-topic-item-header';
+
+            const checkbox = document.createElement('input');
+            checkbox.type    = 'checkbox';
+            checkbox.checked = visible;
+            checkbox.title   = 'TF 표시/숨기기';
+            checkbox.addEventListener('change', function() {
+                toggleTFVisible(topicName, this.checked);
+            });
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'display-topic-item-name';
+            const shortName = topicName.split('/').pop() || topicName;
+            nameSpan.textContent = shortName || topicName;
+            nameSpan.title = topicName;
+
+            // 제거 버튼
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'display-topic-remove-btn';
+            removeBtn.textContent = '✕';
+            removeBtn.title = '토픽 제거';
+            removeBtn.addEventListener('click', function() {
+                unsubscribeFromTopic(topicName);
+                viewer3DState.selectedTFTopics = viewer3DState.selectedTFTopics.filter(t => t !== topicName);
+                renderDisplayPanel();
+            });
+
+            header.appendChild(checkbox);
+            header.appendChild(nameSpan);
+            header.appendChild(removeBtn);
+            item.appendChild(header);
+
+            // ── 설정 영역: Axes Size / Axes Radius / Text Size ──
+            const settingsDiv = document.createElement('div');
+            settingsDiv.className = 'display-topic-item-settings';
+
+            // ── Axes Size ──
+            const axesSizeRow = document.createElement('div');
+            axesSizeRow.className = 'display-item-maxpts-row';
+
+            const axesSizeLabel = document.createElement('label');
+            axesSizeLabel.textContent = 'Axes Size';
+
+            const axesSizeInput = document.createElement('input');
+            axesSizeInput.type      = 'number';
+            axesSizeInput.min       = '0.01';
+            axesSizeInput.max       = '10';
+            axesSizeInput.step      = '0.01';
+            axesSizeInput.value     = curAxesSize;
+            axesSizeInput.className = 'display-item-number-input';
+            axesSizeInput.title     = 'TF Axes 길이 (m)';
+            axesSizeInput.addEventListener('change', function() {
+                const val = Math.max(0.01, parseFloat(this.value) || 0.3);
+                this.value = val;
+                updateTopicSetting(topicName, 'tfAxesSize', val);
+                viewer3DState.selectedTFTopics.forEach(function(tn) { rebuildTFScene(tn); });
+            });
+
+            axesSizeRow.appendChild(axesSizeLabel);
+            axesSizeRow.appendChild(axesSizeInput);
+            settingsDiv.appendChild(axesSizeRow);
+
+            // ── Axes Radius (화살표 원통 반경 — Odometry 동일) ──
+            const curAxesRadius = tfSettings.tfAxesRadius !== undefined ? tfSettings.tfAxesRadius : 0.01;
+
+            const axesRadRow = document.createElement('div');
+            axesRadRow.className = 'display-item-maxpts-row';
+
+            const axesRadLabel = document.createElement('label');
+            axesRadLabel.textContent = 'Axes Radius';
+
+            const axesRadInput = document.createElement('input');
+            axesRadInput.type      = 'number';
+            axesRadInput.min       = '0.001';
+            axesRadInput.max       = '1';
+            axesRadInput.step      = '0.001';
+            axesRadInput.value     = curAxesRadius;
+            axesRadInput.className = 'display-item-number-input';
+            axesRadInput.title     = 'TF 화살표 원통 반경 (m)';
+            axesRadInput.addEventListener('change', function() {
+                const val = Math.max(0.001, parseFloat(this.value) || 0.01);
+                this.value = val;
+                updateTopicSetting(topicName, 'tfAxesRadius', val);
+                viewer3DState.selectedTFTopics.forEach(function(tn) { rebuildTFScene(tn); });
+            });
+
+            axesRadRow.appendChild(axesRadLabel);
+            axesRadRow.appendChild(axesRadInput);
+            settingsDiv.appendChild(axesRadRow);
+
+            // ── Text Size (라벨 크기 — Axes Size 와 독립) ──
+            const curTextSize = tfSettings.tfTextSize !== undefined ? tfSettings.tfTextSize : 0.2;
+
+            const textSizeRow = document.createElement('div');
+            textSizeRow.className = 'display-item-maxpts-row';
+
+            const textSizeLabel = document.createElement('label');
+            textSizeLabel.textContent = 'Text Size';
+
+            const textSizeInput = document.createElement('input');
+            textSizeInput.type      = 'number';
+            textSizeInput.min       = '0.01';
+            textSizeInput.max       = '5';
+            textSizeInput.step      = '0.01';
+            textSizeInput.value     = curTextSize;
+            textSizeInput.className = 'display-item-number-input';
+            textSizeInput.title     = '프레임 이름 라벨 높이 (m)';
+            textSizeInput.addEventListener('change', function() {
+                const val = Math.max(0.01, parseFloat(this.value) || 0.2);
+                this.value = val;
+                updateTopicSetting(topicName, 'tfTextSize', val);
+                viewer3DState.selectedTFTopics.forEach(function(tn) { rebuildTFScene(tn); });
+            });
+
+            textSizeRow.appendChild(textSizeLabel);
+            textSizeRow.appendChild(textSizeInput);
+            settingsDiv.appendChild(textSizeRow);
+
+            item.appendChild(settingsDiv);
+
+            container.appendChild(item);
+        });
+    }
 }
 
 // =============================================
@@ -1666,11 +1875,16 @@ function subscribeToPath(topicName) {
     topic.subscribe(function(message) {
         if (!message.poses || message.poses.length === 0) return;
 
-        // 숨겨진 경우 스킵
+        // frame_id 저장
+        const frameId = (message.header && message.header.frame_id) ? message.header.frame_id : '';
+        viewer3DState.topicFrameIds.set(topicName, frameId);
+
         const existingObj = viewer3DState.pathObjects.get(topicName);
+
+        // 숨겨진 경우 스킵
         if (existingObj && existingObj.visible === false) return;
 
-        // poses → THREE.Vector3 배열 변환
+        // poses → THREE.Vector3 배열 변환 (로컬 frame 좌표 그대로)
         const positions = message.poses.map(poseStamped => {
             const p = poseStamped.pose.position;
             return new THREE.Vector3(p.x, p.y, p.z);
@@ -1680,20 +1894,26 @@ function subscribeToPath(topicName) {
             // 기존 라인 geometry 업데이트
             existingObj.line.geometry.dispose();
             existingObj.line.geometry = new THREE.BufferGeometry().setFromPoints(positions);
+            // frame transform 재적용
+            applyFrameTransformToObject(existingObj.frameGroup, frameId);
         } else {
             // 신규 THREE.Line 생성 (저장된 설정 반영)
-            const s       = viewer3DState.topicSettings.get(topicName) || {};
-            const color   = s.pathColor     ? parseInt(s.pathColor.replace('#', ''), 16) : 0x00ff00;
-            const width   = s.pathLineWidth || 2;
-            const a       = s.pathAlpha     !== undefined ? s.pathAlpha : 1.0;
+            const s        = viewer3DState.topicSettings.get(topicName) || {};
+            const color    = s.pathColor     ? parseInt(s.pathColor.replace('#', ''), 16) : 0x00ff00;
+            const width    = s.pathLineWidth || 2;
+            const a        = s.pathAlpha     !== undefined ? s.pathAlpha : 1.0;
             const geometry = new THREE.BufferGeometry().setFromPoints(positions);
             const material = new THREE.LineBasicMaterial({
                 color, linewidth: width,
                 transparent: a < 1.0, opacity: a,
             });
-            const line = new THREE.Line(geometry, material);
-            viewer3DState.scene.add(line);
-            viewer3DState.pathObjects.set(topicName, { line, visible: true });
+            const line       = new THREE.Line(geometry, material);
+            const frameGroup = new THREE.Group();
+            frameGroup.add(line);
+            viewer3DState.scene.add(frameGroup);
+            // frame transform 적용
+            applyFrameTransformToObject(frameGroup, frameId);
+            viewer3DState.pathObjects.set(topicName, { frameGroup, line, visible: true });
             console.log('[Path] Line added for topic:', topicName);
         }
     });
@@ -1726,7 +1946,8 @@ function disposeAxesGroup(axesGroup) {
 }
 
 /**
- * Odometry 위치/자세를 궤적 버퍼에 추가하고 axes group으로 시각화 (FIFO)
+ * Odometry 위치/자세(world 기준)를 궤적 버퍼에 추가하고 axes group으로 시각화 (FIFO).
+ * x,y,z,qx,qy,qz,qw 는 이미 fixedFrame 기준 world 좌표여야 함.
  * 각 포인트마다 독립적인 axes group을 생성하여 parentGroup에 추가.
  * maxPoints 초과 시 가장 오래된 axes group 제거(FIFO).
  *
@@ -1738,8 +1959,9 @@ function disposeAxesGroup(axesGroup) {
  * @param {number} qy - Quaternion y
  * @param {number} qz - Quaternion z
  * @param {number} qw - Quaternion w
+ * @param {string} [frameId] - 원본 ROS frame_id (topicFrameIds 저장용)
  */
-function updateTrajectory(topicName, x, y, z, qx, qy, qz, qw) {
+function updateTrajectory(topicName, x, y, z, qx, qy, qz, qw, frameId) {
     // per-topic 설정
     const settings  = viewer3DState.topicSettings.get(topicName) || {};
     const maxPoints = Math.min(
@@ -1750,6 +1972,11 @@ function updateTrajectory(topicName, x, y, z, qx, qy, qz, qw) {
     );
     const axesLength = settings.axesLength !== undefined ? settings.axesLength : 0.5;
     const axesRadius = settings.axesRadius !== undefined ? settings.axesRadius : 0.01;
+
+    // traj용 frameId 키 저장 (reapplyAllFrameTransforms에서는 사용하지 않음 — world 좌표로 직접 저장)
+    if (frameId !== undefined) {
+        viewer3DState.topicFrameIds.set(topicName + '_traj', frameId);
+    }
 
     let trajObj = viewer3DState.trajectoryObjects.get(topicName);
 
@@ -1762,7 +1989,7 @@ function updateTrajectory(topicName, x, y, z, qx, qy, qz, qw) {
         console.log('[Trajectory] Axes parent group created for topic:', topicName);
     }
 
-    // 새 axes group 생성 (position + quaternion 적용)
+    // 새 axes group 생성 (world position + quaternion 직접 적용)
     const axesGroup = createOdomAxesGroup(axesLength, axesRadius);
     axesGroup.position.set(x, y, z);
     axesGroup.setRotationFromQuaternion(new THREE.Quaternion(qx, qy, qz, qw));
@@ -1859,26 +2086,26 @@ function subscribeToOdometry(topicName) {
         const pos = message.pose.pose.position;
         const ori = message.pose.pose.orientation;
 
-        const x = pos.x;
-        const y = pos.y;
-        const z = pos.z;
+        const x  = pos.x,  y  = pos.y,  z  = pos.z;
+        const qx = ori.x, qy = ori.y, qz = ori.z, qw = ori.w;
+
+        // frame_id 저장 및 world pose 계산
+        const frameId = (message.header && message.header.frame_id) ? message.header.frame_id : '';
+        viewer3DState.topicFrameIds.set(topicName, frameId);
+        const worldPose = computeOdomWorldPose(x, y, z, qx, qy, qz, qw, frameId);
 
         let existingObj = viewer3DState.odomObjects.get(topicName);
 
         if (!existingObj) {
             // RViz 스타일 axes 그룹 최초 생성
-            const group = new THREE.Group();
-            const settings    = viewer3DState.topicSettings.get(topicName) || {};
-            const axesLength  = settings.axesLength !== undefined ? settings.axesLength : 0.5;
-            const axesRadius  = settings.axesRadius !== undefined ? settings.axesRadius : 0.01;
-
-            const axesGroup = createOdomAxesGroup(axesLength, axesRadius);
+            const group      = new THREE.Group();
+            const settings   = viewer3DState.topicSettings.get(topicName) || {};
+            const axesLength = settings.axesLength !== undefined ? settings.axesLength : 0.5;
+            const axesRadius = settings.axesRadius !== undefined ? settings.axesRadius : 0.01;
+            const axesGroup  = createOdomAxesGroup(axesLength, axesRadius);
             group.add(axesGroup);
-
-            group.position.set(x, y, z);
             viewer3DState.scene.add(group);
-
-            existingObj = { group, axesGroup, visible: true };
+            existingObj = { group, axesGroup, visible: true, lastPose: null };
             viewer3DState.odomObjects.set(topicName, existingObj);
             console.log('[Odom] Axes group added for topic:', topicName);
         } else {
@@ -1886,15 +2113,24 @@ function subscribeToOdometry(topicName) {
             if (existingObj.visible === false) return;
         }
 
-        // 위치 업데이트
-        existingObj.group.position.set(x, y, z);
+        // lastPose 갱신 (fixedFrame 변경 시 재계산에 사용)
+        existingObj.lastPose = { x, y, z, qx, qy, qz, qw, frameId };
 
-        // Quaternion으로 그룹 회전 업데이트
-        const q = new THREE.Quaternion(ori.x, ori.y, ori.z, ori.w);
-        existingObj.group.setRotationFromQuaternion(q);
+        if (!worldPose) {
+            // TF 없음 → 숨김
+            existingObj.group.visible = false;
+        } else {
+            existingObj.group.visible = true;
+            existingObj.group.position.copy(worldPose.position);
+            existingObj.group.setRotationFromQuaternion(worldPose.quaternion);
+        }
 
-        // 궤적 업데이트 (quaternion 전달 → 각 포인트에 axes 방향 적용)
-        updateTrajectory(topicName, x, y, z, ori.x, ori.y, ori.z, ori.w);
+        // 궤적 업데이트 (world pose 전달)
+        if (worldPose) {
+            updateTrajectory(topicName, worldPose.position.x, worldPose.position.y, worldPose.position.z,
+                worldPose.quaternion.x, worldPose.quaternion.y, worldPose.quaternion.z, worldPose.quaternion.w,
+                frameId);
+        }
     });
 
     return topic;
@@ -1984,7 +2220,8 @@ async function getAvailableOdometryTopics() {
 function togglePathVisible(topicName, visible) {
     const pathObj = viewer3DState.pathObjects.get(topicName);
     if (pathObj) {
-        pathObj.line.visible = visible;
+        const rootObj = pathObj.frameGroup || pathObj.line;
+        rootObj.visible = visible;
         pathObj.visible = visible;
         console.log(`[Path] ${topicName} visibility: ${visible}`);
     }
@@ -2368,6 +2605,588 @@ function confirmOdometryTopicSelection() {
     console.log('[Odom] Selected topics:', viewer3DState.selectedOdomTopics);
 }
 
+// =============================================
+// TFRenderer: tf2_msgs/TFMessage → Three.js 시각화
+// =============================================
+
+/**
+ * Canvas 기반 텍스트 Sprite 생성 (frame 이름 라벨)
+ * @param {string} text - 표시할 텍스트
+ * @param {Object} options - {fontSize, textColor, bgColor, labelWidth, labelHeight}
+ * @returns {THREE.Sprite}
+ */
+function createTextSprite(text, options = {}) {
+    const fontSize    = options.fontSize    || 14;
+    const textColor   = options.textColor   || 'rgba(255,255,255,1)';
+    const bgColor     = options.bgColor;          // undefined = 배경 없음
+    const labelWidth  = options.labelWidth  !== undefined ? options.labelWidth  : 2.0;
+    const labelHeight = options.labelHeight !== undefined ? options.labelHeight : 0.5;
+
+    const canvas = document.createElement('canvas');
+    canvas.width  = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+
+    // 배경 (bgColor 지정 시에만 그림)
+    if (bgColor && bgColor !== 'transparent' && bgColor !== 'rgba(0,0,0,0)') {
+        ctx.fillStyle = bgColor;
+        ctx.beginPath();
+        ctx.roundRect(4, 4, canvas.width - 8, canvas.height - 8, 6);
+        ctx.fill();
+    }
+
+    // 텍스트 (그림자로 가독성 확보)
+    ctx.font         = `bold ${fontSize}px Arial`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor  = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur   = 5;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+    ctx.fillStyle    = textColor;
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const texture  = new THREE.CanvasTexture(canvas);
+    const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+    const sprite   = new THREE.Sprite(material);
+    sprite.scale.set(labelWidth, labelHeight, 1);
+
+    return sprite;
+}
+
+/**
+ * TF 메시지 파싱: message.transforms 순회하여 viewer3DState.tfFrameTree 업데이트
+ * @param {Object} message - tf2_msgs/msg/TFMessage 메시지
+ */
+function parseTFMessage(message) {
+    if (!message.transforms || message.transforms.length === 0) return;
+
+    message.transforms.forEach(function(transformStamped) {
+        const childId  = transformStamped.child_frame_id;
+        const parentId = transformStamped.header.frame_id;
+        const t        = transformStamped.transform.translation;
+        const r        = transformStamped.transform.rotation;
+
+        viewer3DState.tfFrameTree.set(childId, {
+            parentId:    parentId,
+            translation: { x: t.x, y: t.y, z: t.z },
+            quaternion:  { x: r.x, y: r.y, z: r.z, w: r.w },
+            stamp:       transformStamped.header.stamp
+        });
+    });
+}
+
+/**
+ * frame을 루트까지 역추적하여 경로(frames 배열)와 각 구간 변환(transforms)을 반환.
+ * transforms[i] = frames[i](child)가 frames[i+1](parent) 기준에서 가진 변환.
+ * @param {string} startFrame
+ * @returns {{ frames: string[], transforms: {translation, quaternion}[] }}
+ */
+function _pathToRoot(startFrame) {
+    const frames     = [startFrame];
+    const transforms = [];
+    let current      = startFrame;
+    const visited    = new Set([startFrame]);
+
+    while (viewer3DState.tfFrameTree.has(current)) {
+        const entry    = viewer3DState.tfFrameTree.get(current);
+        const parentId = entry.parentId;
+        if (!parentId || parentId === '' || visited.has(parentId)) break;
+        transforms.push({ translation: entry.translation, quaternion: entry.quaternion });
+        frames.push(parentId);
+        visited.add(parentId);
+        current = parentId;
+    }
+    return { frames, transforms };
+}
+
+/**
+ * chain(child→parent 방향 transforms 배열)을 역순으로 누적 적용하여
+ * 시작 frame 원점의 위치/방향을 parent 기준 좌표계로 산출.
+ * chainLen 개 변환만 사용(0이면 identity).
+ */
+function _accumulateTransform(transforms, chainLen) {
+    let pos  = new THREE.Vector3(0, 0, 0);
+    let quat = new THREE.Quaternion(0, 0, 0, 1);
+    for (let i = chainLen - 1; i >= 0; i--) {
+        const t  = transforms[i];
+        const lp = new THREE.Vector3(t.translation.x, t.translation.y, t.translation.z);
+        const lq = new THREE.Quaternion(t.quaternion.x, t.quaternion.y, t.quaternion.z, t.quaternion.w);
+        lp.applyQuaternion(quat);
+        pos.add(lp);
+        quat.multiply(lq);
+    }
+    return { pos, quat };
+}
+
+/**
+ * frameId → fixedFrame 기준의 world 변환 계산 (위치 + 회전).
+ * RViz tf2 방식의 LCA(최소 공통 조상) 알고리즘 적용 —
+ * fixedFrame이 frameId의 조상/자손/형제 등 어떤 관계여도 정확하게 처리.
+ *
+ * @param {string} frameId    - 대상 frame ID
+ * @param {string} fixedFrame - 기준 frame ID
+ * @returns {{position: THREE.Vector3, quaternion: THREE.Quaternion}|null} 변환 불가 시 null
+ */
+function computeWorldTransform(frameId, fixedFrame) {
+    if (frameId === fixedFrame) {
+        return {
+            position:   new THREE.Vector3(0, 0, 0),
+            quaternion: new THREE.Quaternion(0, 0, 0, 1)
+        };
+    }
+
+    // frameId, fixedFrame 각각 루트까지 경로 수집
+    const fromPath = _pathToRoot(frameId);
+    const toPath   = _pathToRoot(fixedFrame);
+
+    // LCA 탐색: fromPath.frames 중 toPath.frames에 있는 첫 번째 공통 frame
+    const toFrameIndex = new Map();
+    toPath.frames.forEach(function(f, i) { toFrameIndex.set(f, i); });
+
+    let fromToLca = -1;   // fromPath.frames 에서 LCA 인덱스
+    let toToLca   = -1;   // toPath.frames   에서 LCA 인덱스
+    for (let i = 0; i < fromPath.frames.length; i++) {
+        if (toFrameIndex.has(fromPath.frames[i])) {
+            fromToLca = i;
+            toToLca   = toFrameIndex.get(fromPath.frames[i]);
+            break;
+        }
+    }
+    if (fromToLca < 0) return null;  // 공통 조상 없음 → 변환 불가
+
+    // T_LCA_frameId  : frameId 원점의 LCA 기준 위치/방향
+    const A = _accumulateTransform(fromPath.transforms, fromToLca);
+
+    // T_LCA_fixedFrame : fixedFrame 원점의 LCA 기준 위치/방향
+    const B = _accumulateTransform(toPath.transforms,   toToLca);
+
+    // T_fixedFrame_frameId = inv(T_LCA_fixedFrame) ∘ T_LCA_frameId
+    //   invQuat = B.quat.conjugate()
+    //   resultPos  = invQuat * (A.pos - B.pos)
+    //   resultQuat = invQuat * A.quat
+    const invQuat    = B.quat.clone().invert();
+    const resultPos  = A.pos.clone().sub(B.pos).applyQuaternion(invQuat);
+    const resultQuat = invQuat.clone().multiply(A.quat);
+
+    return { position: resultPos, quaternion: resultQuat };
+}
+
+/**
+ * Three.js 오브젝트에 frameId → fixedFrame 좌표 변환을 적용.
+ * TF 경로가 없으면 오브젝트를 숨기고 false 반환.
+ * @param {THREE.Object3D} object - position/quaternion 변경 대상
+ * @param {string} frameId        - 오브젝트가 표현된 ROS frame ID
+ * @returns {boolean} 변환 적용(표시) 성공 여부
+ */
+function applyFrameTransformToObject(object, frameId) {
+    const fixedFrame = viewer3DState.fixedFrame;
+    if (!frameId || frameId === fixedFrame) {
+        object.position.set(0, 0, 0);
+        object.quaternion.set(0, 0, 0, 1);
+        object.visible = true;
+        return true;
+    }
+    const transform = computeWorldTransform(frameId, fixedFrame);
+    if (!transform) {
+        object.visible = false;
+        return false;
+    }
+    object.position.copy(transform.position);
+    object.quaternion.copy(transform.quaternion);
+    object.visible = true;
+    return true;
+}
+
+/**
+ * fixedFrame 변경 또는 TF 업데이트 시 PointCloud2 / Path / Odometry / Trajectory
+ * 시각화 오브젝트에 새 frame transform 재적용.
+ */
+function reapplyAllFrameTransforms() {
+    // ── PointCloud2 frame groups ──
+    viewer3DState.pcFrameGroups.forEach(function(fg, topicName) {
+        const frameId = viewer3DState.topicFrameIds.get(topicName);
+        if (frameId) applyFrameTransformToObject(fg, frameId);
+    });
+
+    // ── Path frame groups ──
+    viewer3DState.pathObjects.forEach(function(pathObj, topicName) {
+        if (pathObj.frameGroup) {
+            const frameId = viewer3DState.topicFrameIds.get(topicName);
+            if (frameId) applyFrameTransformToObject(pathObj.frameGroup, frameId);
+        }
+    });
+
+    // ── Odometry: lastPose 재계산 ──
+    viewer3DState.odomObjects.forEach(function(odomObj, topicName) {
+        if (!odomObj.lastPose) return;
+        const { x, y, z, qx, qy, qz, qw, frameId } = odomObj.lastPose;
+        const worldPose = computeOdomWorldPose(x, y, z, qx, qy, qz, qw, frameId);
+        if (!worldPose) {
+            odomObj.group.visible = false;
+        } else {
+            odomObj.group.position.copy(worldPose.position);
+            odomObj.group.setRotationFromQuaternion(worldPose.quaternion);
+            if (odomObj.visible !== false) odomObj.group.visible = true;
+        }
+    });
+
+    // ── Trajectory frame groups ──
+    viewer3DState.trajectoryObjects.forEach(function(trajObj, topicName) {
+        if (trajObj.frameGroup) {
+            const frameId = viewer3DState.topicFrameIds.get(topicName + '_traj');
+            if (frameId) applyFrameTransformToObject(trajObj.frameGroup, frameId);
+        }
+    });
+}
+
+/**
+ * Odometry 메시지의 (x,y,z,quat) in frameId를 fixedFrame 기준 world pose로 변환.
+ * @returns {{position: THREE.Vector3, quaternion: THREE.Quaternion}|null}
+ */
+function computeOdomWorldPose(x, y, z, qx, qy, qz, qw, frameId) {
+    const fixedFrame = viewer3DState.fixedFrame;
+    if (!frameId || frameId === fixedFrame) {
+        return {
+            position:   new THREE.Vector3(x, y, z),
+            quaternion: new THREE.Quaternion(qx, qy, qz, qw)
+        };
+    }
+    const T = computeWorldTransform(frameId, fixedFrame);
+    if (!T) return null;
+
+    const localPos = new THREE.Vector3(x, y, z);
+    localPos.applyQuaternion(T.quaternion);
+    const worldPos  = T.position.clone().add(localPos);
+    const worldQuat = T.quaternion.clone().multiply(new THREE.Quaternion(qx, qy, qz, qw));
+    return { position: worldPos, quaternion: worldQuat };
+}
+
+/**
+ * TF 씬 재빌드: tfFrameTree의 모든 frame(child + root)에 대해 world 변환 계산 후
+ * createOdomAxesGroup(화살표), THREE.Line(연결선), THREE.Sprite(라벨)로 구성
+ * @param {string} topicName - TF 토픽명 (tfObjects Map의 키)
+ */
+function rebuildTFScene(topicName) {
+    const fixedFrame = viewer3DState.fixedFrame;
+
+    // 기존 group 완전 정리 (GPU 리소스 포함)
+    const prevObj = viewer3DState.tfObjects.get(topicName);
+    if (prevObj) {
+        viewer3DState.scene.remove(prevObj.group);
+        prevObj.group.traverse(function(child) {
+            if (child.isLine || child.isSprite || child.isMesh) {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    if (child.material.map) child.material.map.dispose();
+                    child.material.dispose();
+                }
+            }
+        });
+    }
+
+    // 설정 읽기
+    const group      = new THREE.Group();
+    const visible    = prevObj ? prevObj.visible : true;
+    const settings   = viewer3DState.topicSettings.get(topicName) || {};
+    const axesSize   = settings.tfAxesSize   !== undefined ? settings.tfAxesSize   : 0.3;
+    const axesRadius = settings.tfAxesRadius !== undefined ? settings.tfAxesRadius : 0.01;
+    const textSize   = settings.tfTextSize   !== undefined ? settings.tfTextSize   : 0.2;
+
+    // ── 렌더링 대상: child 프레임 + parent(루트 포함) 모든 프레임 수집 ──
+    const allFrames = new Set();
+    viewer3DState.tfFrameTree.forEach(function(entry, childId) {
+        allFrames.add(childId);
+        if (entry.parentId && entry.parentId !== '') allFrames.add(entry.parentId);
+    });
+
+    allFrames.forEach(function(frameId) {
+        const worldTransform = computeWorldTransform(frameId, fixedFrame);
+        if (!worldTransform) return;  // fixedFrame 까지 경로 없음 → 스킵
+
+        // 이 frame이 child인 경우 parent 정보 조회 (루트 frame은 entry 없음)
+        const entry = viewer3DState.tfFrameTree.get(frameId);
+        const parentTransform = (entry && entry.parentId && entry.parentId !== '')
+            ? computeWorldTransform(entry.parentId, fixedFrame)
+            : null;
+
+        // 1. 화살표 Axes (X=빨강, Y=초록, Z=파랑) — Odometry 동일 스타일 cylinder+cone
+        const axesGroup = createOdomAxesGroup(axesSize, axesRadius);
+        axesGroup.position.copy(worldTransform.position);
+        axesGroup.setRotationFromQuaternion(worldTransform.quaternion);
+        group.add(axesGroup);
+
+        // 2. 연결선: parent origin → child origin (노란색)
+        if (parentTransform) {
+            const linePoints = [
+                parentTransform.position.clone(),
+                worldTransform.position.clone()
+            ];
+            const lineGeo = new THREE.BufferGeometry().setFromPoints(linePoints);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 1 });
+            const line    = new THREE.Line(lineGeo, lineMat);
+            group.add(line);
+        }
+
+        // 3. frame 이름 라벨 (Sprite) — textSize로 독립 제어, 로컬 Z 방향 오프셋
+        const labelH       = Math.max(0.04, textSize);
+        const labelW       = labelH * 5;
+        const label        = createTextSprite(frameId, { fontSize: 13, labelWidth: labelW, labelHeight: labelH });
+        const localZOffset = new THREE.Vector3(0, 0, axesSize + labelH * 0.6);
+        localZOffset.applyQuaternion(worldTransform.quaternion);
+        label.position.copy(worldTransform.position).add(localZOffset);
+        group.add(label);
+    });
+
+    group.visible = visible;
+    viewer3DState.scene.add(group);
+    viewer3DState.tfObjects.set(topicName, { group, visible });
+    console.log('[TF] Scene rebuilt for topic:', topicName, '| frames:', viewer3DState.tfFrameTree.size);
+
+    // Fixed Frame datalist 업데이트 (알려진 프레임 ID 목록)
+    updateFixedFrameOptions();
+
+    // TF 업데이트 → PointCloud2 / Path / Odometry frame transform 재적용
+    reapplyAllFrameTransforms();
+}
+
+/**
+ * Fixed Frame input의 datalist를 현재 tfFrameTree 프레임 ID로 업데이트.
+ * TF 구독 중일 때 rebuildTFScene에서 호출되어 자동으로 최신 목록 유지.
+ */
+function updateFixedFrameOptions() {
+    const datalist = document.getElementById('fixed-frame-list');
+    if (!datalist) return;
+
+    // 모든 알려진 frame ID 수집 (child + parent)
+    const frames = new Set();
+    viewer3DState.tfFrameTree.forEach(function(entry, childId) {
+        frames.add(childId);
+        if (entry.parentId && entry.parentId !== '') frames.add(entry.parentId);
+    });
+
+    // 현재 datalist 옵션과 비교 — 변경이 있을 때만 재렌더
+    const existing = new Set(Array.from(datalist.options).map(o => o.value));
+    if (frames.size === existing.size && [...frames].every(f => existing.has(f))) return;
+
+    datalist.innerHTML = '';
+    const sorted = Array.from(frames).sort();
+    sorted.forEach(function(frameId) {
+        const option = document.createElement('option');
+        option.value = frameId;
+        datalist.appendChild(option);
+    });
+}
+
+/**
+ * TF 토픽 구독 (tf2_msgs/msg/TFMessage)
+ * 메시지 수신마다 parseTFMessage() → throttle 100ms → rebuildTFScene()
+ * @param {string} topicName - TF 토픽명 ('/tf' 또는 '/tf_static')
+ * @returns {ROSLIB.Topic} 구독 객체
+ */
+function subscribeToTF(topicName) {
+    if (!viewer3DState.rosConnected) {
+        console.warn('[TF] Not connected to ROS');
+        return;
+    }
+
+    // 재구독 방지
+    if (viewer3DState.topicSubscriptions.has(topicName)) {
+        return viewer3DState.topicSubscriptions.get(topicName);
+    }
+
+    console.log('[TF] Subscribing to topic:', topicName);
+
+    const topic = new ROSLIB.Topic({
+        ros:          viewer3DState.ros,
+        name:         topicName,
+        messageType:  'tf2_msgs/msg/TFMessage',
+        throttle_rate: 100,   // 최대 10Hz
+        queue_length:  1
+    });
+
+    viewer3DState.topicSubscriptions.set(topicName, topic);
+
+    // throttle 변수: 100ms 이내 중복 rebuildTFScene 방지
+    let _tfThrottleTimer = null;
+
+    topic.subscribe(function(message) {
+        // 숨겨진 경우 파싱 스킵 (CPU 절약)
+        const tfObj = viewer3DState.tfObjects.get(topicName);
+        if (tfObj && tfObj.visible === false) return;
+
+        parseTFMessage(message);
+
+        if (_tfThrottleTimer) return;
+        _tfThrottleTimer = setTimeout(function() {
+            _tfThrottleTimer = null;
+            rebuildTFScene(topicName);
+        }, 100);
+    });
+
+    return topic;
+}
+
+/**
+ * Fixed Frame 변경 → 구독 중인 모든 TF 토픽에 대해 rebuildTFScene() 재호출
+ * @param {string} newFrame - 새 기준 frame ID (예: 'map', 'odom', 'base_link')
+ */
+function setFixedFrame(newFrame) {
+    newFrame = (newFrame || '').trim();
+    if (!newFrame || newFrame === viewer3DState.fixedFrame) return;
+
+    viewer3DState.fixedFrame = newFrame;
+    console.log('[TF] Fixed frame changed to:', newFrame);
+
+    // 구독 중인 모든 TF 토픽 씬 재빌드
+    viewer3DState.selectedTFTopics.forEach(function(topicName) {
+        rebuildTFScene(topicName);
+    });
+
+    // PointCloud2 / Path / Odometry 오브젝트 frame transform 재적용
+    reapplyAllFrameTransforms();
+}
+
+/**
+ * TF 가시성 토글 (그룹 show/hide)
+ * @param {string} topicName
+ * @param {boolean} visible
+ */
+function toggleTFVisible(topicName, visible) {
+    const tfObj = viewer3DState.tfObjects.get(topicName);
+    if (tfObj) {
+        tfObj.group.visible = visible;
+        tfObj.visible = visible;
+        console.log('[TF]', topicName, 'visibility:', visible);
+    }
+}
+
+/**
+ * 사용 가능한 TF 토픽 목록 조회 (tf2_msgs/msg/TFMessage)
+ * @returns {Promise<string[]>}
+ */
+async function getAvailableTFTopics() {
+    if (!viewer3DState.rosConnected) {
+        console.log('[TF] Waiting for ROS connection...');
+        const connected = await waitForROSConnection(5000);
+        if (!connected) {
+            console.warn('[TF] Not connected to ROS after timeout');
+            return [];
+        }
+    }
+
+    return new Promise(function(resolve) {
+        viewer3DState.ros.getTopics(function(topics) {
+            const tfTopics = [];
+            if (topics.topics && topics.types) {
+                topics.topics.forEach(function(topic, index) {
+                    const type = topics.types[index];
+                    if (type === 'tf2_msgs/TFMessage' || type === 'tf2_msgs/msg/TFMessage') {
+                        tfTopics.push(topic);
+                    }
+                });
+            }
+            // /tf, /tf_static가 발행되지 않더라도 기본값으로 포함
+            ['/tf', '/tf_static'].forEach(function(defaultTopic) {
+                if (!tfTopics.includes(defaultTopic)) {
+                    tfTopics.push(defaultTopic);
+                }
+            });
+            console.log('[TF] Available TF topics:', tfTopics);
+            resolve(tfTopics);
+        }, function(error) {
+            console.error('[TF] Failed to get topics:', error);
+            resolve(['/tf', '/tf_static']);
+        });
+    });
+}
+
+/**
+ * TF 토픽 선택 다이얼로그 열기
+ */
+async function selectTFTopics() {
+    if (!viewer3DState.rosConnected) {
+        alert('Not connected to ROS. Make sure rosbridge_server is running:\n\nros2 launch rosbridge_server rosbridge_websocket_launch.xml');
+        return;
+    }
+
+    const btn = document.getElementById('viewer-add-tf-btn');
+    const originalText = btn ? btn.textContent : '';
+    if (btn) { btn.textContent = 'Loading...'; btn.disabled = true; }
+
+    let topics = [];
+    try {
+        topics = await getAvailableTFTopics();
+    } finally {
+        if (btn) { btn.textContent = originalText; btn.disabled = false; }
+    }
+
+    const modal     = document.getElementById('tf-topic-modal');
+    const topicList = document.getElementById('tf-topic-list');
+    if (!modal || !topicList) {
+        console.error('[TF] Topic modal element not found in HTML');
+        return;
+    }
+
+    topicList.innerHTML = '';
+    topics.forEach(function(topic) {
+        const div = document.createElement('div');
+        div.className = 'topic-item';
+
+        const checkbox = document.createElement('input');
+        checkbox.type    = 'checkbox';
+        checkbox.id      = `tf-topic-cb-${topic}`;
+        checkbox.value   = topic;
+        checkbox.checked = viewer3DState.selectedTFTopics.includes(topic);
+
+        const label = document.createElement('label');
+        label.htmlFor     = `tf-topic-cb-${topic}`;
+        label.textContent = topic;
+
+        div.appendChild(checkbox);
+        div.appendChild(label);
+        topicList.appendChild(div);
+    });
+
+    modal.style.display = 'block';
+}
+
+/**
+ * TF 토픽 선택 모달 닫기
+ */
+function closeTFTopicSelection() {
+    const modal = document.getElementById('tf-topic-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+/**
+ * TF 토픽 선택 확인: 체크된 토픽 구독, 해제된 토픽 정리
+ */
+function confirmTFTopicSelection() {
+    const checkboxes = document.querySelectorAll('#tf-topic-list input[type="checkbox"]');
+    const newTopics  = [];
+    checkboxes.forEach(function(cb) { if (cb.checked) newTopics.push(cb.value); });
+
+    // 제거된 토픽: 구독 해제 및 Three.js 리소스 정리
+    viewer3DState.selectedTFTopics.forEach(function(topic) {
+        if (!newTopics.includes(topic)) {
+            unsubscribeFromTopic(topic);
+        }
+    });
+
+    // 신규 토픽: 구독 시작
+    newTopics.forEach(function(topic) {
+        if (!viewer3DState.selectedTFTopics.includes(topic)) {
+            subscribeToTF(topic);
+        }
+    });
+
+    viewer3DState.selectedTFTopics = newTopics;
+    closeTFTopicSelection();
+    renderDisplayPanel();
+    console.log('[TF] Selected topics:', viewer3DState.selectedTFTopics);
+}
+
 // Expose functions to global scope for onclick handlers
 window.initThreeJSDisplay = initThreeJSDisplay;
 window.initialize3DViewer = initialize3DViewer;
@@ -2396,6 +3215,15 @@ window.confirmPathTopicSelection = confirmPathTopicSelection;
 window.selectOdometryTopics = selectOdometryTopics;
 window.closeOdometryTopicSelection = closeOdometryTopicSelection;
 window.confirmOdometryTopicSelection = confirmOdometryTopicSelection;
+// TF 관련 함수
+window.subscribeToTF = subscribeToTF;
+window.setFixedFrame = setFixedFrame;
+window.toggleTFVisible = toggleTFVisible;
+window.selectTFTopics = selectTFTopics;
+window.closeTFTopicSelection = closeTFTopicSelection;
+window.confirmTFTopicSelection = confirmTFTopicSelection;
+window.rebuildTFScene = rebuildTFScene;
+window.updateFixedFrameOptions = updateFixedFrameOptions;
 
 console.log('=== Three.js Display script loaded ===');
 console.log('Functions exposed:', {

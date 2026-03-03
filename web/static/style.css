@@ -1248,6 +1248,24 @@ h3 {
     gap: 6px;
 }
 
+.display-topic-remove-btn {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    line-height: 1;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.display-topic-remove-btn:hover {
+    color: #ff6060;
+    background: rgba(255, 60, 60, 0.12);
+}
+
 .display-topic-item-header input[type="checkbox"] {
     width: 14px;
     height: 14px;
@@ -1487,6 +1505,40 @@ h3 {
 }
 
 /* ======================================
+   Fixed Frame 입력 행
+   ====================================== */
+.fixed-frame-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.fixed-frame-label {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.fixed-frame-input {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12px;
+    padding: 4px 8px;
+    outline: none;
+    min-width: 0;
+}
+
+.fixed-frame-input:focus {
+    border-color: rgba(74, 214, 255, 0.5);
+    box-shadow: 0 0 0 2px rgba(74, 214, 255, 0.1);
+}
+
+/* ======================================
    Add 버튼 그룹 (PointCloud2 / Path / Odometry)
    ====================================== */
 .viewer-add-btn-group {
@@ -1499,7 +1551,8 @@ h3 {
 /* 공통 Add 버튼 스타일 (기존 #viewer-add-topic-btn 기반) */
 #viewer-add-topic-btn,
 #viewer-add-path-btn,
-#viewer-add-odom-btn {
+#viewer-add-odom-btn,
+#viewer-add-tf-btn {
     background: linear-gradient(135deg, #1f3a56, #1b3046);
     color: var(--text);
     border: 1px solid var(--border);
@@ -1515,14 +1568,16 @@ h3 {
 
 #viewer-add-topic-btn:hover,
 #viewer-add-path-btn:hover,
-#viewer-add-odom-btn:hover {
+#viewer-add-odom-btn:hover,
+#viewer-add-tf-btn:hover {
     border-color: rgba(74, 214, 255, 0.5);
     box-shadow: 0 4px 16px rgba(74, 214, 255, 0.18);
 }
 
 #viewer-add-topic-btn:disabled,
 #viewer-add-path-btn:disabled,
-#viewer-add-odom-btn:disabled {
+#viewer-add-odom-btn:disabled,
+#viewer-add-tf-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
 }

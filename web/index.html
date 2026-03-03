@@ -335,10 +335,24 @@
                         <!-- 왼쪽: Display 패널 -->
                         <div class="viewer-display-panel">
                             <h3>Displays</h3>
+                            <!-- Fixed Frame 입력 (datalist로 TF 프레임 목록 선택 가능) -->
+                            <div class="fixed-frame-row">
+                                <label class="fixed-frame-label">Fixed Frame:</label>
+                                <input id="fixed-frame-input" class="fixed-frame-input"
+                                       list="fixed-frame-list"
+                                       value="map"
+                                       placeholder="e.g. map"
+                                       title="TF 기준 프레임 (클릭 또는 직접 입력)"
+                                       onchange="setFixedFrame(this.value)" />
+                                <datalist id="fixed-frame-list">
+                                    <!-- TF 프레임 목록이 JS로 동적 추가됨 -->
+                                </datalist>
+                            </div>
                             <div class="viewer-add-btn-group">
                                 <button id="viewer-add-topic-btn" onclick="selectDisplayTopics()">+ PointCloud2</button>
                                 <button id="viewer-add-path-btn" onclick="selectPathTopics()">+ Path</button>
                                 <button id="viewer-add-odom-btn" onclick="selectOdometryTopics()">+ Odometry</button>
+                                <button id="viewer-add-tf-btn" onclick="selectTFTopics()">+ TF</button>
                             </div>
                             <div id="viewer-display-panel-content">
                                 <!-- renderDisplayPanel()로 동적 렌더링 -->
@@ -472,6 +486,25 @@
             <div class="modal-footer">
                 <button onclick="confirmOdometryTopicSelection()">Confirm</button>
                 <button onclick="closeOdometryTopicSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TF Topic Select Modal -->
+    <div id="tf-topic-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add TF Topic</h3>
+                <span class="close" onclick="closeTFTopicSelection()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="topic-list" id="tf-topic-list">
+                    <!-- tf2_msgs/TFMessage topic checkboxes will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="confirmTFTopicSelection()">Confirm</button>
+                <button onclick="closeTFTopicSelection()">Cancel</button>
             </div>
         </div>
     </div>
