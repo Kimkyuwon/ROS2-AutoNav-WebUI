@@ -272,6 +272,12 @@ const viewer3DState = {
     selectedLivoxTopics: [],        // 선택된 Livox 토픽 목록
     livoxTagFilter: new Map(),      // topicName → boolean (true = 노이즈 제외)
 
+    // Phase 2.7: Image 패널 관련 상태
+    selectedImageTopics: [],        // 선택된 Image 토픽 목록
+    imageSubscriptions: new Map(),  // topicName → ROSLIB.Topic
+    imagePanelCollapsed: false,     // 패널 접힘 상태
+    _imagePanelHeight: 200,         // 패널 마지막 높이 저장 (접기/펼치기 복원용)
+
     // Phase 2.4: Views 패널 관련 상태
     orthoCam: null,                    // OrthographicCamera (TopDown View용)
     currentViewType: 'orbit',          // 'orbit' | 'topdown'
@@ -469,6 +475,16 @@ function initThreeJSDisplay() {
 
     // Views 패널 초기 렌더링 (orbit 기본값에 맞는 파라미터 UI 표시)
     renderViewsPanel();
+
+    // Image 패널 리사이즈 핸들 설정
+    setupImagePanelResize();
+
+    // Phase 2.7: #3d-viewer-container ResizeObserver
+    // 이미지 패널 접기/펼치기·리사이즈로 flex 높이가 바뀔 때마다 렌더러 자동 리사이즈
+    const _viewerEl = document.getElementById('3d-viewer-container');
+    if (_viewerEl && typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(() => { onWindowResize(); }).observe(_viewerEl);
+    }
 
     console.log('=== Three.js display initialized successfully ===');
     console.log('Scene:', viewer3DState.scene);
@@ -1451,6 +1467,20 @@ function unsubscribeFromTopic(topicName) {
         viewer3DState.selectedLivoxTopics.splice(livoxIdx, 1);
         viewer3DState.livoxTagFilter.delete(topicName);
     }
+
+    // Image 구독 정리
+    const imgSub = viewer3DState.imageSubscriptions.get(topicName);
+    if (imgSub) {
+        try {
+            imgSub.unsubscribe();
+        } catch (e) {
+            console.warn('[Image] Failed to unsubscribe:', topicName, e);
+        }
+        viewer3DState.imageSubscriptions.delete(topicName);
+        removeImageCell(topicName);
+        const imgIdx = viewer3DState.selectedImageTopics.indexOf(topicName);
+        if (imgIdx !== -1) viewer3DState.selectedImageTopics.splice(imgIdx, 1);
+    }
 }
 
 // 단일 토픽의 시각화 오브젝트만 씬에서 제거 (구독/선택 상태는 유지)
@@ -2052,6 +2082,387 @@ async function getAvailableLivoxTopics() {
     });
 }
 
+// =============================================
+// Phase 2.7: Image 패널 — sensor_msgs/Image 실시간 렌더링
+// =============================================
+
+/**
+ * 사용 가능한 Image 토픽 목록 반환
+ * @returns {Promise<string[]>} sensor_msgs/msg/Image 토픽 목록
+ */
+async function getAvailableImageTopics() {
+    if (!viewer3DState.rosConnected) {
+        console.log('[Image] Waiting for ROS connection...');
+        const connected = await waitForROSConnection(5000);
+        if (!connected) {
+            console.warn('[Image] Not connected to ROS after timeout');
+            return [];
+        }
+    }
+
+    return new Promise((resolve) => {
+        viewer3DState.ros.getTopics(function(topics) {
+            const imageTopics = [];
+
+            if (topics.topics && topics.types) {
+                topics.topics.forEach((topic, index) => {
+                    const type = topics.types[index];
+                    if (type === 'sensor_msgs/msg/Image' || type === 'sensor_msgs/Image') {
+                        imageTopics.push(topic);
+                    }
+                });
+            }
+
+            console.log('[Image] Available Image topics:', imageTopics);
+            resolve(imageTopics);
+        }, function(error) {
+            console.error('[Image] Failed to get topics:', error);
+            resolve([]);
+        });
+    });
+}
+
+/**
+ * sensor_msgs/Image 토픽 구독 및 이미지 패널에 렌더링
+ * @param {string} topicName - 구독할 토픽 이름
+ */
+function subscribeToImage(topicName) {
+    if (!viewer3DState.rosConnected) {
+        console.warn('[Image] Not connected to ROS');
+        return;
+    }
+
+    // 재구독 방지
+    if (viewer3DState.imageSubscriptions.has(topicName)) {
+        return viewer3DState.imageSubscriptions.get(topicName);
+    }
+
+    console.log('[Image] Subscribing to topic:', topicName);
+
+    const topic = new ROSLIB.Topic({
+        ros: viewer3DState.ros,
+        name: topicName,
+        messageType: 'sensor_msgs/msg/Image',
+        throttle_rate: 100,   // 10Hz
+        queue_length: 1       // 항상 최신 프레임
+    });
+
+    viewer3DState.imageSubscriptions.set(topicName, topic);
+
+    // .image-cell 추가 및 패널 자동 오픈
+    addImageCell(topicName);
+
+    topic.subscribe(function(message) {
+        const canvas = document.getElementById('image-canvas-' + topicName.replace(/\//g, '_'));
+        if (!canvas) return;
+        parseImageMsg(message, canvas);
+    });
+
+    return topic;
+}
+
+/**
+ * sensor_msgs/Image 메시지를 canvas에 렌더링
+ * @param {Object} message - ROS Image 메시지
+ * @param {HTMLCanvasElement} canvas - 렌더링 대상 canvas
+ */
+function parseImageMsg(message, canvas) {
+    try {
+        const width    = message.width;
+        const height   = message.height;
+        const encoding = message.encoding || 'rgb8';
+
+        if (!width || !height) return;
+
+        // canvas 크기 업데이트
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width  = width;
+            canvas.height = height;
+        }
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // base64 디코딩
+        const binaryStr = atob(message.data);
+        const len       = binaryStr.length;
+        const bytes     = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+        }
+
+        // ImageData 생성 (RGBA)
+        const imgData = ctx.createImageData(width, height);
+        const out     = imgData.data;
+        const nPixels = width * height;
+
+        if (encoding === 'rgb8') {
+            for (let i = 0; i < nPixels; i++) {
+                out[i * 4]     = bytes[i * 3];     // R
+                out[i * 4 + 1] = bytes[i * 3 + 1]; // G
+                out[i * 4 + 2] = bytes[i * 3 + 2]; // B
+                out[i * 4 + 3] = 255;               // A
+            }
+        } else if (encoding === 'bgr8') {
+            for (let i = 0; i < nPixels; i++) {
+                out[i * 4]     = bytes[i * 3 + 2]; // R ← B
+                out[i * 4 + 1] = bytes[i * 3 + 1]; // G
+                out[i * 4 + 2] = bytes[i * 3];     // B ← R
+                out[i * 4 + 3] = 255;
+            }
+        } else if (encoding === 'mono8') {
+            for (let i = 0; i < nPixels; i++) {
+                const v        = bytes[i];
+                out[i * 4]     = v;
+                out[i * 4 + 1] = v;
+                out[i * 4 + 2] = v;
+                out[i * 4 + 3] = 255;
+            }
+        } else if (encoding === 'rgba8') {
+            for (let i = 0; i < nPixels; i++) {
+                out[i * 4]     = bytes[i * 4];
+                out[i * 4 + 1] = bytes[i * 4 + 1];
+                out[i * 4 + 2] = bytes[i * 4 + 2];
+                out[i * 4 + 3] = bytes[i * 4 + 3];
+            }
+        } else {
+            // 지원되지 않는 encoding: 그레이스케일로 표시
+            for (let i = 0; i < nPixels; i++) {
+                const v        = bytes[i] || 0;
+                out[i * 4]     = v;
+                out[i * 4 + 1] = v;
+                out[i * 4 + 2] = v;
+                out[i * 4 + 3] = 255;
+            }
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+    } catch (err) {
+        console.error('[Image] parseImageMsg error:', err);
+    }
+}
+
+/**
+ * #image-panel-container에 .image-cell DOM 추가 및 패널 자동 오픈
+ * @param {string} topicName - 토픽 이름
+ */
+function addImageCell(topicName) {
+    const container = document.getElementById('image-panel-container');
+    if (!container) return;
+
+    // 이미 존재하는 경우 스킵
+    const existingId = 'image-cell-' + topicName.replace(/\//g, '_');
+    if (document.getElementById(existingId)) return;
+
+    // .image-cell 생성
+    const cell       = document.createElement('div');
+    cell.className   = 'image-cell';
+    cell.id          = existingId;
+
+    // canvas
+    const canvasId   = 'image-canvas-' + topicName.replace(/\//g, '_');
+    const canvas     = document.createElement('canvas');
+    canvas.id        = canvasId;
+
+    // 라벨
+    const label      = document.createElement('div');
+    label.className  = 'image-cell-label';
+    label.textContent = topicName;
+    label.title      = topicName;
+
+    // X 버튼
+    const removeBtn       = document.createElement('button');
+    removeBtn.className   = 'image-cell-remove-btn';
+    removeBtn.textContent = '✕';
+    removeBtn.title       = '토픽 제거';
+    removeBtn.addEventListener('click', function() {
+        unsubscribeFromImage(topicName);
+    });
+
+    cell.appendChild(canvas);
+    cell.appendChild(label);
+    cell.appendChild(removeBtn);
+    container.appendChild(cell);
+
+    // 패널 영역 자동 오픈 (첫 토픽 추가 시 리사이즈 핸들 + 토글 버튼도 표시)
+    const area   = document.getElementById('image-panel-area');
+    const handle = document.getElementById('image-panel-resize-handle');
+    const btn    = document.getElementById('image-panel-toggle-btn');
+    if (area) {
+        const wasHidden = (area.style.display === 'none');
+        area.style.display = '';
+        viewer3DState.imagePanelCollapsed = false;
+        if (wasHidden) {
+            // 패널이 닫혀 있다가 새로 열리는 경우 → 저장된 높이로 복원
+            container.style.height = (viewer3DState._imagePanelHeight || 200) + 'px';
+        }
+    }
+    if (handle) handle.style.display = '';
+    if (btn) {
+        btn.style.display = 'flex';
+        btn.textContent   = '▼';  // 버튼이 이미지 패널 위: ▼ = 패널 열림(접을 수 있음)
+    }
+    // viewer 높이 직접 재계산·적용
+    requestAnimationFrame(_applyViewerHeight);
+}
+
+/**
+ * .image-cell DOM 제거, 0개 시 패널 자동 닫기
+ * @param {string} topicName - 토픽 이름
+ */
+function removeImageCell(topicName) {
+    const cellId = 'image-cell-' + topicName.replace(/\//g, '_');
+    const cell   = document.getElementById(cellId);
+    if (cell) cell.remove();
+
+    // 남은 셀이 없으면 패널 닫기
+    const container = document.getElementById('image-panel-container');
+    if (container && container.children.length === 0) {
+        closeImagePanel();
+    }
+}
+
+/**
+ * Image 구독 해제 (X 버튼 클릭 시)
+ * @param {string} topicName - 토픽 이름
+ */
+function unsubscribeFromImage(topicName) {
+    const imgSub = viewer3DState.imageSubscriptions.get(topicName);
+    if (imgSub) {
+        try {
+            imgSub.unsubscribe();
+        } catch (e) {
+            console.warn('[Image] Failed to unsubscribe:', topicName, e);
+        }
+        viewer3DState.imageSubscriptions.delete(topicName);
+    }
+    removeImageCell(topicName);
+    const idx = viewer3DState.selectedImageTopics.indexOf(topicName);
+    if (idx !== -1) viewer3DState.selectedImageTopics.splice(idx, 1);
+    renderDisplayPanel();
+}
+
+/**
+ * #3d-viewer-container 높이를 직접 계산해서 설정하고 Three.js 렌더러를 리사이즈한다.
+ * flex 레이아웃에 의존하지 않고 명시적으로 계산·적용한다.
+ */
+function _applyViewerHeight() {
+    const viewerPanel     = document.querySelector('.viewer-canvas-panel');
+    const viewerContainer = document.getElementById('3d-viewer-container');
+    const handle          = document.getElementById('image-panel-resize-handle');
+    const btn             = document.getElementById('image-panel-toggle-btn');
+    const panelContainer  = document.getElementById('image-panel-container');
+    if (!viewerPanel || !viewerContainer) return;
+
+    const totalH  = viewerPanel.clientHeight || 680;
+    const btnH    = (btn    && btn.style.display    !== 'none') ? (btn.offsetHeight    || 20) : 0;
+    const handleH = (handle && handle.style.display !== 'none') ? (handle.offsetHeight || 8)  : 0;
+    const imgH    = panelContainer ? (panelContainer.offsetHeight || 0) : 0;
+    const viewerH = Math.max(300, totalH - btnH - handleH - imgH);
+
+    viewerContainer.style.height = viewerH + 'px';
+
+    if (viewer3DState.renderer && viewer3DState.camera) {
+        const w = viewerContainer.clientWidth;
+        viewer3DState.renderer.setSize(w, viewerH);
+        viewer3DState.camera.aspect = w / viewerH;
+        viewer3DState.camera.updateProjectionMatrix();
+        if (viewer3DState.orthoCam) {
+            const aspect = w / viewerH, fs = 50;
+            viewer3DState.orthoCam.left   = fs * aspect / -2;
+            viewer3DState.orthoCam.right  = fs * aspect /  2;
+            viewer3DState.orthoCam.top    = fs / 2;
+            viewer3DState.orthoCam.bottom = fs / -2;
+            viewer3DState.orthoCam.updateProjectionMatrix();
+        }
+    }
+}
+
+/**
+ * Image 패널 접기/펼치기 토글
+ * 접힘: 저장된 높이 → 80px (이미지 크기만 줄임)
+ * 펼침: 80px → 저장된 높이 복원
+ * #3d-viewer-container 높이를 직접 계산해서 설정 → renderer.setSize 호출
+ */
+function toggleImagePanel() {
+    const panelContainer = document.getElementById('image-panel-container');
+    const handle = document.getElementById('image-panel-resize-handle');
+    const btn    = document.getElementById('image-panel-toggle-btn');
+    if (!panelContainer) return;
+
+    viewer3DState.imagePanelCollapsed = !viewer3DState.imagePanelCollapsed;
+
+    const COLLAPSED_H = 80;
+
+    if (viewer3DState.imagePanelCollapsed) {
+        viewer3DState._imagePanelHeight = panelContainer.offsetHeight || 200;
+        panelContainer.style.height = COLLAPSED_H + 'px';
+        if (handle) handle.style.display = 'none';
+        if (btn) btn.textContent = '▲';
+    } else {
+        panelContainer.style.height = (viewer3DState._imagePanelHeight || 200) + 'px';
+        if (handle) handle.style.display = '';
+        if (btn) btn.textContent = '▼';
+    }
+
+    // transition(0.2s) 구간 동안 매 프레임마다 viewer 높이 재계산·적용
+    const t0 = performance.now();
+    (function rafLoop() {
+        _applyViewerHeight();
+        if (performance.now() - t0 < 250) requestAnimationFrame(rafLoop);
+    })();
+}
+
+/**
+ * Image 패널 닫기 (토픽 0개 시 자동 호출)
+ */
+function closeImagePanel() {
+    const area   = document.getElementById('image-panel-area');
+    const handle = document.getElementById('image-panel-resize-handle');
+    const btn    = document.getElementById('image-panel-toggle-btn');
+    if (area)   { area.classList.remove('collapsed'); area.style.display = 'none'; }
+    if (handle) handle.style.display = 'none';
+    if (btn)    btn.style.display    = 'none';
+    viewer3DState.imagePanelCollapsed = false;
+    requestAnimationFrame(_applyViewerHeight);
+}
+
+/**
+ * Image 패널 리사이즈 핸들 설정
+ * mousedown/mousemove/mouseup으로 #image-panel-container 높이 조절 (80~600px)
+ */
+function setupImagePanelResize() {
+    const handle    = document.getElementById('image-panel-resize-handle');
+    const container = document.getElementById('image-panel-container');
+    if (!handle || !container) return;
+
+    let dragging    = false;
+    let startY      = 0;
+    let startHeight = 0;
+
+    handle.addEventListener('mousedown', function(e) {
+        dragging    = true;
+        startY      = e.clientY;
+        startHeight = container.offsetHeight;
+        e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', function(e) {
+        if (!dragging) return;
+        const delta = startY - e.clientY;   // 위로 드래그 → 높이 증가
+        const newH  = Math.min(600, Math.max(80, startHeight + delta));
+        container.style.height = newH + 'px';
+        _applyViewerHeight();   // 드래그 중 viewer 높이 실시간 업데이트
+    });
+
+    document.addEventListener('mouseup', function() {
+        if (dragging) {
+            dragging = false;
+            _applyViewerHeight();
+        }
+    });
+}
+
 // Handle topic selection
 async function selectDisplayTopics() {
     console.log('Opening topic selection dialog...');
@@ -2267,8 +2678,10 @@ function renderDisplayPanel() {
     const odomTopics  = viewer3DState.selectedOdomTopics;
     const tfTopics    = viewer3DState.selectedTFTopics;
     const livoxTopics = viewer3DState.selectedLivoxTopics;
+    const imageTopics = viewer3DState.selectedImageTopics;
 
-    const hasAny = pcTopics.length > 0 || pathTopics.length > 0 || odomTopics.length > 0 || tfTopics.length > 0 || livoxTopics.length > 0;
+    const hasAny = pcTopics.length > 0 || pathTopics.length > 0 || odomTopics.length > 0 ||
+                   tfTopics.length > 0 || livoxTopics.length > 0 || imageTopics.length > 0;
 
     if (!hasAny) {
         container.innerHTML = '<div style="font-size:12px; color: var(--muted); padding: 4px 2px;">구독 중인 토픽 없음</div>';
@@ -3208,6 +3621,52 @@ function renderDisplayPanel() {
 
             item.appendChild(header);
             item.appendChild(settingsDiv);
+            container.appendChild(item);
+        });
+    }
+
+    // ── Image 섹션 ──
+    if (imageTopics.length > 0) {
+        const imageLabel      = document.createElement('div');
+        imageLabel.className  = 'display-panel-section-label';
+        imageLabel.textContent = 'Image';
+
+        const imageBadge      = document.createElement('span');
+        imageBadge.className  = 'image-badge';
+        imageBadge.textContent = 'IMG';
+        imageLabel.appendChild(imageBadge);
+        container.appendChild(imageLabel);
+
+        imageTopics.forEach(function(topicName) {
+            const item       = document.createElement('div');
+            item.className   = 'display-topic-item';
+            item.dataset.topicName = topicName;
+
+            const header     = document.createElement('div');
+            header.className = 'display-topic-item-header';
+
+            // 체크박스: image cell 표시/숨기기
+            const cellId  = 'image-cell-' + topicName.replace(/\//g, '_');
+            const cell    = document.getElementById(cellId);
+            const visible = !cell || cell.style.display !== 'none';
+
+            const checkbox   = document.createElement('input');
+            checkbox.type    = 'checkbox';
+            checkbox.checked = visible;
+            checkbox.title   = '표시/숨기기';
+            checkbox.addEventListener('change', function() {
+                const c = document.getElementById(cellId);
+                if (c) c.style.display = this.checked ? '' : 'none';
+            });
+
+            const nameSpan     = document.createElement('span');
+            nameSpan.className = 'display-topic-item-name';
+            nameSpan.textContent = topicName;
+            nameSpan.title     = topicName;
+
+            header.appendChild(checkbox);
+            header.appendChild(nameSpan);
+            item.appendChild(header);
             container.appendChild(item);
         });
     }
@@ -5084,11 +5543,20 @@ const ADD_DISPLAY_CATEGORIES = [
         stateKey: 'selectedLivoxTopics',
         fetchTopics: null,           // 런타임 할당
         subscribeFn: null
+    },
+    {
+        type: 'Image',
+        msgType: 'sensor_msgs/msg/Image',
+        description: 'Displays sensor_msgs/Image topics as live video panels below the 3D view.',
+        color: '#ab47bc',
+        stateKey: 'selectedImageTopics',
+        fetchTopics: null,
+        subscribeFn: null
     }
 ];
 
 // 카테고리별 현재 로드된 토픽 목록 (모달 내부 상태)
-let _addDisplayTopics = [[], [], [], [], []];
+let _addDisplayTopics = [[], [], [], [], [], []];
 
 /**
  * Add Display 통합 다이얼로그 열기 (RViz 스타일)
@@ -5110,6 +5578,8 @@ async function openAddDisplayModal() {
     ADD_DISPLAY_CATEGORIES[3].subscribeFn = subscribeToTF;
     ADD_DISPLAY_CATEGORIES[4].fetchTopics = getAvailableLivoxTopics;
     ADD_DISPLAY_CATEGORIES[4].subscribeFn = subscribeToLivox;
+    ADD_DISPLAY_CATEGORIES[5].fetchTopics = getAvailableImageTopics;
+    ADD_DISPLAY_CATEGORIES[5].subscribeFn = subscribeToImage;
 
     const modal = document.getElementById('add-display-modal');
     const tree  = document.getElementById('add-display-tree');
@@ -5130,7 +5600,7 @@ async function openAddDisplayModal() {
         _addDisplayTopics = results;
     } catch (err) {
         console.error('[AddDisplay] Failed to load topics:', err);
-        _addDisplayTopics = [[], [], [], [], []];
+        _addDisplayTopics = [[], [], [], [], [], []];
     } finally {
         if (btn) { btn.textContent = '+ Add'; btn.disabled = false; }
     }
@@ -5271,7 +5741,8 @@ function confirmAddDisplaySelection() {
         pointcloud: viewer3DState.displaySelectedTopics,
         path: viewer3DState.selectedPathTopics,
         odometry: viewer3DState.selectedOdomTopics,
-        tf: viewer3DState.selectedTFTopics
+        tf: viewer3DState.selectedTFTopics,
+        image: viewer3DState.selectedImageTopics
     });
 }
 
@@ -5358,6 +5829,9 @@ function take3DSnapshot() {
     a.click();
 }
 window.take3DSnapshot = take3DSnapshot;
+// Image 패널 관련
+window.toggleImagePanel = toggleImagePanel;
+window.unsubscribeFromImage = unsubscribeFromImage;
 
 console.log('=== Three.js Display script loaded ===');
 console.log('Functions exposed:', {
