@@ -100,32 +100,22 @@ class WebGUINode(Node):
         self.player_processed_stamp = 0
         self.player_prev_time = 0
 
-        # File Player ROS2 Publishers
-        self.pose_pub = self.create_publisher(PointStamped, '/pose/position', 1000)
-        self.imu_pub = self.create_publisher(Imu, '/imu', 1000)
-        self.clock_pub = self.create_publisher(Clock, '/clock', 1)
-
-        # LiDAR and Camera publishers
-        if LIVOX_AVAILABLE:
-            self.livox_pub = self.create_publisher(CustomMsg, '/livox/lidar', 1000)
-        else:
-            self.livox_pub = None
-
-        self.cam_pub = self.create_publisher(Image, '/camera/color/image', 1000)
-        self.cam_info_pub = self.create_publisher(CameraInfo, '/camera/color/camera_info', 1000)
+        # File Player ROS2 Publishers/Subscribers — lazy initialized on load_player_data()
+        # (not created at startup to avoid polluting the topic list before file player is used)
+        self.pose_pub = None
+        self.imu_pub = None
+        self.clock_pub = None
+        self.livox_pub = None
+        self.cam_pub = None
+        self.cam_info_pub = None
+        self.start_sub = None
+        self.stop_sub = None
 
         # CV Bridge for image conversion
         self.cv_bridge = CvBridge()
 
-        # File Player ROS2 Subscribers
-        self.start_sub = self.create_subscription(
-            Bool, '/file_player_start', self.file_player_start_callback, 1)
-        self.stop_sub = self.create_subscription(
-            Bool, '/file_player_stop', self.file_player_stop_callback, 1)
-
-        # SLAM Subscribers
-        self.slam_complete_sub = self.create_subscription(
-            Bool, '/lt_mapping_complete', self.slam_complete_callback, 10)
+        # SLAM Subscribers — lazy initialized on start_slam_mapping()
+        self.slam_complete_sub = None
 
         # File Player data structures
         self.data_stamp = {}
@@ -241,6 +231,45 @@ class WebGUINode(Node):
                 else:
                     self._ros_env['XAUTHORITY'] = os.path.expanduser('~/.Xauthority')
                     self.get_logger().warn('XAUTHORITY not found, using ~/.Xauthority (may not exist)')
+
+    def _init_file_player_ros_interfaces(self):
+        """Lazy initialization of File Player ROS2 publishers and subscribers.
+
+        Called once when file player data is first loaded via load_player_data().
+        This prevents File Player topics from appearing in the topic list at startup.
+        """
+        if self.imu_pub is not None:
+            return  # Already initialized
+
+        self.pose_pub = self.create_publisher(PointStamped, '/pose/position', 1000)
+        self.imu_pub = self.create_publisher(Imu, '/imu', 1000)
+        self.clock_pub = self.create_publisher(Clock, '/clock', 1)
+
+        if LIVOX_AVAILABLE:
+            self.livox_pub = self.create_publisher(CustomMsg, '/livox/lidar', 1000)
+
+        self.cam_pub = self.create_publisher(Image, '/camera/color/image', 1000)
+        self.cam_info_pub = self.create_publisher(CameraInfo, '/camera/color/camera_info', 1000)
+
+        self.start_sub = self.create_subscription(
+            Bool, '/file_player_start', self.file_player_start_callback, 1)
+        self.stop_sub = self.create_subscription(
+            Bool, '/file_player_stop', self.file_player_stop_callback, 1)
+
+        self.get_logger().info('File Player ROS2 publishers/subscribers initialized')
+
+    def _init_slam_subscriber(self):
+        """Lazy initialization of SLAM-related subscribers.
+
+        Called once when SLAM mapping is first started via start_slam_mapping().
+        This prevents /lt_mapping_complete from appearing in the topic list at startup.
+        """
+        if self.slam_complete_sub is not None:
+            return  # Already initialized
+
+        self.slam_complete_sub = self.create_subscription(
+            Bool, '/lt_mapping_complete', self.slam_complete_callback, 10)
+        self.get_logger().info('SLAM subscriber (/lt_mapping_complete) initialized')
 
     def _read_process_output(self, process, output_lock, output_attr_name, max_lines=10):
         """
@@ -392,6 +421,9 @@ class WebGUINode(Node):
     def start_slam_mapping(self):
         """Start FAST_LIO mapping"""
         self.get_logger().info('=== Starting FAST_LIO SLAM Mapping ===')
+
+        # Ensure SLAM subscriber is ready before launching the process
+        self._init_slam_subscriber()
 
         # Kill any existing SLAM processes first
         self.kill_slam_processes()
@@ -851,6 +883,8 @@ class WebGUINode(Node):
                 self.get_logger().warn('Camera directory not found (expected: {}/Camera/)'.format(path))
 
             self.player_data_loaded = True
+            # Lazy-initialize File Player ROS2 publishers/subscribers on first load
+            self._init_file_player_ros_interfaces()
             return True
 
         except Exception as e:
@@ -1034,10 +1068,18 @@ class WebGUINode(Node):
         return False
 
     def get_bag_info(self):
-        """Get bag file info including topics and duration"""
+        """Get bag file info including topics and duration.
+
+        Branches based on file extension:
+        - .bag  → ROS1 bag (parsed via rosbags library)
+        - other → ROS2 bag (parsed via ros2 bag info command)
+        """
         if not self.bag_path:
             self.get_logger().warn('No bag file loaded.')
-            return {'topics': [], 'duration': 0.0}
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros2'}
+
+        if self.bag_path.endswith('.bag'):
+            return self._get_ros1_bag_info()
 
         try:
             # Use ros2 bag info to get topic list and duration
@@ -1046,7 +1088,7 @@ class WebGUINode(Node):
 
             if result.returncode != 0:
                 self.get_logger().error(f'Failed to get bag info: {result.stderr}')
-                return {'topics': [], 'duration': 0.0}
+                return {'topics': [], 'duration': 0.0, 'bag_type': 'ros2'}
 
             # Parse output to extract topics and duration
             topics = []
@@ -1086,16 +1128,112 @@ class WebGUINode(Node):
             self.get_logger().info(f'Bag info: {len(topics)} topics, duration: {duration}s')
             self.get_logger().info(f'Topics: {topics}')
 
-            return {'topics': topics, 'duration': duration}
+            return {'topics': topics, 'duration': duration, 'bag_type': 'ros2'}
 
         except subprocess.TimeoutExpired:
             self.get_logger().error('Timeout while getting bag info')
-            return {'topics': [], 'duration': 0.0}
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros2'}
         except Exception as e:
             self.get_logger().error(f'Failed to get bag info: {str(e)}')
             import traceback
             traceback.print_exc()
-            return {'topics': [], 'duration': 0.0}
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros2'}
+
+    def _get_ros1_bag_info(self):
+        """Get ROS1 .bag file info using the rosbags library.
+
+        Returns:
+            dict: {'topics': list, 'duration': float, 'bag_type': 'ros1'}
+        """
+        try:
+            from rosbags.rosbag1 import Reader
+            with Reader(self.bag_path) as reader:
+                topics = list(reader.topics.keys())
+                duration = (reader.end_time - reader.start_time) / 1e9
+
+            self.bag_topics = topics
+            self.bag_duration = duration
+            self.get_logger().info(
+                f'ROS1 bag info: {len(topics)} topics, duration: {duration:.3f}s'
+            )
+            self.get_logger().info(f'ROS1 topics: {topics}')
+
+            return {'topics': topics, 'duration': duration, 'bag_type': 'ros1'}
+
+        except ImportError:
+            self.get_logger().error(
+                'rosbags library not found. Install with: pip install rosbags'
+            )
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros1'}
+        except Exception as e:
+            self.get_logger().error(f'Failed to read ROS1 bag: {str(e)}')
+            import traceback
+            traceback.print_exc()
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros1'}
+
+    def convert_ros1_bag(self):
+        """Convert ROS1 .bag file to ROS2 bag format using rosbags-convert.
+
+        Output directory: {bag_filename_without_ext}/ (same parent directory, no _ros2 suffix)
+
+        Returns:
+            dict: {'success': bool, 'output_path': str, 'error': str (on failure)}
+        """
+        if not self.bag_path:
+            return {'success': False, 'error': 'No bag file loaded'}
+
+        if not self.bag_path.endswith('.bag'):
+            return {'success': False, 'error': 'Not a ROS1 .bag file'}
+
+        try:
+            import os
+            import shutil
+            bag_dir = os.path.dirname(self.bag_path)
+            bag_name = os.path.splitext(os.path.basename(self.bag_path))[0]
+            output_dir = os.path.join(bag_dir, bag_name)
+
+            # 이미 변환된 디렉토리가 존재하면 삭제 후 재변환
+            if os.path.isdir(output_dir):
+                self.get_logger().info(f'Removing existing output dir: {output_dir}')
+                shutil.rmtree(output_dir)
+
+            self.get_logger().info(
+                f'Converting ROS1 bag: {self.bag_path} -> {output_dir}'
+            )
+
+            # rosbags-convert 경로 탐색 (pip user install 경로 포함)
+            convert_cmd = shutil.which('rosbags-convert') or '/home/kkw/.local/bin/rosbags-convert'
+            if not os.path.isfile(convert_cmd):
+                self.get_logger().error('rosbags-convert not found. Install with: pip install rosbags')
+                return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
+
+            cmd = [convert_cmd, '--src', self.bag_path, '--dst', output_dir]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # Allow up to 5 minutes for large bags
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                self.get_logger().error(f'rosbags-convert failed: {error_msg}')
+                return {'success': False, 'error': error_msg}
+
+            self.get_logger().info(f'ROS1 bag converted successfully: {output_dir}')
+            return {'success': True, 'output_path': output_dir}
+
+        except subprocess.TimeoutExpired:
+            self.get_logger().error('Timeout during ROS1 bag conversion')
+            return {'success': False, 'error': 'Conversion timed out'}
+        except FileNotFoundError:
+            self.get_logger().error('rosbags-convert not found. Install with: pip install rosbags')
+            return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
+        except Exception as e:
+            self.get_logger().error(f'Failed to convert ROS1 bag: {str(e)}')
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'error': str(e)}
 
     def bag_play_toggle(self, selected_topics=None, start_offset=None):
         """Toggle bag play/stop with optional topic selection and start offset"""
@@ -1658,7 +1796,12 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             self.send_json_response(self.node.get_bag_state())
         elif parsed_path.path == '/api/bag/get_info':
             info = self.node.get_bag_info()
-            self.send_json_response({'success': True, 'topics': info['topics'], 'duration': info['duration']})
+            self.send_json_response({
+                'success': True,
+                'topics': info['topics'],
+                'duration': info['duration'],
+                'bag_type': info.get('bag_type', 'ros2')
+            })
         elif parsed_path.path == '/api/recorder/state':
             self.send_json_response(self.node.get_recorder_state())
         elif parsed_path.path == '/api/recorder/get_topics':
@@ -1750,7 +1893,8 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
                 'message': 'Bag path set',
                 'path': path,
                 'topics': info['topics'],
-                'duration': info['duration']
+                'duration': info['duration'],
+                'bag_type': info.get('bag_type', 'ros2')
             }
         elif parsed_path.path == '/api/bag/play':
             selected_topics = data.get('topics', [])
@@ -1765,6 +1909,9 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             position_ratio = position / 10000.0
             success = self.node.set_bag_position(position_ratio)
             response = {'success': success}
+        elif parsed_path.path == '/api/bag/convert_ros1':
+            result = self.node.convert_ros1_bag()
+            response = result
 
         # Bag Recorder API endpoints
         elif parsed_path.path == '/api/recorder/set_bag_name':

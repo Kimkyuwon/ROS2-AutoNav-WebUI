@@ -7,7 +7,8 @@ const fileBrowserState = {
 const bagPlayerState = {
     selectedTopics: [],
     availableTopics: [],
-    bagDuration: 0.0
+    bagDuration: 0.0,
+    bagType: 'ros2'   // 'ros1' or 'ros2'
 };
 
 const bagRecorderState = {
@@ -356,13 +357,20 @@ async function loadBagFile() {
         const result = await apiCall('/api/bag/load', { path });
         if (result.success) {
             console.log('Bag file loaded successfully:', path);
-            // Get topics and duration from result
+            // Get topics, duration and bag_type from result
             bagPlayerState.availableTopics = result.topics || [];
             bagPlayerState.selectedTopics = [...bagPlayerState.availableTopics];
             bagPlayerState.bagDuration = result.duration || 0.0;
+            bagPlayerState.bagType = result.bag_type || 'ros2';
 
             console.log('Loaded topics:', bagPlayerState.availableTopics);
             console.log('Duration:', bagPlayerState.bagDuration, 'seconds');
+            console.log('Bag type:', bagPlayerState.bagType);
+
+            // Show/hide ROS1 badge and convert button
+            const isRos1 = bagPlayerState.bagType === 'ros1';
+            domCache.get('bag-ros1-badge').style.display = isRos1 ? 'inline' : 'none';
+            domCache.get('convert-to-ros2-btn').style.display = isRos1 ? 'inline-block' : 'none';
 
             // Update time label
             updateBagTimeLabel(0, bagPlayerState.bagDuration);
@@ -536,6 +544,63 @@ async function updateBagState() {
         } else {
             pauseButton.textContent = 'Pause';
         }
+    }
+}
+
+/**
+ * ROS1 bag 파일을 ROS2 포맷으로 변환
+ * POST /api/bag/convert_ros1 호출 후 변환된 ROS2 bag 자동 로드
+ */
+async function convertToRos2() {
+    const bagPath = domCache.get('bag-directory').value;
+    if (!bagPath) {
+        alert('Please load a ROS1 bag file first');
+        return;
+    }
+
+    const btn = domCache.get('convert-to-ros2-btn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Converting...';
+
+    try {
+        const result = await apiCall('/api/bag/convert_ros1', { path: bagPath });
+        if (result.success) {
+            // 버튼 상태 항상 복원 (재사용 가능하도록)
+            btn.disabled = false;
+            btn.textContent = originalText;
+
+            alert(`Conversion complete!\nOutput: ${result.output_path}`);
+
+            // 변환된 ROS2 bag 자동 로드
+            const outputPath = result.output_path;
+            domCache.get('bag-directory').value = outputPath;
+            const loadResult = await apiCall('/api/bag/load', { path: outputPath });
+            if (loadResult.success) {
+                bagPlayerState.availableTopics = loadResult.topics || [];
+                bagPlayerState.selectedTopics = [...bagPlayerState.availableTopics];
+                bagPlayerState.bagDuration = loadResult.duration || 0.0;
+                bagPlayerState.bagType = loadResult.bag_type || 'ros2';
+
+                // ROS1 배지 및 Convert 버튼 숨기기 (이제 ROS2 bag)
+                const isRos1 = bagPlayerState.bagType === 'ros1';
+                domCache.get('bag-ros1-badge').style.display = isRos1 ? 'inline' : 'none';
+                domCache.get('convert-to-ros2-btn').style.display = isRos1 ? 'inline-block' : 'none';
+
+                updateBagTimeLabel(0, bagPlayerState.bagDuration);
+                updateSelectedTopicsDisplay();
+                console.log('Converted ROS2 bag loaded:', outputPath);
+            }
+        } else {
+            alert('Conversion failed: ' + (result.error || 'Unknown error'));
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    } catch (error) {
+        console.error('convertToRos2 error:', error);
+        alert('Conversion failed: ' + error.message);
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 }
 

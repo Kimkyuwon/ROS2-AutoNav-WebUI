@@ -269,6 +269,8 @@ const viewer3DState = {
     fixedFrame: 'map',              // FrameIDFilter 기준 프레임 (기본값: 'map')
     pcFrameGroups: new Map(),       // topicName → THREE.Group (PC2 frame 래퍼)
     topicFrameIds: new Map(),       // topicName → last received ROS frame_id
+    selectedLivoxTopics: [],        // 선택된 Livox 토픽 목록
+    livoxTagFilter: new Map(),      // topicName → boolean (true = 노이즈 제외)
 
     // Phase 2.4: Views 패널 관련 상태
     orthoCam: null,                    // OrthographicCamera (TopDown View용)
@@ -487,6 +489,15 @@ function switchViewType(type) {
         viewer3DState.activeCamera = viewer3DState.camera;
         viewer3DState.camera.up.set(0, 0, 1);
         if (controls) {
+            // TopDown yaw 핸들러 해제 및 mouse button 복원
+            if (viewer3DState.renderer) {
+                _detachTopdownYawHandlers(viewer3DState.renderer.domElement);
+            }
+            controls.mouseButtons = {
+                LEFT:   THREE.MOUSE.ROTATE,
+                MIDDLE: THREE.MOUSE.DOLLY,
+                RIGHT:  THREE.MOUSE.PAN
+            };
             const tx = controls.target.x;
             const ty = controls.target.y;
             const tz = controls.target.z;
@@ -508,11 +519,25 @@ function switchViewType(type) {
             controls.enablePan    = true;
             controls.enableZoom   = true;
             controls.enabled      = true;
+            // 좌클릭 = 커스텀 yaw 핸들러, 우클릭 = 팬 (orbit의 좌클릭 회전과 동일 UX)
+            controls.mouseButtons = {
+                LEFT:   -1,              // OrbitControls 좌클릭 비활성화 → 커스텀 yaw 핸들러가 처리
+                MIDDLE: THREE.MOUSE.DOLLY,
+                RIGHT:  THREE.MOUSE.PAN  // 우클릭 = 팬
+            };
             viewer3DState.orthoCam.position.set(
                 controls.target.x, controls.target.y, 100
             );
+            // Yaw 상태 반영 (up 벡터를 먼저 설정해야 lookAt이 올바르게 동작)
+            viewer3DState.orthoCam.up.set(
+                -Math.sin(_topdownYaw), Math.cos(_topdownYaw), 0
+            );
             viewer3DState.orthoCam.lookAt(controls.target);
             controls.update();
+            // TopDown yaw 핸들러 등록
+            if (viewer3DState.renderer) {
+                _attachTopdownYawHandlers(viewer3DState.renderer.domElement);
+            }
         }
     }
 
@@ -716,6 +741,9 @@ function resetViewCamera() {
             viewer3DState.controls.update();
         }
     } else if (type === 'topdown') {
+        // Yaw 초기화: Y축이 화면 위 (북쪽 = 위)
+        _topdownYaw = 0;
+        viewer3DState.orthoCam.up.set(0, 1, 0);
         viewer3DState.orthoCam.position.set(0, 0, 100);
         viewer3DState.orthoCam.lookAt(0, 0, 0);
         if (viewer3DState.controls) {
@@ -1031,6 +1059,156 @@ function parsePointCloud2(message, settings, prevMin, prevMax) {
     };
 }
 
+// =============================================
+// Livox LiDAR CustomMsg 고성능 파싱
+// =============================================
+
+/**
+ * By Line 색상 배열: 최대 16채널 Livox 라이다에 대해 균등 분산색 16색
+ */
+const LIVOX_LINE_COLORS = [
+    [1.00, 0.20, 0.20],  // 0  빨강
+    [1.00, 0.60, 0.10],  // 1  주황
+    [1.00, 1.00, 0.10],  // 2  노랑
+    [0.40, 1.00, 0.20],  // 3  연두
+    [0.10, 0.90, 0.10],  // 4  초록
+    [0.10, 0.90, 0.60],  // 5  청록
+    [0.10, 0.80, 1.00],  // 6  하늘
+    [0.10, 0.40, 1.00],  // 7  파랑
+    [0.40, 0.10, 1.00],  // 8  남색
+    [0.70, 0.10, 1.00],  // 9  보라
+    [1.00, 0.10, 0.80],  // 10 분홍
+    [1.00, 0.10, 0.40],  // 11 자홍
+    [0.80, 0.80, 0.80],  // 12 밝은 회색
+    [0.50, 0.50, 0.50],  // 13 중간 회색
+    [1.00, 0.80, 0.60],  // 14 살구
+    [0.60, 1.00, 1.00],  // 15 밝은 청록
+];
+
+/**
+ * Livox CustomMsg 파싱 (단일 패스, 재사용 버퍼)
+ * rosbridge가 message.points 배열을 JSON으로 자동 역직렬화하여 전달하므로 base64 디코딩 불필요
+ * @param {Object} message    - rosbridge livox_ros_driver2/msg/CustomMsg 메시지
+ * @param {Object} [settings] - 색상 설정 { colorMode, colorField, solidColor, tagFilter }
+ *   - colorMode:  'rainbow' | 'byline' | 'solid'
+ *   - colorField: 'reflectivity' | 'x' | 'y' | 'z'  (rainbow 모드에서 사용)
+ *   - solidColor: '#rrggbb'
+ *   - tagFilter:  boolean (true = tag bit[3:2] 노이즈 포인트 제외)
+ * @param {number} [prevMin] - 이전 프레임 rainbow 최솟값 (적응형 범위, x/y/z 필드용)
+ * @param {number} [prevMax] - 이전 프레임 rainbow 최댓값
+ * @returns {{ count: number, newMin: number, newMax: number }}
+ *   결과는 _pc2PosBuffer / _pc2ColBuffer 에 0..count*3-1 범위로 기록됨
+ */
+function parseLivoxCustomMsg(message, settings, prevMin, prevMax) {
+    const colorMode  = (settings && settings.colorMode)  || 'rainbow';
+    const colorField = (settings && settings.colorField) || 'reflectivity';
+    const solidColor = (settings && settings.solidColor) || '#ffffff';
+    const tagFilter  = (settings && settings.tagFilter)  || false;
+
+    // ── Solid 색상 사전 파싱 ──
+    let solidR = 1, solidG = 1, solidB = 1;
+    if (colorMode === 'solid') {
+        const hex = solidColor.replace('#', '');
+        solidR = parseInt(hex.substring(0, 2), 16) / 255;
+        solidG = parseInt(hex.substring(2, 4), 16) / 255;
+        solidB = parseInt(hex.substring(4, 6), 16) / 255;
+    }
+
+    const points = message.points || [];
+    const total  = Math.min(points.length, PC2_MAX_POINTS);
+
+    // ── Rainbow 범위 설정 ──
+    // reflectivity: 고정 0-255 (단일 패스 실현)
+    // x/y/z: 적응형 (이전 프레임 min/max 사용)
+    const useFixedRange = (colorField === 'reflectivity');
+    const rangeMin  = useFixedRange ? 0 : (isFinite(prevMin) ? prevMin : 0);
+    const rangeMax  = useFixedRange ? 255 : (isFinite(prevMax) && prevMax > rangeMin ? prevMax : rangeMin + 1);
+    const rangeSpan = rangeMax - rangeMin;
+    let newMin = Infinity, newMax = -Infinity;
+
+    // ── 진단 로그: 최초 수신 메시지에서 고유 tag 값 출력 (디버깅용) ──
+    if (parseLivoxCustomMsg._debugTagLogged !== message.header?.seq) {
+        parseLivoxCustomMsg._debugTagLogged = message.header?.seq;
+        const uniqueTags = new Set();
+        for (let di = 0; di < Math.min(total, 200); di++) {
+            if (points[di]) uniqueTags.add(points[di].tag);
+        }
+        console.log(`[Livox][Tag Debug] 고유 tag 값 (첫 200pt): [${[...uniqueTags].join(', ')}]  → hex: [${[...uniqueTags].map(t => '0x' + (t >>> 0).toString(16).padStart(2,'0')).join(', ')}]`);
+    }
+
+    let count = 0;
+
+    for (let i = 0; i < total; i++) {
+        const pt = points[i];
+        if (!pt) continue;
+
+        // Tag Filter: bit[3:2] (마스크 0x0C) = 신뢰도
+        //   0x00=고신뢰, 0x04=고신뢰 노이즈, 0x08=중간 노이즈, 0x0C=저신뢰
+        if (tagFilter && (pt.tag & 0x0C) !== 0) continue;
+
+        const x = pt.x, y = pt.y, z = pt.z;
+        if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+
+        const ptr3 = count * 3;
+        _pc2PosBuffer[ptr3]     = x;
+        _pc2PosBuffer[ptr3 + 1] = y;
+        _pc2PosBuffer[ptr3 + 2] = z;
+
+        if (colorMode === 'rainbow') {
+            // 선택된 필드 값 읽기
+            let fv;
+            switch (colorField) {
+                case 'x':            fv = x; break;
+                case 'y':            fv = y; break;
+                case 'z':            fv = z; break;
+                case 'reflectivity':
+                default:             fv = (pt.reflectivity !== undefined) ? pt.reflectivity : 0; break;
+            }
+            // 적응형 min/max 갱신 (x/y/z 필드용, 다음 프레임에 사용)
+            if (!useFixedRange) {
+                if (fv < newMin) newMin = fv;
+                if (fv > newMax) newMax = fv;
+            }
+            // HSV Rainbow 인라인 (파랑→빨강)
+            const t   = rangeSpan > 0 ? Math.min(1.0, Math.max(0.0, (fv - rangeMin) / rangeSpan)) : 0.5;
+            const hue = (1.0 - t) * 0.667;
+            const h6  = hue * 6;
+            const hi  = h6 | 0;
+            const f   = h6 - hi;
+            let cr, cg, cb;
+            switch (hi % 6) {
+                case 0: cr = 1;     cg = f;     cb = 0;     break;
+                case 1: cr = 1 - f; cg = 1;     cb = 0;     break;
+                case 2: cr = 0;     cg = 1;     cb = f;     break;
+                case 3: cr = 0;     cg = 1 - f; cb = 1;     break;
+                case 4: cr = f;     cg = 0;     cb = 1;     break;
+                default: cr = 1;   cg = 0;     cb = 1 - f; break;
+            }
+            _pc2ColBuffer[ptr3]     = cr;
+            _pc2ColBuffer[ptr3 + 1] = cg;
+            _pc2ColBuffer[ptr3 + 2] = cb;
+
+        } else if (colorMode === 'byline') {
+            // line 값 기준 색상 배열 인덱싱 (최대 16채널)
+            const lineIdx = (pt.line !== undefined) ? (pt.line % LIVOX_LINE_COLORS.length) : 0;
+            const col = LIVOX_LINE_COLORS[lineIdx];
+            _pc2ColBuffer[ptr3]     = col[0];
+            _pc2ColBuffer[ptr3 + 1] = col[1];
+            _pc2ColBuffer[ptr3 + 2] = col[2];
+
+        } else {
+            // solid 또는 fallback
+            _pc2ColBuffer[ptr3]     = solidR;
+            _pc2ColBuffer[ptr3 + 1] = solidG;
+            _pc2ColBuffer[ptr3 + 2] = solidB;
+        }
+
+        count++;
+    }
+
+    return { count, newMin, newMax };
+}
+
 // 토픽 구독 해제 및 리소스 정리
 function unsubscribeFromTopic(topicName) {
     // ROSLIB.Topic 구독 해제
@@ -1145,6 +1323,13 @@ function unsubscribeFromTopic(topicName) {
         });
         viewer3DState.tfObjects.delete(topicName);
         console.log('Removed TF object for topic:', topicName);
+    }
+
+    // Livox 선택 목록에서 제거
+    const livoxIdx = viewer3DState.selectedLivoxTopics.indexOf(topicName);
+    if (livoxIdx !== -1) {
+        viewer3DState.selectedLivoxTopics.splice(livoxIdx, 1);
+        viewer3DState.livoxTagFilter.delete(topicName);
     }
 }
 
@@ -1291,7 +1476,6 @@ function subscribeToPointCloud(topicName) {
         const frameId = (message.header && message.header.frame_id) ? message.header.frame_id : '';
         viewer3DState.topicFrameIds.set(topicName, frameId);
         applyFrameTransformToObject(pcFrameGroup, frameId);
-        if (!pcFrameGroup.visible) return;  // TF 없으면 파싱 스킵
 
         const settings   = viewer3DState.topicSettings.get(topicName) || {};
         const pointSize  = settings.pointSize  !== undefined ? settings.pointSize  : 0.1;
@@ -1416,6 +1600,174 @@ function subscribeToPointCloud(topicName) {
     return topic;
 }
 
+/**
+ * Livox LiDAR 토픽 구독 (subscribeToPointCloud 구조 재사용)
+ * messageType: livox_ros_driver2/msg/CustomMsg
+ * pointCloudMeshes / pcFrameGroups 를 PC2와 동일한 Map으로 공유하여
+ * updatePointSize, updatePointAlpha, clearDecayObjects, unsubscribeFromTopic 등을 변경 없이 재사용.
+ */
+function subscribeToLivox(topicName) {
+    if (!viewer3DState.rosConnected) {
+        console.warn('[Livox] Not connected to ROS');
+        return;
+    }
+
+    // 재구독 방지: 이미 구독 중인 토픽이면 건너뜀
+    if (viewer3DState.topicSubscriptions.has(topicName)) {
+        return viewer3DState.topicSubscriptions.get(topicName);
+    }
+
+    console.log('[Livox] Subscribing to topic:', topicName);
+
+    let frameCount = 0;
+    let adaptiveMin = Infinity;   // rainbow x/y/z 적응형 범위
+    let adaptiveMax = -Infinity;
+
+    const topic = new ROSLIB.Topic({
+        ros: viewer3DState.ros,
+        name: topicName,
+        messageType: 'livox_ros_driver2/msg/CustomMsg',
+        throttle_rate: 100,   // 최대 10 Hz
+        queue_length: 1       // 오래된 메시지 드롭 → 항상 최신 프레임 처리
+    });
+
+    viewer3DState.topicSubscriptions.set(topicName, topic);
+
+    // PC2 frame 래퍼 그룹 (frame_id → fixedFrame 변환 적용 대상)
+    let pcFrameGroup = viewer3DState.pcFrameGroups.get(topicName);
+    if (!pcFrameGroup) {
+        pcFrameGroup = new THREE.Group();
+        viewer3DState.scene.add(pcFrameGroup);
+        viewer3DState.pcFrameGroups.set(topicName, pcFrameGroup);
+    }
+
+    topic.subscribe(function(message) {
+        // 숨겨진 토픽은 파싱 자체를 건너뜀 (CPU 절약)
+        const mesh = viewer3DState.pointCloudMeshes[topicName];
+        if (mesh && mesh.visible === false) return;
+
+        // frame_id 저장 및 frame 변환 적용
+        const frameId = (message.header && message.header.frame_id) ? message.header.frame_id : '';
+        viewer3DState.topicFrameIds.set(topicName, frameId);
+        applyFrameTransformToObject(pcFrameGroup, frameId);
+
+        const settings  = viewer3DState.topicSettings.get(topicName) || {};
+        const pointSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
+        const alpha     = settings.alpha     !== undefined ? settings.alpha     : 1.0;
+        const decayTime = settings.decayTime !== undefined ? settings.decayTime : 0;
+
+        // ── Livox CustomMsg 고성능 파싱 (단일 패스, 재사용 버퍼) ──
+        const { count, newMin, newMax } = parseLivoxCustomMsg(message, settings, adaptiveMin, adaptiveMax);
+        if (count === 0) return;
+
+        // 적응형 범위 갱신 (x/y/z rainbow용, 다음 프레임에 사용)
+        if (isFinite(newMin)) adaptiveMin = newMin;
+        if (isFinite(newMax)) adaptiveMax = newMax;
+        frameCount++;
+
+        // ── Helper: PointsMaterial 생성 ──
+        function makeMaterial(sz, a) {
+            let renderSz = sz;
+            if (viewer3DState.currentViewType === 'topdown') {
+                renderSz = Math.max(1, sz * _getTopdownPixelsPerUnit());
+            }
+            return new THREE.PointsMaterial({
+                size: renderSz,
+                vertexColors: true,
+                sizeAttenuation: true,   // 항상 true 유지 (셰이더 재컴파일 방지)
+                transparent: a < 1.0,
+                opacity: a,
+            });
+        }
+
+        if (decayTime > 0) {
+            // ═══ DECAY 모드: 매 프레임 독립 Points 객체 생성·누적 ═══
+            if (viewer3DState.pointCloudMeshes[topicName]) {
+                pcFrameGroup.remove(viewer3DState.pointCloudMeshes[topicName]);
+                viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
+                viewer3DState.pointCloudMeshes[topicName].material.dispose();
+                viewer3DState.pointCloudMeshes[topicName] = null;
+            }
+
+            const posArr = _pc2PosBuffer.subarray(0, count * 3).slice();
+            const colArr = _pc2ColBuffer.subarray(0, count * 3).slice();
+
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+            geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+
+            const decayPoints = new THREE.Points(geo, makeMaterial(pointSize, alpha));
+            pcFrameGroup.add(decayPoints);
+
+            const arr = viewer3DState.decayObjects.get(topicName) || [];
+            arr.push({ points: decayPoints, time: performance.now() });
+            viewer3DState.decayObjects.set(topicName, arr);
+
+        } else {
+            // ═══ 일반 모드: 단일 mesh in-place 업데이트 ═══
+            const decayArr = viewer3DState.decayObjects.get(topicName);
+            if (decayArr && decayArr.length > 0) {
+                decayArr.forEach(item => {
+                    pcFrameGroup.remove(item.points);
+                    item.points.geometry.dispose();
+                    item.points.material.dispose();
+                });
+                viewer3DState.decayObjects.set(topicName, []);
+            }
+
+            if (!mesh) {
+                // ── 첫 메시지: GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
+                const posArr = new Float32Array(PC2_MAX_POINTS * 3);
+                const colArr = new Float32Array(PC2_MAX_POINTS * 3);
+                posArr.set(_pc2PosBuffer.subarray(0, count * 3));
+                colArr.set(_pc2ColBuffer.subarray(0, count * 3));
+
+                const posAttr = new THREE.BufferAttribute(posArr, 3);
+                const colAttr = new THREE.BufferAttribute(colArr, 3);
+                posAttr.setUsage(THREE.DynamicDrawUsage);
+                colAttr.setUsage(THREE.DynamicDrawUsage);
+
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', posAttr);
+                geometry.setAttribute('color',    colAttr);
+                geometry.setDrawRange(0, count);
+                geometry.computeBoundingSphere();
+
+                const newMesh = new THREE.Points(geometry, makeMaterial(pointSize, alpha));
+                viewer3DState.pointCloudMeshes[topicName] = newMesh;
+                pcFrameGroup.add(newMesh);
+                console.log('[Livox] Mesh added:', topicName, '|', count, 'pts');
+
+            } else {
+                // ── 업데이트: 기존 GPU 버퍼를 in-place 갱신 (할당 0회) ──
+                const geometry = mesh.geometry;
+                const posAttr  = geometry.attributes.position;
+                const colAttr  = geometry.attributes.color;
+
+                posAttr.array.set(_pc2PosBuffer.subarray(0, count * 3));
+                colAttr.array.set(_pc2ColBuffer.subarray(0, count * 3));
+                posAttr.needsUpdate = true;
+                colAttr.needsUpdate = true;
+                geometry.setDrawRange(0, count);
+
+                mesh.material.size        = pointSize;
+                mesh.material.opacity     = alpha;
+                mesh.material.transparent = alpha < 1.0;
+                mesh.material.needsUpdate = true;
+
+                if (frameCount % 30 === 0) geometry.computeBoundingSphere();
+            }
+        }
+    });
+
+    // selectedLivoxTopics에 추가 (중복 방지)
+    if (!viewer3DState.selectedLivoxTopics.includes(topicName)) {
+        viewer3DState.selectedLivoxTopics.push(topicName);
+    }
+
+    return topic;
+}
+
 // Wait for ROS connection with timeout
 async function waitForROSConnection(timeoutMs = 5000) {
     const startTime = Date.now();
@@ -1457,6 +1809,39 @@ async function getAvailablePointCloudTopics() {
             resolve(pointCloudTopics);
         }, function(error) {
             console.error('Failed to get topics:', error);
+            resolve([]);
+        });
+    });
+}
+
+// Get available Livox LiDAR topics (livox_ros_driver2/msg/CustomMsg)
+async function getAvailableLivoxTopics() {
+    if (!viewer3DState.rosConnected) {
+        console.log('[Livox] Waiting for ROS connection...');
+        const connected = await waitForROSConnection(5000);
+        if (!connected) {
+            console.warn('[Livox] Not connected to ROS after timeout');
+            return [];
+        }
+    }
+
+    return new Promise((resolve) => {
+        viewer3DState.ros.getTopics(function(topics) {
+            const livoxTopics = [];
+
+            if (topics.topics && topics.types) {
+                topics.topics.forEach((topic, index) => {
+                    const type = topics.types[index];
+                    if (type === 'livox_ros_driver2/msg/CustomMsg') {
+                        livoxTopics.push(topic);
+                    }
+                });
+            }
+
+            console.log('[Livox] Available Livox topics:', livoxTopics);
+            resolve(livoxTopics);
+        }, function(error) {
+            console.error('[Livox] Failed to get topics:', error);
             resolve([]);
         });
     });
@@ -1662,12 +2047,13 @@ function renderDisplayPanel() {
     const container = document.getElementById('viewer-display-panel-content');
     if (!container) return;
 
-    const pcTopics   = viewer3DState.displaySelectedTopics;
-    const pathTopics = viewer3DState.selectedPathTopics;
-    const odomTopics = viewer3DState.selectedOdomTopics;
-    const tfTopics   = viewer3DState.selectedTFTopics;
+    const pcTopics    = viewer3DState.displaySelectedTopics;
+    const pathTopics  = viewer3DState.selectedPathTopics;
+    const odomTopics  = viewer3DState.selectedOdomTopics;
+    const tfTopics    = viewer3DState.selectedTFTopics;
+    const livoxTopics = viewer3DState.selectedLivoxTopics;
 
-    const hasAny = pcTopics.length > 0 || pathTopics.length > 0 || odomTopics.length > 0 || tfTopics.length > 0;
+    const hasAny = pcTopics.length > 0 || pathTopics.length > 0 || odomTopics.length > 0 || tfTopics.length > 0 || livoxTopics.length > 0;
 
     if (!hasAny) {
         container.innerHTML = '<div style="font-size:12px; color: var(--muted); padding: 4px 2px;">구독 중인 토픽 없음</div>';
@@ -1714,8 +2100,7 @@ function renderDisplayPanel() {
 
             const nameSpan = document.createElement('span');
             nameSpan.className = 'display-topic-item-name';
-            const shortName = topicName.split('/').pop() || topicName;
-            nameSpan.textContent = shortName;
+            nameSpan.textContent = topicName;
             nameSpan.title = topicName;
 
             header.appendChild(checkbox);
@@ -1933,8 +2318,7 @@ function renderDisplayPanel() {
 
             const nameSpan = document.createElement('span');
             nameSpan.className = 'display-topic-item-name';
-            const shortName = topicName.split('/').pop() || topicName;
-            nameSpan.textContent = shortName;
+            nameSpan.textContent = topicName;
             nameSpan.title = topicName;
 
             header.appendChild(checkbox);
@@ -2070,8 +2454,7 @@ function renderDisplayPanel() {
 
             const nameSpan = document.createElement('span');
             nameSpan.className = 'display-topic-item-name';
-            const shortName = topicName.split('/').pop() || topicName;
-            nameSpan.textContent = shortName;
+            nameSpan.textContent = topicName;
             nameSpan.title = topicName;
 
             header.appendChild(checkbox);
@@ -2209,8 +2592,7 @@ function renderDisplayPanel() {
 
             const nameSpan = document.createElement('span');
             nameSpan.className = 'display-topic-item-name';
-            const shortName = topicName.split('/').pop() || topicName;
-            nameSpan.textContent = shortName || topicName;
+            nameSpan.textContent = topicName;
             nameSpan.title = topicName;
 
             // 제거 버튼
@@ -2317,6 +2699,272 @@ function renderDisplayPanel() {
 
             item.appendChild(settingsDiv);
 
+            container.appendChild(item);
+        });
+    }
+
+    // ── Livox LiDAR 섹션 ──
+    if (livoxTopics.length > 0) {
+        // 섹션 라벨: "Livox LiDAR" + LIVOX 배지
+        const livoxLabel = document.createElement('div');
+        livoxLabel.className = 'display-panel-section-label';
+        livoxLabel.textContent = 'Livox LiDAR';
+
+        const livoxBadge = document.createElement('span');
+        livoxBadge.className = 'livox-badge';
+        livoxBadge.textContent = 'LIVOX';
+        livoxLabel.appendChild(livoxBadge);
+        container.appendChild(livoxLabel);
+
+        livoxTopics.forEach(topicName => {
+            const settings   = viewer3DState.topicSettings.get(topicName) || {};
+            const colorMode  = settings.colorMode  || 'rainbow';
+            const colorField = settings.colorField || 'reflectivity';
+            const solidColor = settings.solidColor || '#ffffff';
+            const pointSize  = settings.pointSize  !== undefined ? settings.pointSize  : 0.1;
+            const alpha      = settings.alpha      !== undefined ? settings.alpha      : 1.0;
+            const decayTime  = settings.decayTime  !== undefined ? settings.decayTime  : 0;
+            const tagFilter  = settings.tagFilter  !== undefined ? settings.tagFilter  : false;
+
+            const meshEntry = viewer3DState.pointCloudMeshes[topicName];
+            const visible = meshEntry ? meshEntry.visible !== false : true;
+
+            // 토픽 항목 컨테이너
+            const item = document.createElement('div');
+            item.className = 'display-topic-item';
+            item.dataset.topicName = topicName;
+
+            // 헤더: 체크박스 + 토픽명 + 제거 버튼
+            const header = document.createElement('div');
+            header.className = 'display-topic-item-header';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = visible;
+            checkbox.title = '표시/숨기기';
+            checkbox.addEventListener('change', function() {
+                toggleTopicVisible(topicName, this.checked);
+            });
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'display-topic-item-name';
+            nameSpan.textContent = topicName;
+            nameSpan.title = topicName;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'display-topic-remove-btn';
+            removeBtn.textContent = '✕';
+            removeBtn.title = '토픽 제거';
+            removeBtn.addEventListener('click', function() {
+                unsubscribeFromTopic(topicName);
+                renderDisplayPanel();
+            });
+
+            header.appendChild(checkbox);
+            header.appendChild(nameSpan);
+            header.appendChild(removeBtn);
+
+            // 설정 영역
+            const settingsDiv = document.createElement('div');
+            settingsDiv.className = 'display-topic-item-settings';
+
+            // ── 색상 모드 선택 (Rainbow / By Line / Solid) ──
+            const colorModeLabel = document.createElement('label');
+            colorModeLabel.textContent = '색상 모드';
+
+            const colorModeSelect = document.createElement('select');
+            colorModeSelect.title = '색상 모드 선택';
+            [
+                { value: 'rainbow',  label: 'Rainbow' },
+                { value: 'byline',   label: 'By Line' },
+                { value: 'solid',    label: 'Solid' }
+            ].forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                if (opt.value === colorMode) option.selected = true;
+                colorModeSelect.appendChild(option);
+            });
+
+            // 단색 색상 선택 행 (Solid 모드)
+            const solidColorRow = document.createElement('div');
+            solidColorRow.style.display = colorMode === 'solid' ? 'flex' : 'none';
+            solidColorRow.style.flexDirection = 'column';
+            solidColorRow.style.gap = '2px';
+
+            const solidColorLabel = document.createElement('label');
+            solidColorLabel.textContent = '색상';
+
+            const solidColorPickerRow = document.createElement('div');
+            solidColorPickerRow.className = 'solid-color-picker-row';
+
+            const colorSwatch = document.createElement('button');
+            colorSwatch.className = 'solid-color-swatch';
+            colorSwatch.title = '색상 선택';
+            colorSwatch.style.backgroundColor = solidColor;
+
+            const colorHexLabel = document.createElement('span');
+            colorHexLabel.className = 'solid-color-hex';
+            colorHexLabel.textContent = solidColor.toUpperCase();
+
+            colorSwatch.addEventListener('click', function(e) {
+                e.stopPropagation();
+                openColorPickerPopup(topicName, solidColor, colorSwatch, colorHexLabel);
+            });
+
+            solidColorPickerRow.appendChild(colorSwatch);
+            solidColorPickerRow.appendChild(colorHexLabel);
+
+            solidColorRow.appendChild(solidColorLabel);
+            solidColorRow.appendChild(solidColorPickerRow);
+
+            // ── 색상 필드 선택 (Rainbow 모드에서만 표시) ──
+            const colorFieldRow = document.createElement('div');
+            colorFieldRow.style.display = colorMode === 'rainbow' ? 'flex' : 'none';
+            colorFieldRow.style.flexDirection = 'column';
+            colorFieldRow.style.gap = '2px';
+
+            const colorFieldLabel = document.createElement('label');
+            colorFieldLabel.textContent = '색상 필드';
+
+            const colorFieldSelect = document.createElement('select');
+            colorFieldSelect.title = '색상 매핑 필드 선택';
+            [
+                { value: 'reflectivity', label: 'reflectivity' },
+                { value: 'z',            label: 'z' },
+                { value: 'x',            label: 'x' },
+                { value: 'y',            label: 'y' }
+            ].forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                if (opt.value === colorField) option.selected = true;
+                colorFieldSelect.appendChild(option);
+            });
+            colorFieldSelect.addEventListener('change', function() {
+                updateTopicSetting(topicName, 'colorField', this.value);
+            });
+
+            colorFieldRow.appendChild(colorFieldLabel);
+            colorFieldRow.appendChild(colorFieldSelect);
+
+            colorModeSelect.addEventListener('change', function() {
+                updateTopicSetting(topicName, 'colorMode', this.value);
+                colorFieldRow.style.display = this.value === 'rainbow' ? 'flex' : 'none';
+                solidColorRow.style.display = this.value === 'solid'   ? 'flex' : 'none';
+            });
+
+            settingsDiv.appendChild(colorModeLabel);
+            settingsDiv.appendChild(colorModeSelect);
+            settingsDiv.appendChild(colorFieldRow);
+            settingsDiv.appendChild(solidColorRow);
+
+            // ── Tag Filter 체크박스 (Livox 전용: 노이즈 제외) ──
+            const tagFilterRow = document.createElement('div');
+            tagFilterRow.className = 'pc2-setting-row';
+            tagFilterRow.style.alignItems = 'center';
+            tagFilterRow.style.gap = '6px';
+
+            const tagFilterCheckbox = document.createElement('input');
+            tagFilterCheckbox.type    = 'checkbox';
+            tagFilterCheckbox.checked = tagFilter;
+            tagFilterCheckbox.title   = '노이즈 포인트 제외 (tag bit[3:2] = 0x0C): 0=고신뢰, 1=노이즈';
+            tagFilterCheckbox.id      = `livox-tag-filter-${topicName.replace(/\//g, '_')}`;
+            tagFilterCheckbox.addEventListener('change', function() {
+                updateTopicSetting(topicName, 'tagFilter', this.checked);
+            });
+
+            const tagFilterLabel = document.createElement('label');
+            tagFilterLabel.htmlFor     = tagFilterCheckbox.id;
+            tagFilterLabel.textContent = '노이즈 제외 (tag bit[3:2])';
+            tagFilterLabel.style.cursor = 'pointer';
+
+            tagFilterRow.appendChild(tagFilterCheckbox);
+            tagFilterRow.appendChild(tagFilterLabel);
+            settingsDiv.appendChild(tagFilterRow);
+
+            // ── Point Size 슬라이더 ──
+            const sizeRow = document.createElement('div');
+            sizeRow.className = 'pc2-setting-row';
+
+            const sizeLabelEl = document.createElement('label');
+            sizeLabelEl.textContent = `Size: ${pointSize.toFixed(2)}`;
+
+            const sizeSlider = document.createElement('input');
+            sizeSlider.type  = 'range';
+            sizeSlider.min   = '0.01';
+            sizeSlider.max   = '1.0';
+            sizeSlider.step  = '0.01';
+            sizeSlider.value = pointSize;
+            sizeSlider.className = 'display-item-slider';
+            sizeSlider.title = '포인트 크기 (m)';
+            sizeSlider.addEventListener('input', function() {
+                const v = parseFloat(this.value);
+                sizeLabelEl.textContent = `Size: ${v.toFixed(2)}`;
+                updatePointSize(topicName, v);
+            });
+
+            sizeRow.appendChild(sizeLabelEl);
+            sizeRow.appendChild(sizeSlider);
+            settingsDiv.appendChild(sizeRow);
+
+            // ── Alpha (투명도) 슬라이더 ──
+            const alphaRow = document.createElement('div');
+            alphaRow.className = 'pc2-setting-row';
+
+            const alphaLabelEl = document.createElement('label');
+            alphaLabelEl.textContent = `Alpha: ${alpha.toFixed(2)}`;
+
+            const alphaSlider = document.createElement('input');
+            alphaSlider.type  = 'range';
+            alphaSlider.min   = '0.0';
+            alphaSlider.max   = '1.0';
+            alphaSlider.step  = '0.05';
+            alphaSlider.value = alpha;
+            alphaSlider.className = 'display-item-slider';
+            alphaSlider.title = '투명도 (0=완전투명, 1=불투명)';
+            alphaSlider.addEventListener('input', function() {
+                const v = parseFloat(this.value);
+                alphaLabelEl.textContent = `Alpha: ${v.toFixed(2)}`;
+                updatePointAlpha(topicName, v);
+            });
+
+            alphaRow.appendChild(alphaLabelEl);
+            alphaRow.appendChild(alphaSlider);
+            settingsDiv.appendChild(alphaRow);
+
+            // ── Decay Time 슬라이더 ──
+            const decayRow = document.createElement('div');
+            decayRow.className = 'pc2-setting-row';
+
+            const decayLabelEl = document.createElement('label');
+            decayLabelEl.textContent = `Decay Time: ${decayTime.toFixed(1)}s`;
+
+            const decaySlider = document.createElement('input');
+            decaySlider.type  = 'range';
+            decaySlider.min   = '0';
+            decaySlider.max   = '30';
+            decaySlider.step  = '0.5';
+            decaySlider.value = decayTime;
+            decaySlider.className = 'display-item-slider';
+            decaySlider.title = 'Decay Time (0=최신 프레임만, >0=n초간 누적 표시)';
+            decaySlider.addEventListener('input', function() {
+                const v = parseFloat(this.value);
+                decayLabelEl.textContent = `Decay Time: ${v.toFixed(1)}s`;
+                updateTopicSetting(topicName, 'decayTime', v);
+                if (v <= 0) {
+                    clearDecayObjects(topicName);
+                } else {
+                    _pruneExpiredDecayObjects(topicName, v);
+                }
+            });
+
+            decayRow.appendChild(decayLabelEl);
+            decayRow.appendChild(decaySlider);
+            settingsDiv.appendChild(decayRow);
+
+            item.appendChild(header);
+            item.appendChild(settingsDiv);
             container.appendChild(item);
         });
     }
@@ -3304,6 +3952,17 @@ function applyFrameTransformToObject(object, frameId) {
     }
     const transform = computeWorldTransform(frameId, fixedFrame);
     if (!transform) {
+        // TF 경로 없음: TF 시스템 활성화 여부로 구분
+        const hasTFData = _allKnownFrames.size > 0 || viewer3DState.tfFrameTree.size > 0;
+        if (!hasTFData) {
+            // /tf 토픽 자체가 없는 bag → identity 변환으로 원점 표시
+            object.position.set(0, 0, 0);
+            object.quaternion.set(0, 0, 0, 1);
+            object.visible = true;
+            return false;
+        }
+        // TF 데이터는 있지만 fixedFrame ↔ frameId 경로 없음
+        // (잘못된 Fixed Frame 입력, 또는 TF 트리 단절) → RViz처럼 숨김
         object.visible = false;
         return false;
     }
@@ -3474,6 +4133,69 @@ function rebuildTFScene(topicName) {
 // 시각화 구독(topicSubscriptions)과 완전히 분리된 별도 구독 Map
 const _bgFrameSubs = new Map();           // topicName → ROSLIB.Topic
 const _allKnownFrames = new Set();        // 수집된 모든 frame ID
+
+// ── TopDown 뷰 Yaw 회전 상태 ──
+let _topdownYaw = 0;                       // 현재 yaw 각도 (라디안, 0 = Y축이 화면 위 = 북쪽)
+let _topdownYawDragActive = false;
+let _topdownYawLastX = 0;
+const _TOPDOWN_YAW_SENSITIVITY = 0.004;   // 픽셀당 회전 라디안
+
+/**
+ * _applyTopdownYaw()
+ * 현재 _topdownYaw 값을 orthoCam.up 에 반영하고 lookAt 업데이트.
+ * camera.up = (-sin(yaw), cos(yaw), 0) → look(-Z)과 항상 직교 보장.
+ */
+function _applyTopdownYaw() {
+    const cam = viewer3DState.orthoCam;
+    if (!cam) return;
+    cam.up.set(-Math.sin(_topdownYaw), Math.cos(_topdownYaw), 0);
+    const target = viewer3DState.controls
+        ? viewer3DState.controls.target
+        : new THREE.Vector3();
+    cam.lookAt(target);
+    if (viewer3DState.controls) viewer3DState.controls.update();
+}
+
+// pointer 이벤트 + 캡처 페이즈 사용:
+// OrbitControls는 버블 페이즈로 등록되어 있으므로, 캡처 페이즈에서
+// stopImmediatePropagation() 을 호출하면 OrbitControls가 좌클릭을 받기 전에
+// 우리 핸들러가 먼저 처리하여 yaw 회전이 정상 동작한다.
+function _topdownYawPointerdown(e) {
+    if (e.button === 0) {
+        _topdownYawDragActive = true;
+        _topdownYawLastX = e.clientX;
+        e.stopImmediatePropagation();  // OrbitControls의 pointerdown 차단
+    }
+}
+
+function _topdownYawPointermove(e) {
+    if (!_topdownYawDragActive) return;
+    if (!(e.buttons & 1)) { _topdownYawDragActive = false; return; }
+    const dx = e.clientX - _topdownYawLastX;
+    _topdownYawLastX = e.clientX;
+    _topdownYaw += dx * _TOPDOWN_YAW_SENSITIVITY;
+    _applyTopdownYaw();
+    e.stopImmediatePropagation();  // OrbitControls의 pointermove 차단
+}
+
+function _topdownYawPointerup(e) {
+    if (e.button === 0) _topdownYawDragActive = false;
+    // pointerup은 전파 허용 → OrbitControls 내부 정리가 진행되도록
+}
+
+/** TopDown yaw 이벤트 리스너 등록 (캡처 페이즈) */
+function _attachTopdownYawHandlers(domEl) {
+    domEl.addEventListener('pointerdown', _topdownYawPointerdown, true);
+    domEl.addEventListener('pointermove', _topdownYawPointermove, true);
+    domEl.addEventListener('pointerup',   _topdownYawPointerup,   true);
+}
+
+/** TopDown yaw 이벤트 리스너 해제 (캡처 페이즈) */
+function _detachTopdownYawHandlers(domEl) {
+    domEl.removeEventListener('pointerdown', _topdownYawPointerdown, true);
+    domEl.removeEventListener('pointermove', _topdownYawPointermove, true);
+    domEl.removeEventListener('pointerup',   _topdownYawPointerup,   true);
+}
 
 /**
  * ROS 연결 시 /tf, /tf_static 을 1Hz로 백그라운드 구독하여
@@ -4068,11 +4790,20 @@ const ADD_DISPLAY_CATEGORIES = [
         stateKey: 'selectedTFTopics',
         fetchTopics: null,
         subscribeFn: null
+    },
+    {
+        type: 'LivoxLidar',
+        msgType: 'livox_ros_driver2/msg/CustomMsg',
+        description: 'Displays Livox LiDAR CustomMsg as colored points. Supports By Line color mode and Tag Filter for noise removal.',
+        color: '#29b6f6',            // 하늘색 배지
+        stateKey: 'selectedLivoxTopics',
+        fetchTopics: null,           // 런타임 할당
+        subscribeFn: null
     }
 ];
 
 // 카테고리별 현재 로드된 토픽 목록 (모달 내부 상태)
-let _addDisplayTopics = [[], [], [], []];
+let _addDisplayTopics = [[], [], [], [], []];
 
 /**
  * Add Display 통합 다이얼로그 열기 (RViz 스타일)
@@ -4092,6 +4823,8 @@ async function openAddDisplayModal() {
     ADD_DISPLAY_CATEGORIES[2].subscribeFn = subscribeToOdometry;
     ADD_DISPLAY_CATEGORIES[3].fetchTopics = getAvailableTFTopics;
     ADD_DISPLAY_CATEGORIES[3].subscribeFn = subscribeToTF;
+    ADD_DISPLAY_CATEGORIES[4].fetchTopics = getAvailableLivoxTopics;
+    ADD_DISPLAY_CATEGORIES[4].subscribeFn = subscribeToLivox;
 
     const modal = document.getElementById('add-display-modal');
     const tree  = document.getElementById('add-display-tree');
@@ -4112,7 +4845,7 @@ async function openAddDisplayModal() {
         _addDisplayTopics = results;
     } catch (err) {
         console.error('[AddDisplay] Failed to load topics:', err);
-        _addDisplayTopics = [[], [], [], []];
+        _addDisplayTopics = [[], [], [], [], []];
     } finally {
         if (btn) { btn.textContent = '+ Add'; btn.disabled = false; }
     }
@@ -4308,6 +5041,24 @@ window.closeFixedFrameDropdown = closeFixedFrameDropdown;
 window.onFixedFrameInput = onFixedFrameInput;
 window.onFixedFrameKeydown = onFixedFrameKeydown;
 window.onFixedFrameBlur = onFixedFrameBlur;
+
+/**
+ * Fixed Frame input onfocus 핸들러
+ * 입력창 클릭(포커스) 시 드롭다운 자동 열기
+ */
+function onFixedFrameFocus() {
+    if (_ffSelecting) return;
+    const dropdown = document.getElementById('fixed-frame-dropdown');
+    if (dropdown && dropdown.style.display === 'none') {
+        if (_ffBlurTimer !== null) {
+            clearTimeout(_ffBlurTimer);
+            _ffBlurTimer = null;
+        }
+        _ffShowAll = true;
+        renderFixedFrameDropdown('');
+    }
+}
+window.onFixedFrameFocus = onFixedFrameFocus;
 
 // ─── Snapshot ────────────────────────────────────────────────────────────────
 function take3DSnapshot() {
