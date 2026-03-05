@@ -1646,11 +1646,14 @@ function subscribeToPointCloud(topicName) {
     const settings = viewer3DState.topicSettings.get(topicName) || {};
 
     // 스트리밍 워커에 구독 요청 (Worker 스레드에서 rosbridge 직접 구독)
+    // throttle_rate 500ms(2Hz): Ouster PC2 메시지는 10MB+ 대용량이므로
+    // 100ms(10Hz) 요청 시 rosbridge WebSocket 전체가 블로킹되어 /tf 등 다른
+    // 토픽이 지연됨. 2Hz로 낮춰 WebSocket 트래픽을 1/5로 감소.
     const worker = _getPC2StreamWorker();
     worker.postMessage({
         cmd:           'subscribe',
         topicName,
-        throttle_rate: 100,
+        throttle_rate: 500,
         colorMode:     settings.colorMode  || 'rainbow',
         colorField:    settings.colorField || 'intensity',
         solidColor:    settings.solidColor || '#ffffff',
@@ -4289,10 +4292,13 @@ function _detachTopdownYawHandlers(domEl) {
  */
 function startBackgroundFrameCollection() {
     // /tf (동적 변환): 10Hz — 실시간 좌표 변환에 충분한 빈도
-    // /tf_static (정적 변환): 0.2Hz — 거의 변하지 않으므로 저속으로 충분
+    // /tf_static (정적 변환): throttle 없음 + TRANSIENT_LOCAL QoS
+    //   - bag play 전에 이미 publish된 latched 메시지를 구독 즉시 받기 위해
+    //     durability: 'transient_local' QoS 설정이 필수.
+    //   - throttle_rate: 0 → 필터링 없음 (메시지가 극히 드물므로 부하 없음)
     const BG_TOPICS = [
-        { name: '/tf',        throttle: 100  },
-        { name: '/tf_static', throttle: 5000 },
+        { name: '/tf',        throttle: 100, qos: null },
+        { name: '/tf_static', throttle: 0,   qos: { durability: 'transient_local' } },
     ];
 
     // reapplyAllFrameTransforms throttle 핸들 (두 토픽 콜백이 공유)
@@ -4301,13 +4307,15 @@ function startBackgroundFrameCollection() {
     BG_TOPICS.forEach(function(config) {
         if (_bgFrameSubs.has(config.name)) return;
         try {
-            const topic = new ROSLIB.Topic({
+            const topicOpts = {
                 ros:           viewer3DState.ros,
                 name:          config.name,
                 messageType:   'tf2_msgs/msg/TFMessage',
                 throttle_rate: config.throttle,
                 queue_length:  1
-            });
+            };
+            if (config.qos) topicOpts.qos = config.qos;
+            const topic = new ROSLIB.Topic(topicOpts);
 
             topic.subscribe(function(message) {
                 if (!message.transforms) return;

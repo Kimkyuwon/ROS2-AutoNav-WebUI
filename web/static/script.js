@@ -380,10 +380,12 @@ async function loadBagFile() {
             console.log('Duration:', bagPlayerState.bagDuration, 'seconds');
             console.log('Bag type:', bagPlayerState.bagType);
 
-            // Show/hide ROS1 badge, convert button, and playback rate controls
+            // Show/hide ROS1/ROS2 badge, convert button, and playback rate controls
             const isRos1 = bagPlayerState.bagType === 'ros1';
             domCache.get('bag-ros1-badge').style.display = isRos1 ? 'inline' : 'none';
+            domCache.get('bag-ros2-badge').style.display = !isRos1 ? 'inline' : 'none';
             domCache.get('convert-to-ros2-btn').style.display = isRos1 ? 'inline-block' : 'none';
+            domCache.get('convert-to-ros1-btn').style.display = !isRos1 ? 'inline-block' : 'none';
             // Rate 슬라이더: ROS1 / ROS2 bag 모두 표시
             const rateControls = domCache.get('ros1-playback-controls');
             if (rateControls) {
@@ -754,10 +756,12 @@ async function convertToRos2() {
                 bagPlayerState.bagDuration = loadResult.duration || 0.0;
                 bagPlayerState.bagType = loadResult.bag_type || 'ros2';
 
-                // ROS1 배지, Convert 버튼 숨기기 (이제 ROS2 bag); 속도 슬라이더는 유지
+                // ROS1/ROS2 배지, Convert 버튼 업데이트; 속도 슬라이더는 유지
                 const isRos1 = bagPlayerState.bagType === 'ros1';
                 domCache.get('bag-ros1-badge').style.display = isRos1 ? 'inline' : 'none';
+                domCache.get('bag-ros2-badge').style.display = !isRos1 ? 'inline' : 'none';
                 domCache.get('convert-to-ros2-btn').style.display = isRos1 ? 'inline-block' : 'none';
+                domCache.get('convert-to-ros1-btn').style.display = !isRos1 ? 'inline-block' : 'none';
                 // 변환 후에도 rate 슬라이더는 표시 유지
                 const ros1Controls = domCache.get('ros1-playback-controls');
                 if (ros1Controls) {
@@ -778,6 +782,34 @@ async function convertToRos2() {
         alert('Conversion failed: ' + error.message);
         btn.disabled = false;
         btn.textContent = originalText;
+    }
+}
+
+async function convertToRos1() {
+    const bagPath = domCache.get('bag-directory').value;
+    if (!bagPath || bagPlayerState.bagType !== 'ros2') {
+        alert('Please load a ROS2 bag first');
+        return;
+    }
+
+    const btn = domCache.get('convert-to-ros1-btn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Converting...';
+
+    try {
+        const result = await apiCall('/api/bag/convert_to_ros1', {});
+        btn.disabled = false;
+        btn.textContent = originalText;
+        if (result.success) {
+            alert(`Conversion complete!\nOutput: ${result.output_path}`);
+        } else {
+            alert('Conversion failed: ' + (result.error || 'Unknown error'));
+        }
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        alert('Conversion error: ' + e.message);
     }
 }
 
@@ -914,19 +946,34 @@ async function selectRecorderTopics() {
     const topicList = domCache.get('recorder-topic-list');
     topicList.innerHTML = '';
 
-    result.topics.forEach(topic => {
+    // 이미 선택된 토픽 이름 집합 (빠른 검색용)
+    const selectedNames = new Set(
+        bagRecorderState.selectedTopics.map(t => (typeof t === 'object' ? t.name : t))
+    );
+
+    result.topics.forEach(topicEntry => {
+        // topicEntry는 {name, type} 객체 또는 문자열일 수 있음
+        const topicName = (typeof topicEntry === 'object') ? topicEntry.name : topicEntry;
+        const topicType = (typeof topicEntry === 'object') ? topicEntry.type : '';
+
         const div = document.createElement('div');
         div.className = 'topic-item';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.id = `recorder-topic-${topic}`;
-        checkbox.value = topic;
-        checkbox.checked = bagRecorderState.selectedTopics.includes(topic);
+        checkbox.id = `recorder-topic-${topicName}`;
+        checkbox.value = topicName;
+        checkbox.dataset.topicType = topicType;   // 타입 정보를 data 속성에 보존
+        checkbox.checked = selectedNames.has(topicName);
 
         const label = document.createElement('label');
-        label.htmlFor = `recorder-topic-${topic}`;
-        label.textContent = topic;
+        label.htmlFor = `recorder-topic-${topicName}`;
+        if (topicType) {
+            label.innerHTML = `<span style="font-weight:600;">${topicName}</span>`
+                + ` <span style="color:#888; font-size:0.85em;">${topicType}</span>`;
+        } else {
+            label.textContent = topicName;
+        }
 
         div.appendChild(checkbox);
         div.appendChild(label);
@@ -941,11 +988,14 @@ function closeRecorderTopicSelection() {
 }
 
 function confirmRecorderTopicSelection() {
-    // Get all checked topics
+    // Get all checked topics — {name, type} 객체로 저장하여 ROS1 녹화 시 타입 정보 전달
     bagRecorderState.selectedTopics = [];
     const checkboxes = document.querySelectorAll('#recorder-topic-list input[type="checkbox"]:checked');
     checkboxes.forEach(checkbox => {
-        bagRecorderState.selectedTopics.push(checkbox.value);
+        bagRecorderState.selectedTopics.push({
+            name: checkbox.value,
+            type: checkbox.dataset.topicType || '',
+        });
     });
 
     console.log('Selected topics for recording:', bagRecorderState.selectedTopics);
@@ -967,9 +1017,11 @@ function updateRecorderSelectedTopicsDisplay() {
     if (bagRecorderState.selectedTopics.length === 0) {
         display.innerHTML = '<span style="color: #888;">No topics selected</span>';
     } else {
-        const topicsHtml = bagRecorderState.selectedTopics.map(topic =>
-            `<div style="display: inline-block; background: #8a2a2a; padding: 3px 8px; margin: 2px; border-radius: 3px; font-size: 0.9em;">${topic}</div>`
-        ).join('');
+        // selectedTopics는 {name, type} 객체 또는 문자열 모두 지원
+        const topicsHtml = bagRecorderState.selectedTopics.map(topic => {
+            const name = typeof topic === 'object' ? topic.name : topic;
+            return `<div style="display: inline-block; background: #8a2a2a; padding: 3px 8px; margin: 2px; border-radius: 3px; font-size: 0.9em;">${name}</div>`;
+        }).join('');
         display.innerHTML = topicsHtml;
     }
 }
@@ -985,14 +1037,23 @@ async function recordBag() {
         return;
     }
 
-    const result = await apiCall('/api/recorder/record', { topics: bagRecorderState.selectedTopics });
+    const saveAsRos1 = domCache.get('recorder-save-ros1-toggle').checked;
+    const result = await apiCall('/api/recorder/record', {
+        topics: bagRecorderState.selectedTopics,
+        save_as_ros1: saveAsRos1,
+    });
     if (result.success) {
         const button = domCache.get('recorder-record-button');
         button.textContent = result.recording ? 'Stop' : 'Record';
         console.log('Recording:', result.recording ? 'started' : 'stopped');
 
+        // 녹화 중 모드 배지 표시
+        const badge = domCache.get('recorder-mode-badge');
+        badge.style.display = result.recording ? 'inline' : 'none';
+        badge.textContent = result.mode === 'ros1' ? 'ROS1 .bag' : 'ROS2 bag';
+
         if (result.recording) {
-            alert(`Recording started in /home/kkw/${bagRecorderState.bagName}`);
+            alert(`Recording started in /home/kkw/dataset/${bagRecorderState.bagName}`);
         } else {
             alert('Recording stopped');
         }
@@ -1010,6 +1071,13 @@ async function updateRecorderState() {
             button.textContent = 'Stop';
         } else {
             button.textContent = 'Record';
+        }
+
+        // 모드 배지 업데이트
+        const badge = domCache.get('recorder-mode-badge');
+        if (badge) {
+            badge.style.display = state.recording ? 'inline' : 'none';
+            badge.textContent = state.mode === 'ros1' ? 'ROS1 .bag' : 'ROS2 bag';
         }
     }
 }
@@ -2166,11 +2234,13 @@ function subscribeToTopic(topic) {
 
     console.log(`[subscribeToTopic] Subscribing to ${topic} (${messageType})`);
 
-    // 메시지 구독
+    // 메시지 구독 (throttle_rate: 100ms=10Hz, queue_length: 1 — 고주파 토픽(IMU 등) rosbridge 과부하 방지)
     const listener = new ROSLIB.Topic({
         ros: plotState.ros,
         name: topic,
-        messageType: messageType
+        messageType: messageType,
+        throttle_rate: 100,  // 10Hz: rosbridge에서 100ms당 최대 1개 메시지만 전달
+        queue_length: 1      // 최신 메시지만 처리 (버퍼 누적 방지)
     });
 
     listener.subscribe((message) => {
@@ -2591,11 +2661,13 @@ function setupPlotDataUpdate(fullPath) {
     
     console.log('[setupPlotDataUpdate] Creating subscriber for topic:', topic, 'type:', topicType);
     
-    // Plot 전용 subscriber 생성
+    // Plot 전용 subscriber 생성 (throttle_rate: 100ms=10Hz, queue_length: 1 — 고주파 토픽 rosbridge 과부하 방지)
     const plotSubscriber = new window.ROSLIB.Topic({
         ros: plotState.ros,
         name: topic,
-        messageType: topicType
+        messageType: topicType,
+        throttle_rate: 100,  // 10Hz: rosbridge에서 100ms당 최대 1개 메시지만 전달
+        queue_length: 1      // 최신 메시지만 처리 (버퍼 누적 방지)
     });
     
     let messageCount = 0;

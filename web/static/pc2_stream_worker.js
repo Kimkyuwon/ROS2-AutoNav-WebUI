@@ -77,7 +77,7 @@ self.onmessage = function (e) {
             solidB: parseInt(hex.substring(4, 6), 16) / 255,
             adaptiveMin:   0,
             adaptiveMax:   1,
-            throttle_rate: throttle_rate || 100,
+            throttle_rate: throttle_rate || 500,
         });
         if (wsReady) _sendSubscribe(topicName);
 
@@ -139,7 +139,7 @@ function _sendSubscribe(topicName) {
         op:            'subscribe',
         topic:         topicName,
         type:          'sensor_msgs/msg/PointCloud2',
-        throttle_rate: entry ? entry.throttle_rate : 100,
+        throttle_rate: entry ? entry.throttle_rate : 500,
         queue_length:  1,
     }));
 }

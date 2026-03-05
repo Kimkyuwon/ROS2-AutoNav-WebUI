@@ -163,7 +163,9 @@
                         <input type="text" id="bag-directory" placeholder="Click Load Bag File to browse" readonly>
                         <button onclick="loadBagFile()">Load Bag File</button>
                         <span id="bag-ros1-badge" style="display:none;" class="ros1-badge">ROS1 Bag</span>
+                        <span id="bag-ros2-badge" style="display:none;" class="ros2-badge">ROS2 Bag</span>
                         <button id="convert-to-ros2-btn" style="display:none;" onclick="convertToRos2()">Convert to ROS2</button>
+                        <button id="convert-to-ros1-btn" style="display:none;" onclick="convertToRos1()">Convert to ROS1</button>
                     </div>
 
                     <div class="form-group">
@@ -229,10 +231,19 @@
 
                     <div class="form-group">
                         <label></label>
+                        <label style="cursor:pointer;">
+                            <input type="checkbox" id="recorder-save-ros1-toggle">
+                            Save as ROS1 .bag (direct recording)
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label></label>
                         <div class="bag-control-buttons">
                             <button onclick="selectRecorderTopics()">Select Topic</button>
                             <button id="recorder-record-button" onclick="recordBag()">Record</button>
                         </div>
+                        <span id="recorder-mode-badge" style="display:none;"></span>
                         <div></div>
                     </div>
 

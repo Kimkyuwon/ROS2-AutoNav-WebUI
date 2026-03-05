@@ -448,6 +448,273 @@ class Ros1BagPlayerThread(threading.Thread):
             return None
 
 
+class Ros1BagRecorderThread(threading.Thread):
+    """rclpy subscriber로 ROS2 토픽을 구독하여 rosbags.rosbag1.Writer로
+    ROS1 .bag 파일에 직접 기록하는 스레드.
+
+    변환 흐름:
+        rclpy subscriber → serialize_message() → CDR bytes
+        → typestore.deserialize_cdr(bytes, msgtype)   # rosbags 객체
+        → typestore.serialize_ros1(obj, msgtype)       # ROS1 raw bytes
+        → rosbag1.Writer.write(connection, timestamp, raw)
+
+    Attributes:
+        output_path (str): 출력 ROS1 .bag 파일 경로
+        topic_type_map (dict): {'/topic': 'sensor_msgs/msg/PointCloud2'} 형태의 맵
+        ros_node (rclpy.node.Node): subscriber를 생성할 ROS2 노드 참조
+    """
+
+    def __init__(self, output_path, topic_type_map, ros_node):
+        super().__init__(daemon=True)
+        self._output_path = output_path
+        self._topic_type_map = topic_type_map  # {'/topic': 'sensor_msgs/msg/PointCloud2'}
+        self._ros_node = ros_node
+
+        self._stop_flag = False
+        self._start_time = None
+        self._lock = threading.Lock()
+        self._status = 'recording'
+
+    # ------------------------------------------------------------------
+    # 제어 메서드
+    # ------------------------------------------------------------------
+    def stop(self):
+        """스레드 종료 요청"""
+        self._stop_flag = True
+        with self._lock:
+            self._status = 'stopped'
+
+    def get_status(self):
+        """현재 상태 딕셔너리 반환"""
+        with self._lock:
+            elapsed = time.time() - self._start_time if self._start_time else 0.0
+            return {
+                'status': self._status,
+                'elapsed_sec': elapsed,
+            }
+
+    # ------------------------------------------------------------------
+    # 내부 헬퍼 메서드
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _import_ros2_msg_class(ros2_type):
+        """ROS2 타입명으로 메시지 클래스를 동적 import.
+
+        예: 'sensor_msgs/msg/PointCloud2' → sensor_msgs.msg.PointCloud2
+
+        Returns:
+            type | None: 성공 시 메시지 클래스, 실패 시 None
+        """
+        import importlib
+        try:
+            parts = ros2_type.split('/')
+            if len(parts) == 3 and parts[1] == 'msg':
+                pkg, _, cls_name = parts
+                mod = importlib.import_module(f'{pkg}.msg')
+                return getattr(mod, cls_name, None)
+        except Exception:
+            pass
+        return None
+
+    # ------------------------------------------------------------------
+    # 메인 실행 루프
+    # ------------------------------------------------------------------
+    def run(self):
+        """rclpy subscriber로 CDR bytes 수신 → rosbag1 Writer로 .bag 기록.
+
+        rosbags API 주의사항:
+          - writer.add_connection()의 msgtype은 ROS2 포맷('sensor_msgs/msg/PointCloud2')을
+            그대로 사용해야 함. ROS1 포맷('sensor_msgs/PointCloud2')은 typestore에 없어 실패.
+          - CDR → ROS1 변환은 typestore.cdr_to_ros1(cdr_bytes, typename) 을 사용.
+
+        아키텍처:
+          - 녹화 전용 임시 ROS2 노드(recorder_node)를 생성하고,
+            SingleThreadedExecutor를 이 스레드 안에서 직접 spin하여 콜백을 처리한다.
+          - 메인 스레드의 rclpy.spin()에 의존하지 않아 새 subscription이 누락되지 않는다.
+        """
+        try:
+            from rosbags.rosbag1 import Writer
+            from rosbags.typesys import get_typestore, Stores
+            from rosbags.convert.converter import migrate_bytes
+        except ImportError as e:
+            self._ros_node.get_logger().error(f'[Ros1BagRecorder] rosbags not available: {e}')
+            with self._lock:
+                self._status = 'stopped'
+            return
+
+        import rclpy
+        from rclpy.node import Node as RclpyNode
+        from rclpy.executors import SingleThreadedExecutor
+        from rclpy.serialization import serialize_message
+
+        self._start_time = time.time()
+        msg_queue = []
+        queue_lock = threading.Lock()
+
+        # src: ROS2 typestore — CDR 역직렬화 (ROS2 Header 정의, seq 없음)
+        # dst: ROS1 typestore — ROS1 직렬화 + add_connection msgdef 생성 (Header.seq 포함)
+        # migrate_bytes()가 두 typestore 간 필드 차이(예: Header.seq)를 자동 처리함
+        src_typestore = get_typestore(Stores.ROS2_JAZZY)
+        dst_typestore = get_typestore(Stores.ROS1_NOETIC)
+        migrate_cache: dict = {}
+
+        # ── 녹화 전용 임시 노드 + 전용 Executor 생성 ──────────────────────────
+        # 메인 노드(self._ros_node)의 SingleThreadedExecutor는 새 subscription을
+        # 실시간으로 감지하지 못하는 경우가 있어, 독립 노드를 사용한다.
+        recorder_node = None
+        executor = None
+        try:
+            # 노드 이름 중복 방지: 짧은 타임스탬프로 유일성 확보
+            _node_id = int(time.time() * 1000) % 100000
+            recorder_node = RclpyNode(f'ros1_bag_recorder_{_node_id}')
+            executor = SingleThreadedExecutor()
+            executor.add_node(recorder_node)
+        except Exception as e:
+            self._ros_node.get_logger().error(
+                f'[Ros1BagRecorder] Failed to create recorder node: {e}'
+            )
+            with self._lock:
+                self._status = 'stopped'
+            return
+
+        def make_callback(topic_name):
+            """토픽별 subscriber callback 생성 (closure로 topic_name 캡처)"""
+            def callback(msg):
+                if self._stop_flag:
+                    return
+                ts_ns = int(time.time() * 1e9)
+                cdr_bytes = bytes(serialize_message(msg))
+                with queue_lock:
+                    msg_queue.append((topic_name, ts_ns, cdr_bytes))
+            return callback
+
+        written_count = 0
+        try:
+            with Writer(self._output_path) as writer:
+                connections = {}
+
+                for topic_name, ros2_type in self._topic_type_map.items():
+                    msg_cls = self._import_ros2_msg_class(ros2_type)
+
+                    if msg_cls is None:
+                        self._ros_node.get_logger().warn(
+                            f'[Ros1BagRecorder] Cannot import {ros2_type}, skipping {topic_name}'
+                        )
+                        continue
+
+                    # rosbag1 Writer에 connection 등록
+                    # dst_typestore(ROS1_NOETIC)로 msgdef 생성 → ROS1 bag에 올바른 메시지 정의 기록
+                    # dst_typestore에 타입이 없는 경우 src_typestore에서 등록 시도
+                    if ros2_type not in dst_typestore.fielddefs:
+                        try:
+                            from rosbags.typesys import get_types_from_msg
+                            typs = get_types_from_msg(
+                                src_typestore.generate_msgdef(ros2_type, ros_version=1)[0],
+                                ros2_type,
+                            )
+                            typs.pop('std_msgs/msg/Header', None)  # Header는 ROS1 버전 유지
+                            dst_typestore.register(typs)
+                            self._ros_node.get_logger().info(
+                                f'[Ros1BagRecorder] Registered custom type in dst_typestore: {ros2_type}'
+                            )
+                        except Exception as reg_e:
+                            self._ros_node.get_logger().warn(
+                                f'[Ros1BagRecorder] Cannot register type {ros2_type} in ROS1 typestore: {reg_e}'
+                            )
+                            continue
+                    try:
+                        conn = writer.add_connection(topic_name, ros2_type, typestore=dst_typestore)
+                        connections[topic_name] = conn
+                        self._ros_node.get_logger().info(
+                            f'[Ros1BagRecorder] Connection registered: {topic_name} ({ros2_type})'
+                        )
+                    except Exception as e:
+                        self._ros_node.get_logger().warn(
+                            f'[Ros1BagRecorder] Failed to add connection for {topic_name}: {e}'
+                        )
+                        continue
+
+                    # 녹화 전용 노드에 subscriber 생성 (메인 노드의 spin과 독립)
+                    try:
+                        recorder_node.create_subscription(
+                            msg_cls, topic_name, make_callback(topic_name), 10
+                        )
+                        self._ros_node.get_logger().info(
+                            f'[Ros1BagRecorder] Subscribed: {topic_name}'
+                        )
+                    except Exception as e:
+                        self._ros_node.get_logger().warn(
+                            f'[Ros1BagRecorder] Failed to subscribe to {topic_name}: {e}'
+                        )
+
+                self._ros_node.get_logger().info(
+                    f'[Ros1BagRecorder] Recording started → {self._output_path} '
+                    f'({len(connections)} topics)'
+                )
+
+                last_log_time = time.time()
+
+                # 메인 루프 — 전용 executor를 여기서 직접 spin하여 콜백 처리 후 bag에 기록
+                while not self._stop_flag:
+                    # 이 스레드에서 recorder_node의 콜백을 직접 처리
+                    executor.spin_once(timeout_sec=0.01)
+
+                    with queue_lock:
+                        pending = list(msg_queue)
+                        msg_queue.clear()
+
+                    for topic_name, ts_ns, cdr_bytes in pending:
+                        conn = connections.get(topic_name)
+                        if conn is None:
+                            continue
+                        try:
+                            # ROS2 CDR bytes → ROS1 raw bytes 변환
+                            #
+                            # migrate_bytes()는 rosbags.convert 공식 변환 경로로:
+                            # 1. src_typestore(ROS2_JAZZY)로 CDR 역직렬화 (Header에 seq 없음)
+                            # 2. migrate_message()로 필드 매핑 (ROS1 Header의 seq=0 자동 추가 등)
+                            # 3. dst_typestore(ROS1_NOETIC)로 ROS1 직렬화
+                            raw = bytes(migrate_bytes(
+                                src_typestore, dst_typestore,
+                                conn.msgtype, conn.msgtype,
+                                migrate_cache, cdr_bytes,
+                                src_is2=True, dst_is2=False,
+                            ))
+                            writer.write(conn, ts_ns, raw)
+                            written_count += 1
+                        except Exception as e:
+                            self._ros_node.get_logger().warn(
+                                f'[Ros1BagRecorder] Write error on {topic_name} '
+                                f'({conn.msgtype}): {e}'
+                            )
+
+                    # 5초마다 진행 상황 로그
+                    now = time.time()
+                    if now - last_log_time >= 5.0:
+                        self._ros_node.get_logger().info(
+                            f'[Ros1BagRecorder] Written {written_count} messages so far...'
+                        )
+                        last_log_time = now
+
+        except Exception as e:
+            self._ros_node.get_logger().error(f'[Ros1BagRecorder] Fatal error: {e}')
+            import traceback
+            traceback.print_exc()
+        finally:
+            # 전용 노드 정리
+            if executor is not None and recorder_node is not None:
+                try:
+                    executor.remove_node(recorder_node)
+                    recorder_node.destroy_node()
+                except Exception:
+                    pass
+            with self._lock:
+                self._status = 'stopped'
+            self._ros_node.get_logger().info(
+                f'[Ros1BagRecorder] Recording finished. Total messages written: {written_count}'
+            )
+
+
 class WebGUINode(Node):
     def __init__(self):
         super().__init__('web_gui_node')
@@ -472,6 +739,8 @@ class WebGUINode(Node):
         self.recorder_bag_name = ""
         self.recorder_recording = False
         self.recorder_process = None
+        self.recorder_ros1_thread = None   # Ros1BagRecorderThread 인스턴스
+        self.recorder_mode = 'ros2'        # 'ros2' | 'ros1'
         self.bag_topics = []
         self.bag_selected_topics = []
         self.bag_duration = 0.0  # Duration in seconds
@@ -1103,10 +1372,14 @@ class WebGUINode(Node):
         return True
 
     def get_recorder_topics(self):
-        """Get list of current ROS2 topics"""
+        """Get list of current ROS2 topics with type information.
+
+        Returns:
+            list[dict]: [{'name': '/topic', 'type': 'pkg/msg/Type'}, ...]
+        """
         try:
-            # Use cached ROS environment
-            cmd = ['bash', '-c', 'source /opt/ros/jazzy/setup.bash && ros2 topic list']
+            # ros2 topic list -t: 타입 정보 포함 출력 (예: /topic [sensor_msgs/msg/PointCloud2])
+            cmd = ['bash', '-c', 'source /opt/ros/jazzy/setup.bash && ros2 topic list -t']
             result = subprocess.run(
                 cmd,
                 env=self._ros_env,
@@ -1116,8 +1389,20 @@ class WebGUINode(Node):
             )
 
             if result.returncode == 0:
-                topics = [t.strip() for t in result.stdout.strip().split('\n') if t.strip()]
-                self.get_logger().info(f'Found {len(topics)} ROS2 topics: {topics}')
+                topics = []
+                for line in result.stdout.strip().split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # ros2 topic list -t 출력 형식: /topic_name [pkg/msg/Type]
+                    if ' [' in line and line.endswith(']'):
+                        name, rest = line.split(' [', 1)
+                        topic_type = rest[:-1].strip()  # trailing ']' 제거
+                        topics.append({'name': name.strip(), 'type': topic_type})
+                    else:
+                        # 타입 정보 없는 경우 fallback
+                        topics.append({'name': line, 'type': ''})
+                self.get_logger().info(f'Found {len(topics)} ROS2 topics')
                 return topics
             else:
                 self.get_logger().error(f'Failed to get ROS2 topics. Return code: {result.returncode}')
@@ -1127,11 +1412,24 @@ class WebGUINode(Node):
             self.get_logger().error(f'Error getting topics: {str(e)}')
             return []
 
-    def record_bag(self, topics):
-        """Start or stop bag recording"""
+    def record_bag(self, topics, save_as_ros1=False):
+        """Start or stop bag recording.
+
+        Args:
+            topics: 녹화할 토픽 목록. 문자열 리스트 또는 {'name', 'type'} dict 리스트.
+            save_as_ros1 (bool): True이면 Ros1BagRecorderThread로 .bag 직접 기록,
+                                 False이면 기존 ros2 bag record subprocess 사용.
+
+        Returns:
+            bool: 성공 여부
+        """
         if self.recorder_recording:
-            # Stop recording
-            if self.recorder_process:
+            # Stop recording — ros1 thread 또는 ros2 subprocess 정리
+            if self.recorder_ros1_thread:
+                self.get_logger().info('Stopping ROS1 bag recording...')
+                self.recorder_ros1_thread.stop()
+                self.recorder_ros1_thread = None
+            elif self.recorder_process:
                 self.get_logger().info('Stopping bag recording...')
                 self.recorder_process.terminate()
                 try:
@@ -1140,6 +1438,7 @@ class WebGUINode(Node):
                     self.recorder_process.kill()
                 self.recorder_process = None
             self.recorder_recording = False
+            self.recorder_mode = 'ros2'
             return True
         else:
             # Start recording
@@ -1151,39 +1450,81 @@ class WebGUINode(Node):
                 self.get_logger().error('No topics selected')
                 return False
 
-            # Build ros2 bag record command
-            # ros2 bag record will automatically create the directory
-            output_dir = f'/home/kkw/dataset/{self.recorder_bag_name}'
-            cmd = [
-                'bash', '-c',
-                f'cd /home/kkw/dataset && '
-                f'source /opt/ros/jazzy/setup.bash && '
-                f'ros2 bag record -o {self.recorder_bag_name} ' + ' '.join(topics)
-            ]
+            # topics는 문자열 리스트 또는 {name, type} dict 리스트 모두 지원
+            topic_names = []
+            topic_type_map = {}
+            for t in topics:
+                if isinstance(t, dict):
+                    name = t.get('name', '')
+                    tp = t.get('type', '')
+                    if name:
+                        topic_names.append(name)
+                        if tp:
+                            topic_type_map[name] = tp
+                elif isinstance(t, str) and t:
+                    topic_names.append(t)
 
-            self.get_logger().info(f'Starting bag recording in: {output_dir}')
-            self.get_logger().info(f'Recording topics: {", ".join(topics)}')
-
-            try:
-                self.recorder_process = subprocess.Popen(
-                    cmd,
-                    env=self._ros_env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True
-                )
-                self.recorder_recording = True
-                self.get_logger().info('Bag recording started')
-                return True
-            except Exception as e:
-                self.get_logger().error(f'Failed to start recording: {str(e)}')
+            if not topic_names:
+                self.get_logger().error('No valid topics selected')
                 return False
+
+            if save_as_ros1:
+                # ROS1 .bag 직접 녹화 (Ros1BagRecorderThread)
+                if not topic_type_map:
+                    self.get_logger().error('Topic type information required for ROS1 recording')
+                    return False
+
+                output_path = f'/home/kkw/dataset/{self.recorder_bag_name}.bag'
+                self.get_logger().info(f'Starting ROS1 bag recording to: {output_path}')
+                self.get_logger().info(f'Recording topics: {", ".join(topic_names)}')
+
+                try:
+                    self.recorder_ros1_thread = Ros1BagRecorderThread(
+                        output_path, topic_type_map, self
+                    )
+                    self.recorder_ros1_thread.start()
+                    self.recorder_recording = True
+                    self.recorder_mode = 'ros1'
+                    self.get_logger().info('ROS1 bag recording started')
+                    return True
+                except Exception as e:
+                    self.get_logger().error(f'Failed to start ROS1 recording: {str(e)}')
+                    return False
+            else:
+                # 기존 ros2 bag record subprocess
+                output_dir = f'/home/kkw/dataset/{self.recorder_bag_name}'
+                cmd = [
+                    'bash', '-c',
+                    f'cd /home/kkw/dataset && '
+                    f'source /opt/ros/jazzy/setup.bash && '
+                    f'ros2 bag record -o {self.recorder_bag_name} ' + ' '.join(topic_names)
+                ]
+
+                self.get_logger().info(f'Starting bag recording in: {output_dir}')
+                self.get_logger().info(f'Recording topics: {", ".join(topic_names)}')
+
+                try:
+                    self.recorder_process = subprocess.Popen(
+                        cmd,
+                        env=self._ros_env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        start_new_session=True
+                    )
+                    self.recorder_recording = True
+                    self.recorder_mode = 'ros2'
+                    self.get_logger().info('Bag recording started')
+                    return True
+                except Exception as e:
+                    self.get_logger().error(f'Failed to start recording: {str(e)}')
+                    return False
 
     def get_recorder_state(self):
         """Get current recorder state"""
         return {
             'bag_name': self.recorder_bag_name,
-            'recording': self.recorder_recording
+            'recording': self.recorder_recording,
+            'mode': self.recorder_mode,  # 'ros2' | 'ros1'
         }
 
     # File Player Functions
@@ -1761,6 +2102,70 @@ class WebGUINode(Node):
             return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
         except Exception as e:
             self.get_logger().error(f'Failed to convert ROS1 bag: {str(e)}')
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'error': str(e)}
+
+    def convert_ros2_to_ros1_bag(self):
+        """Convert ROS2 bag directory to ROS1 .bag format using rosbags-convert.
+
+        Output: {bag_dirname}.bag (같은 부모 디렉토리, .bag 확장자)
+        예: /path/to/my_bag/ → /path/to/my_bag.bag
+
+        Returns:
+            dict: {'success': bool, 'output_path': str, 'error': str (on failure)}
+        """
+        if not self.bag_path:
+            return {'success': False, 'error': 'No bag file loaded'}
+
+        if self.bag_path.endswith('.bag'):
+            return {'success': False, 'error': 'Current bag is already a ROS1 .bag file'}
+
+        try:
+            import os
+            import shutil
+            bag_dir = self.bag_path.rstrip('/')
+            output_path = bag_dir + '.bag'
+
+            # 이미 변환된 .bag 파일이 존재하면 삭제 후 재변환
+            if os.path.isfile(output_path):
+                self.get_logger().info(f'Removing existing output file: {output_path}')
+                os.remove(output_path)
+
+            self.get_logger().info(
+                f'Converting ROS2 bag: {self.bag_path} -> {output_path}'
+            )
+
+            # rosbags-convert 경로 탐색 (pip user install 경로 포함)
+            convert_cmd = shutil.which('rosbags-convert') or '/home/kkw/.local/bin/rosbags-convert'
+            if not os.path.isfile(convert_cmd):
+                self.get_logger().error('rosbags-convert not found. Install with: pip install rosbags')
+                return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
+
+            cmd = [convert_cmd, '--src', self.bag_path, '--dst', output_path]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # Allow up to 5 minutes for large bags
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                self.get_logger().error(f'rosbags-convert failed: {error_msg}')
+                return {'success': False, 'error': error_msg}
+
+            self.get_logger().info(f'ROS2 bag converted to ROS1 successfully: {output_path}')
+            return {'success': True, 'output_path': output_path}
+
+        except subprocess.TimeoutExpired:
+            self.get_logger().error('Timeout during ROS2→ROS1 bag conversion')
+            return {'success': False, 'error': 'Conversion timed out'}
+        except FileNotFoundError:
+            self.get_logger().error('rosbags-convert not found. Install with: pip install rosbags')
+            return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
+        except Exception as e:
+            self.get_logger().error(f'Failed to convert ROS2 bag to ROS1: {str(e)}')
             import traceback
             traceback.print_exc()
             return {'success': False, 'error': str(e)}
@@ -2365,21 +2770,16 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             domain_id = os.environ.get('ROS_DOMAIN_ID', '0')
             self.send_json_response({'success': True, 'domain_id': domain_id})
         elif parsed_path.path == '/api/plot/get_topics':
-            # Get ROS2 topics for Plot
-            import json
-            import traceback
+            # Get ROS2 topics for Plot (topic name strings, backward compatibility)
             try:
-                topics = self.node.get_recorder_topics()  # 재사용
-                # #region agent log
-                with open('/home/kkw/localization_ws/src/web_gui/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({'location':'web_server.py:1677','message':'API /api/plot/get_topics called','data':{'topicsCount':len(topics)},'timestamp':int(time.time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'C'})+'\n')
-                # #endregion
-                self.send_json_response({'success': True, 'topics': topics})
+                topic_infos = self.node.get_recorder_topics()
+                # get_recorder_topics() 반환값이 dict 리스트이므로 이름만 추출
+                topic_names = [
+                    t['name'] if isinstance(t, dict) else t
+                    for t in topic_infos
+                ]
+                self.send_json_response({'success': True, 'topics': topic_names})
             except Exception as e:
-                # #region agent log
-                with open('/home/kkw/localization_ws/src/web_gui/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({'location':'web_server.py:1682','message':'API /api/plot/get_topics error','data':{'error':str(e)},'timestamp':int(time.time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'C'})+'\n')
-                # #endregion
                 self.send_json_response({'success': False, 'error': str(e)})
         else:
             # Serve static files
@@ -2457,6 +2857,9 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
         elif parsed_path.path == '/api/bag/convert_ros1':
             result = self.node.convert_ros1_bag()
             response = result
+        elif parsed_path.path == '/api/bag/convert_to_ros1':
+            result = self.node.convert_ros2_to_ros1_bag()
+            response = result
 
         # ROS1 Bag Player API endpoints
         elif parsed_path.path == '/api/bag/play_ros1':
@@ -2479,8 +2882,13 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             response = {'success': success}
         elif parsed_path.path == '/api/recorder/record':
             topics = data.get('topics', [])
-            success = self.node.record_bag(topics)
-            response = {'success': success, 'recording': self.node.recorder_recording}
+            save_as_ros1 = data.get('save_as_ros1', False)
+            success = self.node.record_bag(topics, save_as_ros1=save_as_ros1)
+            response = {
+                'success': success,
+                'recording': self.node.recorder_recording,
+                'mode': self.node.recorder_mode,
+            }
 
         # SLAM Config API endpoints
         elif parsed_path.path == '/api/slam/load_config_file':
