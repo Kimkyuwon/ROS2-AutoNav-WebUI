@@ -1831,8 +1831,14 @@ function _handleBackendWsMessage(rawData) {
 }
 
 // 8081 WebSocket으로 subscribe_plot 명령 전송 (연결 전이면 대기열에 추가)
-function _sendBackendSubscribePlot(topic, fieldPath) {
-    const cmd = { cmd: 'subscribe_plot', topic: topic, fields: [fieldPath] };
+// msgType: 클라이언트가 이미 알고 있는 토픽 타입 → 서버에서 get_topic_names_and_types() 불필요
+function _sendBackendSubscribePlot(topic, fieldPath, msgType) {
+    const cmd = {
+        cmd:      'subscribe_plot',
+        topic:    topic,
+        fields:   [fieldPath],
+        msg_type: msgType || ''   // 서버에 전달하여 타이밍 문제 없이 즉시 subscription 생성
+    };
     if (plotState.backendWs && plotState.backendWs.readyState === WebSocket.OPEN) {
         plotState.backendWs.send(JSON.stringify(cmd));
     } else {
@@ -2758,71 +2764,23 @@ function setupPlotDataUpdate(fullPath) {
     
     console.log('[setupPlotDataUpdate] Creating subscriber for topic:', topic, 'type:', topicType);
 
-    // ── PointCloud2 토픽 특수 처리 ────────────────────────────────────────────
-    // rosbridge를 통해 PointCloud2 전체(10MB+)를 받으면 WebSocket 병목 발생.
-    // 대신 Python 백엔드 PC2WebSocketServer가 PointCloud2 수신마다 JSON 메타데이터를
-    // 포트 8081로 전송하고, threejs_display.js가 CustomEvent('pc2_topic_meta')로
-    // 메인 윈도우에 dispatch한다. 이를 이용해 rosbridge 없이 실시간 plot.
+    // ── 모든 토픽 (PC2 포함): Python 백엔드 8081 WebSocket (throttle 없이 원래 주기) ─
     //
-    // 지원 필드 경로:
-    //   header/stamp/sec, header/stamp/nanosec, header/frame_id, point_count
+    // [이전 구조의 버그]
+    //   PC2 타입 → pc2_topic_meta CustomEvent 방식 사용
+    //   BUT: 이 이벤트는 3D Viewer의 pc2_stream_worker가 dispatch하므로
+    //        3D Viewer에서 해당 PC2 토픽을 선택해야만 plot이 작동했음.
+    //
+    // [수정 후]
+    //   PC2 포함 모든 토픽 → subscribe_plot 명령으로 통일.
+    //   msg_type을 클라이언트에서 서버에 직접 전달하여 서버의
+    //   get_topic_names_and_types() 의존성 제거 (타이밍 문제 해결).
+    //
+    // PC2의 point_count는 width*height 계산이 필요하므로 서버 특수 처리.
+    // 나머지 header/stamp/sec 등은 _extract_nested()로 처리.
     // ─────────────────────────────────────────────────────────────────────────
-    const isPC2Type = (topicType === 'sensor_msgs/msg/PointCloud2' ||
-                       topicType === 'sensor_msgs/PointCloud2');
-
-    if (isPC2Type) {
-        // pc2_topic_meta 이벤트로 지원 가능한 필드 목록
-        const PC2_META_FIELDS = {
-            'header/stamp/sec':     (d) => d.stamp_sec,
-            'header/stamp/nanosec': (d) => d.stamp_nanosec,
-            'header/frame_id':      (d) => d.frame_id,
-            'point_count':          (d) => d.point_count,
-        };
-
-        if (!(fieldPath in PC2_META_FIELDS)) {
-            console.warn(`[setupPlotDataUpdate] PC2 토픽의 '${fieldPath}' 필드는 ` +
-                         `rosbridge 없이 plot 불가. 지원 필드: ${Object.keys(PC2_META_FIELDS).join(', ')}`);
-            return;
-        }
-
-        const extractFn = PC2_META_FIELDS[fieldPath];
-        console.log(`[setupPlotDataUpdate] PC2 토픽 → CustomEvent 경로 사용: ${fullPath}`);
-
-        const handler = (evt) => {
-            const d = evt.detail;
-            if (d.topic !== topic) return;
-
-            const value     = extractFn(d);
-            const timestamp = d.stamp_sec + d.stamp_nanosec / 1e9;
-
-            if (value === undefined || value === null) return;
-
-            if (plotState.plotTabManager && plotState.plotTabManager.tabs.length > 0) {
-                plotState.plotTabManager.tabs.forEach(tab => {
-                    if (tab.plotManager && tab.plotManager.dataBuffers.has(fullPath)) {
-                        tab.plotManager.updatePlot(fullPath, timestamp, value);
-                    }
-                });
-            }
-        };
-
-        window.addEventListener('pc2_topic_meta', handler);
-
-        // unsubscribe 호환 객체로 등록 (기존 cleanup 로직 재사용)
-        plotState.subscribers.set(plotSubscriberKey, {
-            unsubscribe: () => window.removeEventListener('pc2_topic_meta', handler)
-        });
-        console.log('[setupPlotDataUpdate] PC2 meta listener 등록 완료:', plotSubscriberKey);
-        return;
-    }
-
-    // ── 일반 토픽: Python 백엔드 8081 WebSocket (throttle 없이 원래 주기) ─────
-    // rosbridge(throttle_rate:100) 대신 8081 subscribe_plot 명령 사용.
-    // _on_plot_msg 콜백이 rclpy 레이어에서 직접 호출되어 원래 발행 주기 그대로 전달.
-    // 서버 → 클라이언트: { type:'plot_data', topic, stamp_sec, stamp_nanosec, values:{fieldPath:value} }
-    // _handleBackendWsMessage에서 수신하여 updatePlot 호출.
-    console.log(`[setupPlotDataUpdate] Backend WS 경로 사용: ${fullPath}`);
-    _sendBackendSubscribePlot(topic, fieldPath);
+    console.log(`[setupPlotDataUpdate] Backend WS 경로 사용: ${fullPath} (type: ${topicType})`);
+    _sendBackendSubscribePlot(topic, fieldPath, topicType);
 
     plotState.subscribers.set(plotSubscriberKey, {
         unsubscribe: () => {

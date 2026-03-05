@@ -844,9 +844,11 @@ class PC2WebSocketServer:
                     my_pc2_topics.discard(topic)
                 elif cmd == 'subscribe_plot':
                     # 범용 토픽 plot 구독 (throttle 없이 원래 주기)
-                    fields = msg.get('fields', [])
+                    # msg_type: 클라이언트가 전달한 토픽 타입 (서버 조회 불필요)
+                    fields   = msg.get('fields', [])
+                    msg_type = msg.get('msg_type', '').strip()
                     if fields:
-                        self._add_plot_client(topic, websocket, fields)
+                        self._add_plot_client(topic, websocket, fields, msg_type)
                         my_plot_topics.add(topic)
                 elif cmd == 'unsubscribe_plot':
                     fields = msg.get('fields', [])
@@ -965,11 +967,12 @@ class PC2WebSocketServer:
 
     # ── 범용 토픽 Plot 구독 (throttle 없이 원래 주기) ─────────────────────────
 
-    def _add_plot_client(self, topic: str, ws, fields: list):
+    def _add_plot_client(self, topic: str, ws, fields: list, msg_type: str = ''):
         """일반 토픽의 특정 필드를 실시간 plot하기 위한 클라이언트 등록.
 
-        같은 topic의 여러 클라이언트가 각각 다른 fields를 요청할 수 있다.
-        topic당 rclpy subscription은 1개만 생성하며, 필드 집합의 합집합을 전송한다.
+        msg_type: 클라이언트(browser)가 이미 알고 있는 토픽 타입 문자열.
+          전달하면 get_topic_names_and_types() 조회 없이 즉시 subscription 생성.
+          타이밍 문제(bag 재생 직후 조회 실패)를 방지한다.
         """
         need_sub = False
         with self._lock:
@@ -982,7 +985,7 @@ class PC2WebSocketServer:
                 need_sub = True
 
         if need_sub:
-            self._create_plot_subscription(topic)
+            self._create_plot_subscription(topic, msg_type)
 
     def _remove_plot_client(self, topic: str, ws, fields=None):
         """plot 클라이언트 제거. fields=None 이면 해당 ws의 모든 필드 제거."""
@@ -1007,21 +1010,29 @@ class PC2WebSocketServer:
                         pass
                 self._node.get_logger().info(f'[PC2WS/plot] unsubscribed ← {topic}')
 
-    def _create_plot_subscription(self, topic: str):
-        """토픽 타입을 자동 감지하여 rclpy subscription 동적 생성."""
-        # 토픽 타입 조회
-        type_str = None
-        try:
-            for name, types in self._node.get_topic_names_and_types():
-                if name == topic and types:
-                    type_str = types[0]
-                    break
-        except Exception as e:
-            self._node.get_logger().error(f'[PC2WS/plot] 토픽 타입 조회 오류: {e}')
-            return
+    def _create_plot_subscription(self, topic: str, msg_type: str = ''):
+        """토픽 타입을 자동 감지하여 rclpy subscription 동적 생성.
+
+        msg_type이 주어지면 ROS2 DDS 조회(get_topic_names_and_types) 없이
+        즉시 subscription을 생성한다. bag 재생 직후 등 타이밍 문제를 방지.
+        msg_type이 없으면 DDS에서 조회한다 (fallback).
+        """
+        # ── 1) 클라이언트가 전달한 타입 우선 사용 ─────────────────────────────
+        type_str = msg_type.strip() if msg_type else ''
+
+        # ── 2) fallback: DDS 조회 ─────────────────────────────────────────────
+        if not type_str:
+            try:
+                for name, types in self._node.get_topic_names_and_types():
+                    if name == topic and types:
+                        type_str = types[0]
+                        break
+            except Exception as e:
+                self._node.get_logger().error(f'[PC2WS/plot] 토픽 타입 조회 오류: {e}')
 
         if not type_str:
-            self._node.get_logger().warn(f'[PC2WS/plot] 토픽 타입 못 찾음: {topic}')
+            self._node.get_logger().warn(
+                f'[PC2WS/plot] 토픽 타입 못 찾음 (msg_type 미제공, DDS 조회 실패): {topic}')
             return
 
         MsgClass = self._get_msg_class(type_str)
@@ -1071,6 +1082,12 @@ class PC2WebSocketServer:
         # 요청된 필드 값 추출
         values = {}
         for field in all_fields:
+            # 특수 계산 필드 처리
+            if field == 'point_count':
+                # PointCloud2: point_count = width * height
+                if hasattr(msg, 'width') and hasattr(msg, 'height'):
+                    values[field] = float(msg.width * msg.height)
+                continue
             val = self._extract_nested(msg, field)
             if val is not None:
                 values[field] = val
