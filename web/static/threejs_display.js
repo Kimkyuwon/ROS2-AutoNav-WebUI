@@ -1489,6 +1489,17 @@ function _getPC2StreamWorker() {
     // ── 스트림 워커 결과 수신 (메인 스레드) ──
     _pc2StreamWorker.onmessage = function (ev) {
         const msg = ev.data;
+
+        // ── JSON 메타데이터 패킷 (Plot 탭용) ──────────────────────────────────
+        // Python Backend가 PointCloud2 수신마다 전송:
+        //   { type:'pc2meta', topic, stamp_sec, stamp_nanosec, frame_id, point_count }
+        // script.js(Plot 탭)에서 'pc2_topic_meta' CustomEvent를 구독하여
+        // rosbridge 없이 PointCloud2 헤더 스탬프를 실시간으로 plot한다.
+        if (msg.type === 'pc2meta') {
+            window.dispatchEvent(new CustomEvent('pc2_topic_meta', { detail: msg }));
+            return;
+        }
+
         if (msg.type !== 'pc2frame') return;
 
         const { topicName, frameId, pos, col, count } = msg;

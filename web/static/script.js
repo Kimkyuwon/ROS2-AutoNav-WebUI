@@ -2234,21 +2234,33 @@ function subscribeToTopic(topic) {
 
     console.log(`[subscribeToTopic] Subscribing to ${topic} (${messageType})`);
 
-    // 메시지 구독 (throttle_rate: 100ms=10Hz, queue_length: 1 — 고주파 토픽(IMU 등) rosbridge 과부하 방지)
+    // PointCloud2 토픽은 rosbridge를 통해 전체 메시지(10MB+)를 받으면 WebSocket 병목.
+    // 메시지 트리(구조 표시)는 처음 1개 메시지만 있으면 되므로
+    // 첫 메시지 수신 후 즉시 unsubscribe → rosbridge 부하 최소화.
+    const isPC2 = (messageType === 'sensor_msgs/msg/PointCloud2' ||
+                   messageType === 'sensor_msgs/PointCloud2');
+
     const listener = new ROSLIB.Topic({
         ros: plotState.ros,
         name: topic,
         messageType: messageType,
-        throttle_rate: 100,  // 10Hz: rosbridge에서 100ms당 최대 1개 메시지만 전달
-        queue_length: 1      // 최신 메시지만 처리 (버퍼 누적 방지)
+        throttle_rate: isPC2 ? 2000 : 100,  // PC2는 2초에 1번 (구조 파악용), 나머지 10Hz
+        queue_length: 1
     });
 
     listener.subscribe((message) => {
-        // 첫 메시지만 로그 출력
         if (!plotState.messageTrees.has(topic)) {
             console.log(`[subscribeToTopic] First message received for ${topic}`);
         }
         updateMessageTree(topic, message);
+
+        // PointCloud2: 구조(메시지 트리) 파악 후 즉시 unsubscribe
+        // (이후 헤더 스탬프 등은 pc2_topic_meta CustomEvent로 수신)
+        if (isPC2) {
+            listener.unsubscribe();
+            plotState.subscribers.delete(topic);
+            console.log(`[subscribeToTopic] PC2 topic tree captured, unsubscribed: ${topic}`);
+        }
     });
 
     plotState.subscribers.set(topic, listener);
@@ -2660,71 +2672,112 @@ function setupPlotDataUpdate(fullPath) {
     }
     
     console.log('[setupPlotDataUpdate] Creating subscriber for topic:', topic, 'type:', topicType);
-    
-    // Plot 전용 subscriber 생성 (throttle_rate: 100ms=10Hz, queue_length: 1 — 고주파 토픽 rosbridge 과부하 방지)
+
+    // ── PointCloud2 토픽 특수 처리 ────────────────────────────────────────────
+    // rosbridge를 통해 PointCloud2 전체(10MB+)를 받으면 WebSocket 병목 발생.
+    // 대신 Python 백엔드 PC2WebSocketServer가 PointCloud2 수신마다 JSON 메타데이터를
+    // 포트 8081로 전송하고, threejs_display.js가 CustomEvent('pc2_topic_meta')로
+    // 메인 윈도우에 dispatch한다. 이를 이용해 rosbridge 없이 실시간 plot.
+    //
+    // 지원 필드 경로:
+    //   header/stamp/sec, header/stamp/nanosec, header/frame_id, point_count
+    // ─────────────────────────────────────────────────────────────────────────
+    const isPC2Type = (topicType === 'sensor_msgs/msg/PointCloud2' ||
+                       topicType === 'sensor_msgs/PointCloud2');
+
+    if (isPC2Type) {
+        // pc2_topic_meta 이벤트로 지원 가능한 필드 목록
+        const PC2_META_FIELDS = {
+            'header/stamp/sec':     (d) => d.stamp_sec,
+            'header/stamp/nanosec': (d) => d.stamp_nanosec,
+            'header/frame_id':      (d) => d.frame_id,
+            'point_count':          (d) => d.point_count,
+        };
+
+        if (!(fieldPath in PC2_META_FIELDS)) {
+            console.warn(`[setupPlotDataUpdate] PC2 토픽의 '${fieldPath}' 필드는 ` +
+                         `rosbridge 없이 plot 불가. 지원 필드: ${Object.keys(PC2_META_FIELDS).join(', ')}`);
+            return;
+        }
+
+        const extractFn = PC2_META_FIELDS[fieldPath];
+        console.log(`[setupPlotDataUpdate] PC2 토픽 → CustomEvent 경로 사용: ${fullPath}`);
+
+        const handler = (evt) => {
+            const d = evt.detail;
+            if (d.topic !== topic) return;
+
+            const value     = extractFn(d);
+            const timestamp = d.stamp_sec + d.stamp_nanosec / 1e9;
+
+            if (value === undefined || value === null) return;
+
+            if (plotState.plotTabManager && plotState.plotTabManager.tabs.length > 0) {
+                plotState.plotTabManager.tabs.forEach(tab => {
+                    if (tab.plotManager && tab.plotManager.dataBuffers.has(fullPath)) {
+                        tab.plotManager.updatePlot(fullPath, timestamp, value);
+                    }
+                });
+            }
+        };
+
+        window.addEventListener('pc2_topic_meta', handler);
+
+        // unsubscribe 호환 객체로 등록 (기존 cleanup 로직 재사용)
+        plotState.subscribers.set(plotSubscriberKey, {
+            unsubscribe: () => window.removeEventListener('pc2_topic_meta', handler)
+        });
+        console.log('[setupPlotDataUpdate] PC2 meta listener 등록 완료:', plotSubscriberKey);
+        return;
+    }
+
+    // ── 일반 토픽: rosbridge ROSLIB.Topic 구독 ────────────────────────────────
     const plotSubscriber = new window.ROSLIB.Topic({
         ros: plotState.ros,
         name: topic,
         messageType: topicType,
-        throttle_rate: 100,  // 10Hz: rosbridge에서 100ms당 최대 1개 메시지만 전달
-        queue_length: 1      // 최신 메시지만 처리 (버퍼 누적 방지)
+        throttle_rate: 100,  // 10Hz
+        queue_length: 1
     });
     
     let messageCount = 0;
-    
-    // Subscribe 전에 연결 상태 확인
     console.log(`[setupPlotDataUpdate] Subscribing to ${topic}... Waiting for messages...`);
     
     plotSubscriber.subscribe((message) => {
         messageCount++;
-        
-        // 처음 메시지 수신 시 알림
         if (messageCount === 1) {
             console.log(`✅ [setupPlotDataUpdate] First message received from ${topic}!`);
         }
         
-        // 필드 경로를 따라가서 값 추출
         const value = extractFieldValue(message, fieldPath);
-        
         if (messageCount <= 5) {
             console.log(`[setupPlotDataUpdate] Message #${messageCount} for ${topic}:`, message);
             console.log(`[setupPlotDataUpdate] Extracted value for ${fieldPath}:`, value);
         }
-        
         if (value === undefined || value === null) {
-            if (messageCount <= 5) {
-                console.warn('[setupPlotDataUpdate] Failed to extract value from message');
-            }
+            if (messageCount <= 5) console.warn('[setupPlotDataUpdate] Failed to extract value');
             return;
         }
         
-        // timestamp 추출 (header.stamp 또는 현재 시간)
-        let timestamp = Date.now() / 1000.0; // 기본값: 현재 시간 (초 단위)
-        
+        let timestamp = Date.now() / 1000.0;
         if (message.header && message.header.stamp) {
             timestamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9;
         }
-        
         if (messageCount <= 5) {
             console.log(`[setupPlotDataUpdate] Timestamp:`, timestamp, 'Value:', value);
         }
         
-        // PlotlyPlotManager 업데이트 (모든 탭에 전달)
         if (plotState.plotTabManager && plotState.plotTabManager.tabs.length > 0) {
             if (messageCount <= 5) {
-                console.log(`[setupPlotDataUpdate] Calling updatePlot("${fullPath}", ${timestamp}, ${value}) on all tabs`);
+                console.log(`[setupPlotDataUpdate] Calling updatePlot("${fullPath}", ${timestamp}, ${value})`);
             }
-            
-            // 모든 탭의 plotManager에 데이터 추가
             plotState.plotTabManager.tabs.forEach(tab => {
                 if (tab.plotManager && tab.plotManager.dataBuffers.has(fullPath)) {
                     tab.plotManager.updatePlot(fullPath, timestamp, value);
                 }
             });
-        } else {
-            if (messageCount === 1) {
-                console.warn('[setupPlotDataUpdate] plotTabManager is null or has no tabs!');
-            }
+        } else if (messageCount === 1) {
+            console.warn('[setupPlotDataUpdate] plotTabManager is null or has no tabs!');
         }
     });
     

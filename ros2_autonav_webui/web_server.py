@@ -874,7 +874,17 @@ class PC2WebSocketServer:
     # ── rclpy 콜백 ───────────────────────────────────────────────────────────
 
     def _on_pc2(self, msg: PointCloud2, topic_name: str):
-        """PointCloud2 수신 → throttle → binary 변환 → asyncio 브로드캐스트."""
+        """PointCloud2 수신 → throttle → binary + JSON 메타데이터 → asyncio 브로드캐스트.
+
+        전송 패킷 두 종류:
+          1) binary bytes   : XYZ + color 데이터 (3D Viewer용)
+          2) JSON string    : 헤더 스탬프·포인트 수 등 메타데이터 (Plot 탭용)
+             {"type":"pc2meta","topic":"...","stamp_sec":N,"stamp_nanosec":N,
+              "frame_id":"...","point_count":N}
+
+        JavaScript 쪽에서 ws.binaryType='arraybuffer' 이므로
+        ArrayBuffer → binary 핸들러, string → JSON 핸들러로 자동 분리된다.
+        """
         now = time.monotonic()
         with self._lock:
             if now - self._last_sent.get(topic_name, 0.0) < self.THROTTLE_SEC:
@@ -883,6 +893,18 @@ class PC2WebSocketServer:
         if not clients:
             return
 
+        # ── 1) JSON 메타데이터 패킷 (헤더 스탬프 등) ────────────────────────
+        stamp = msg.header.stamp
+        meta_json = json.dumps({
+            'type':          'pc2meta',
+            'topic':         topic_name,
+            'stamp_sec':     stamp.sec,
+            'stamp_nanosec': stamp.nanosec,
+            'frame_id':      msg.header.frame_id,
+            'point_count':   msg.width * msg.height,
+        }, separators=(',', ':'))
+
+        # ── 2) binary 패킷 (XYZ + color) ────────────────────────────────────
         payload = self._build_payload(msg, topic_name)
         if payload is None:
             return
@@ -893,7 +915,16 @@ class PC2WebSocketServer:
         loop = self._loop
         if loop and loop.is_running():
             asyncio.run_coroutine_threadsafe(
-                self._broadcast(clients, payload), loop)
+                self._broadcast_both(clients, meta_json, payload), loop)
+
+    async def _broadcast_both(self, clients, meta_json: str, binary_payload: bytes):
+        """각 클라이언트에 JSON 메타데이터(text) + binary 데이터 순서로 전송."""
+        for ws in list(clients):
+            try:
+                await ws.send(meta_json)       # text → JSON 파싱 경로
+                await ws.send(binary_payload)  # binary → ArrayBuffer 경로
+            except Exception:
+                pass
 
     async def _broadcast(self, clients, payload: bytes):
         for ws in list(clients):

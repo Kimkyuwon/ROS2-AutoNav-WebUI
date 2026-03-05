@@ -127,7 +127,14 @@ function _connectWs() {
         }
     };
 
-    ws.onmessage = _handleBinaryMessage;   // binary 핸들러
+    // Python Backend는 text(JSON 메타데이터)와 binary(XYZ 데이터) 두 종류를 전송
+    ws.onmessage = function(evt) {
+        if (typeof evt.data === 'string') {
+            _handleJsonMessage(evt);
+        } else {
+            _handleBinaryMessage(evt);
+        }
+    };
 
     ws.onerror = function () {
         self.postMessage({ type: 'error' });
@@ -143,6 +150,24 @@ function _connectWs() {
 function _sendSubscribe(topicName) {
     // Python Backend WebSocket 서버에 JSON 명령 전송
     ws.send(JSON.stringify({ cmd: 'subscribe', topic: topicName }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JSON 메타데이터 메시지 처리 (text 수신 경로)
+// Python Backend가 PointCloud2 수신마다 전송:
+//   { type:'pc2meta', topic, stamp_sec, stamp_nanosec, frame_id, point_count }
+// → 메인 스레드에 그대로 forward → CustomEvent로 Plot 탭에 공급
+// ─────────────────────────────────────────────────────────────────────────────
+function _handleJsonMessage(evt) {
+    try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'pc2meta') {
+            // 메인 스레드로 forward (Plot 탭의 CustomEvent 발생에 사용)
+            self.postMessage({ type: 'pc2meta', ...msg });
+        }
+    } catch (e) {
+        // JSON 파싱 실패는 무시
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
