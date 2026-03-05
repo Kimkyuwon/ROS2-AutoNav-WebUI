@@ -140,7 +140,10 @@ function initPlotSubtab() {
         console.log('[initPlotSubtab] rosbridge already connected, loading topics');
         loadPlotTopics();
     }
-    
+
+    // Python 백엔드 WebSocket (8081) 연결 — throttle 없이 원래 주기로 plot
+    _initBackendWs();
+
     // 주기적으로 토픽 목록 갱신 시작
     startTopicRefresh();
 }
@@ -1749,8 +1752,94 @@ const plotState = {
     plotTabManager: null, // PlotTabManager 인스턴스 (탭 관리)
     plottedPaths: [], // 현재 Plot에 표시된 path들 (모든 탭 공유)
     isLoadingTopics: false, // 토픽 로딩 중 플래그
-    pathsRestored: false // 저장된 paths 복원 여부 (최초 1회만)
+    pathsRestored: false, // 저장된 paths 복원 여부 (최초 1회만)
+    // ── Python 백엔드 WebSocket (포트 8081) ──────────────────────────────────
+    // rosbridge를 우회하여 throttle 없이 원래 주기로 plot 데이터 수신
+    backendWs: null,            // WebSocket 인스턴스
+    _pendingPlotSubs: []        // WS 연결 전에 요청된 subscribe_plot 대기열
 };
+
+// ── Python 백엔드 WebSocket 클라이언트 (포트 8081) ──────────────────────────
+// rosbridge 없이 원래 토픽 주기 그대로 plot 데이터 수신.
+// PC2WebSocketServer의 subscribe_plot 명령을 사용한다.
+// ─────────────────────────────────────────────────────────────────────────────
+function _initBackendWs() {
+    const host = window.location.hostname;
+    const url  = `ws://${host}:8081`;
+
+    if (plotState.backendWs &&
+        (plotState.backendWs.readyState === WebSocket.OPEN ||
+         plotState.backendWs.readyState === WebSocket.CONNECTING)) {
+        return; // 이미 연결 중
+    }
+
+    const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer'; // binary 메시지는 무시 (PC2 binary는 worker가 처리)
+    plotState.backendWs = ws;
+
+    ws.onopen = () => {
+        console.log('[BackendWs] 연결됨:', url);
+        // 대기 중이던 subscribe_plot 명령 전송
+        const pending = plotState._pendingPlotSubs.splice(0);
+        for (const req of pending) {
+            ws.send(JSON.stringify(req));
+        }
+    };
+
+    ws.onmessage = (evt) => {
+        if (typeof evt.data === 'string') {
+            _handleBackendWsMessage(evt.data);
+        }
+        // binary(PC2 포인트클라우드)는 pc2_stream_worker.js가 처리 — 여기서는 무시
+    };
+
+    ws.onerror = () => {
+        console.warn('[BackendWs] 연결 오류');
+    };
+
+    ws.onclose = () => {
+        console.log('[BackendWs] 연결 끊김, 3초 후 재연결...');
+        plotState.backendWs = null;
+        setTimeout(_initBackendWs, 3000);
+    };
+}
+
+function _handleBackendWsMessage(rawData) {
+    let msg;
+    try { msg = JSON.parse(rawData); } catch (e) { return; }
+
+    if (msg.type === 'plot_data') {
+        // { type:'plot_data', topic, stamp_sec, stamp_nanosec, values:{field:value,...} }
+        const { topic, stamp_sec, stamp_nanosec, values } = msg;
+        const timestamp = stamp_sec + stamp_nanosec / 1e9;
+        const topicKey  = topic.startsWith('/') ? topic.substring(1) : topic;
+
+        for (const [field, value] of Object.entries(values)) {
+            const fullPath = `${topicKey}/${field}`;
+            if (plotState.plotTabManager && plotState.plotTabManager.tabs.length > 0) {
+                plotState.plotTabManager.tabs.forEach(tab => {
+                    if (tab.plotManager && tab.plotManager.dataBuffers.has(fullPath)) {
+                        tab.plotManager.updatePlot(fullPath, timestamp, value);
+                    }
+                });
+            }
+        }
+    } else if (msg.type === 'pc2meta') {
+        // PC2 메타데이터는 threejs_display.js가 dispatch하는 CustomEvent와 동일
+        window.dispatchEvent(new CustomEvent('pc2_topic_meta', { detail: msg }));
+    }
+}
+
+// 8081 WebSocket으로 subscribe_plot 명령 전송 (연결 전이면 대기열에 추가)
+function _sendBackendSubscribePlot(topic, fieldPath) {
+    const cmd = { cmd: 'subscribe_plot', topic: topic, fields: [fieldPath] };
+    if (plotState.backendWs && plotState.backendWs.readyState === WebSocket.OPEN) {
+        plotState.backendWs.send(JSON.stringify(cmd));
+    } else {
+        plotState._pendingPlotSubs.push(cmd);
+        _initBackendWs(); // 연결 시도
+    }
+}
 
 // Plot subscriber 키 생성 헬퍼 함수 (setupPlotDataUpdate와 동일한 형식)
 function getPlotSubscriberKey(fullPath) {
@@ -2234,9 +2323,9 @@ function subscribeToTopic(topic) {
 
     console.log(`[subscribeToTopic] Subscribing to ${topic} (${messageType})`);
 
-    // PointCloud2 토픽은 rosbridge를 통해 전체 메시지(10MB+)를 받으면 WebSocket 병목.
-    // 메시지 트리(구조 표시)는 처음 1개 메시지만 있으면 되므로
-    // 첫 메시지 수신 후 즉시 unsubscribe → rosbridge 부하 최소화.
+    // 메시지 트리 표시 목적 — 구조 파악 후 즉시 unsubscribe.
+    // throttle_rate:0 (원래 주기, rosbridge 측 throttle 없음) + queue_length:1.
+    // PC2 여부와 무관하게 첫 메시지 1개 수신 후 바로 unsubscribe하므로 rosbridge 부하 없음.
     const isPC2 = (messageType === 'sensor_msgs/msg/PointCloud2' ||
                    messageType === 'sensor_msgs/PointCloud2');
 
@@ -2244,7 +2333,7 @@ function subscribeToTopic(topic) {
         ros: plotState.ros,
         name: topic,
         messageType: messageType,
-        throttle_rate: isPC2 ? 2000 : 100,  // PC2는 2초에 1번 (구조 파악용), 나머지 10Hz
+        throttle_rate: isPC2 ? 2000 : 0, // PC2는 여전히 2초 (10MB+ 보호), 나머지는 즉시
         queue_length: 1
     });
 
@@ -2253,14 +2342,10 @@ function subscribeToTopic(topic) {
             console.log(`[subscribeToTopic] First message received for ${topic}`);
         }
         updateMessageTree(topic, message);
-
-        // PointCloud2: 구조(메시지 트리) 파악 후 즉시 unsubscribe
-        // (이후 헤더 스탬프 등은 pc2_topic_meta CustomEvent로 수신)
-        if (isPC2) {
-            listener.unsubscribe();
-            plotState.subscribers.delete(topic);
-            console.log(`[subscribeToTopic] PC2 topic tree captured, unsubscribed: ${topic}`);
-        }
+        // 첫 메시지로 구조 파악 완료 → 즉시 unsubscribe (rosbridge 부하 최소화)
+        listener.unsubscribe();
+        plotState.subscribers.delete(topic);
+        console.log(`[subscribeToTopic] Tree captured, unsubscribed: ${topic}`);
     });
 
     plotState.subscribers.set(topic, listener);
@@ -2731,58 +2816,24 @@ function setupPlotDataUpdate(fullPath) {
         return;
     }
 
-    // ── 일반 토픽: rosbridge ROSLIB.Topic 구독 ────────────────────────────────
-    const plotSubscriber = new window.ROSLIB.Topic({
-        ros: plotState.ros,
-        name: topic,
-        messageType: topicType,
-        throttle_rate: 100,  // 10Hz
-        queue_length: 1
-    });
-    
-    let messageCount = 0;
-    console.log(`[setupPlotDataUpdate] Subscribing to ${topic}... Waiting for messages...`);
-    
-    plotSubscriber.subscribe((message) => {
-        messageCount++;
-        if (messageCount === 1) {
-            console.log(`✅ [setupPlotDataUpdate] First message received from ${topic}!`);
-        }
-        
-        const value = extractFieldValue(message, fieldPath);
-        if (messageCount <= 5) {
-            console.log(`[setupPlotDataUpdate] Message #${messageCount} for ${topic}:`, message);
-            console.log(`[setupPlotDataUpdate] Extracted value for ${fieldPath}:`, value);
-        }
-        if (value === undefined || value === null) {
-            if (messageCount <= 5) console.warn('[setupPlotDataUpdate] Failed to extract value');
-            return;
-        }
-        
-        let timestamp = Date.now() / 1000.0;
-        if (message.header && message.header.stamp) {
-            timestamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9;
-        }
-        if (messageCount <= 5) {
-            console.log(`[setupPlotDataUpdate] Timestamp:`, timestamp, 'Value:', value);
-        }
-        
-        if (plotState.plotTabManager && plotState.plotTabManager.tabs.length > 0) {
-            if (messageCount <= 5) {
-                console.log(`[setupPlotDataUpdate] Calling updatePlot("${fullPath}", ${timestamp}, ${value})`);
+    // ── 일반 토픽: Python 백엔드 8081 WebSocket (throttle 없이 원래 주기) ─────
+    // rosbridge(throttle_rate:100) 대신 8081 subscribe_plot 명령 사용.
+    // _on_plot_msg 콜백이 rclpy 레이어에서 직접 호출되어 원래 발행 주기 그대로 전달.
+    // 서버 → 클라이언트: { type:'plot_data', topic, stamp_sec, stamp_nanosec, values:{fieldPath:value} }
+    // _handleBackendWsMessage에서 수신하여 updatePlot 호출.
+    console.log(`[setupPlotDataUpdate] Backend WS 경로 사용: ${fullPath}`);
+    _sendBackendSubscribePlot(topic, fieldPath);
+
+    plotState.subscribers.set(plotSubscriberKey, {
+        unsubscribe: () => {
+            if (plotState.backendWs && plotState.backendWs.readyState === WebSocket.OPEN) {
+                plotState.backendWs.send(JSON.stringify({
+                    cmd: 'unsubscribe_plot', topic: topic, fields: [fieldPath]
+                }));
             }
-            plotState.plotTabManager.tabs.forEach(tab => {
-                if (tab.plotManager && tab.plotManager.dataBuffers.has(fullPath)) {
-                    tab.plotManager.updatePlot(fullPath, timestamp, value);
-                }
-            });
-        } else if (messageCount === 1) {
-            console.warn('[setupPlotDataUpdate] plotTabManager is null or has no tabs!');
         }
     });
-    
-    plotState.subscribers.set(plotSubscriberKey, plotSubscriber);
-    console.log('[setupPlotDataUpdate] Plot subscriber created successfully:', plotSubscriberKey);
+    console.log('[setupPlotDataUpdate] Backend WS plot subscriber 등록:', plotSubscriberKey);
 }
 
 // 필드 경로를 따라가서 값 추출

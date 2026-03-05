@@ -777,12 +777,18 @@ class PC2WebSocketServer:
         self._port = port
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
+        # ── PointCloud2 전용 ───────────────────────────────────────────────────
         # topic_name → set[websocket]
         self._clients: dict = {}
         # topic_name → rclpy Subscription
         self._subs: dict = {}
         # topic_name → 마지막 전송 단조시각 (throttle)
         self._last_sent: dict = {}
+        # ── 범용 Plot 토픽 (throttle 없이 원래 주기로 전송) ────────────────────
+        # topic_name → { ws: set[field_path, ...] }
+        self._plot_clients: dict = {}
+        # topic_name → rclpy Subscription
+        self._plot_subs: dict = {}
 
     # ── 공개 API ─────────────────────────────────────────────────────────────
 
@@ -817,8 +823,9 @@ class PC2WebSocketServer:
             self._node.get_logger().error(f'[PC2WS] server error: {e}')
 
     async def _handler(self, websocket):
-        """WebSocket 연결 핸들러 — subscribe/unsubscribe 명령 수신."""
-        my_topics: set = set()
+        """WebSocket 연결 핸들러 — subscribe/unsubscribe/subscribe_plot 명령 수신."""
+        my_pc2_topics: set  = set()   # PointCloud2 binary 구독
+        my_plot_topics: set = set()   # 범용 plot JSON 구독
         try:
             async for raw in websocket:
                 try:
@@ -831,15 +838,30 @@ class PC2WebSocketServer:
                     continue
                 if cmd == 'subscribe':
                     self._add_client(topic, websocket)
-                    my_topics.add(topic)
+                    my_pc2_topics.add(topic)
                 elif cmd == 'unsubscribe':
                     self._remove_client(topic, websocket)
-                    my_topics.discard(topic)
+                    my_pc2_topics.discard(topic)
+                elif cmd == 'subscribe_plot':
+                    # 범용 토픽 plot 구독 (throttle 없이 원래 주기)
+                    fields = msg.get('fields', [])
+                    if fields:
+                        self._add_plot_client(topic, websocket, fields)
+                        my_plot_topics.add(topic)
+                elif cmd == 'unsubscribe_plot':
+                    fields = msg.get('fields', [])
+                    self._remove_plot_client(topic, websocket, fields if fields else None)
+                    with self._lock:
+                        remaining = self._plot_clients.get(topic, {}).get(websocket)
+                    if not remaining:
+                        my_plot_topics.discard(topic)
         except Exception:
             pass
         finally:
-            for t in list(my_topics):
+            for t in list(my_pc2_topics):
                 self._remove_client(t, websocket)
+            for t in list(my_plot_topics):
+                self._remove_plot_client(t, websocket, None)
 
     # ── 클라이언트 / 구독 관리 ────────────────────────────────────────────────
 
@@ -932,6 +954,178 @@ class PC2WebSocketServer:
                 await ws.send(payload)
             except Exception:
                 pass
+
+    async def _broadcast_text(self, clients, data: str):
+        """text(JSON) 메시지를 여러 클라이언트에 전송."""
+        for ws in list(clients):
+            try:
+                await ws.send(data)
+            except Exception:
+                pass
+
+    # ── 범용 토픽 Plot 구독 (throttle 없이 원래 주기) ─────────────────────────
+
+    def _add_plot_client(self, topic: str, ws, fields: list):
+        """일반 토픽의 특정 필드를 실시간 plot하기 위한 클라이언트 등록.
+
+        같은 topic의 여러 클라이언트가 각각 다른 fields를 요청할 수 있다.
+        topic당 rclpy subscription은 1개만 생성하며, 필드 집합의 합집합을 전송한다.
+        """
+        need_sub = False
+        with self._lock:
+            if topic not in self._plot_clients:
+                self._plot_clients[topic] = {}
+            if ws not in self._plot_clients[topic]:
+                self._plot_clients[topic][ws] = set()
+            self._plot_clients[topic][ws].update(fields)
+            if topic not in self._plot_subs:
+                need_sub = True
+
+        if need_sub:
+            self._create_plot_subscription(topic)
+
+    def _remove_plot_client(self, topic: str, ws, fields=None):
+        """plot 클라이언트 제거. fields=None 이면 해당 ws의 모든 필드 제거."""
+        with self._lock:
+            client_map = self._plot_clients.get(topic, {})
+            if ws not in client_map:
+                return
+            if fields is None:
+                del client_map[ws]
+            else:
+                client_map[ws].difference_update(fields)
+                if not client_map[ws]:
+                    del client_map[ws]
+            # 해당 topic 구독자가 0이면 subscription 삭제
+            if not client_map:
+                self._plot_clients.pop(topic, None)
+                sub = self._plot_subs.pop(topic, None)
+                if sub:
+                    try:
+                        self._node.destroy_subscription(sub)
+                    except Exception:
+                        pass
+                self._node.get_logger().info(f'[PC2WS/plot] unsubscribed ← {topic}')
+
+    def _create_plot_subscription(self, topic: str):
+        """토픽 타입을 자동 감지하여 rclpy subscription 동적 생성."""
+        # 토픽 타입 조회
+        type_str = None
+        try:
+            for name, types in self._node.get_topic_names_and_types():
+                if name == topic and types:
+                    type_str = types[0]
+                    break
+        except Exception as e:
+            self._node.get_logger().error(f'[PC2WS/plot] 토픽 타입 조회 오류: {e}')
+            return
+
+        if not type_str:
+            self._node.get_logger().warn(f'[PC2WS/plot] 토픽 타입 못 찾음: {topic}')
+            return
+
+        MsgClass = self._get_msg_class(type_str)
+        if MsgClass is None:
+            self._node.get_logger().warn(
+                f'[PC2WS/plot] 메시지 타입 로드 실패: {type_str}')
+            return
+
+        sub = self._node.create_subscription(
+            MsgClass,
+            topic,
+            lambda msg, t=topic: self._on_plot_msg(msg, t),
+            10
+        )
+        with self._lock:
+            self._plot_subs[topic] = sub
+        self._node.get_logger().info(
+            f'[PC2WS/plot] subscribed → {topic} ({type_str})')
+
+    def _on_plot_msg(self, msg, topic_name: str):
+        """범용 토픽 메시지 수신 → 요청된 필드 추출 → JSON broadcast.
+
+        throttle 없이 원래 주기 그대로 전송한다.
+        헤더가 있으면 header.stamp를 timestamp로 사용하고,
+        없으면 현재 단조 시간을 사용한다.
+        """
+        with self._lock:
+            client_map = self._plot_clients.get(topic_name, {})
+            if not client_map:
+                return
+            # 모든 클라이언트의 필드 합집합
+            all_fields: set = set()
+            for fields in client_map.values():
+                all_fields.update(fields)
+            clients = set(client_map.keys())
+
+        # 타임스탬프 추출
+        stamp_sec, stamp_nanosec = 0, 0
+        if hasattr(msg, 'header') and hasattr(msg.header, 'stamp'):
+            stamp_sec     = msg.header.stamp.sec
+            stamp_nanosec = msg.header.stamp.nanosec
+        else:
+            t = time.time()
+            stamp_sec     = int(t)
+            stamp_nanosec = int((t - stamp_sec) * 1e9)
+
+        # 요청된 필드 값 추출
+        values = {}
+        for field in all_fields:
+            val = self._extract_nested(msg, field)
+            if val is not None:
+                values[field] = val
+
+        if not values:
+            return
+
+        data = json.dumps({
+            'type':          'plot_data',
+            'topic':         topic_name,
+            'stamp_sec':     stamp_sec,
+            'stamp_nanosec': stamp_nanosec,
+            'values':        values,
+        }, separators=(',', ':'))
+
+        loop = self._loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_text(clients, data), loop)
+
+    @staticmethod
+    def _extract_nested(obj, field_path: str):
+        """슬래시 또는 점 표기법으로 중첩 필드 값 추출.
+
+        예) 'linear_acceleration/x'  →  obj.linear_acceleration.x
+            'header/stamp/sec'       →  obj.header.stamp.sec
+        """
+        for part in field_path.replace('.', '/').split('/'):
+            if hasattr(obj, part):
+                obj = getattr(obj, part)
+            else:
+                return None
+        if isinstance(obj, (int, float, bool)):
+            return float(obj)
+        if isinstance(obj, str):
+            return obj
+        return None
+
+    @staticmethod
+    def _get_msg_class(type_str: str):
+        """'sensor_msgs/msg/Imu'  →  sensor_msgs.msg.Imu 클래스 반환.
+           'sensor_msgs/Imu'      →  sensor_msgs.msg.Imu (deprecated 형식 대응)
+        """
+        import importlib
+        parts = type_str.split('/')
+        try:
+            if len(parts) == 3:                   # package/msg/Class
+                module = importlib.import_module(f'{parts[0]}.{parts[1]}')
+                return getattr(module, parts[2])
+            elif len(parts) == 2:                 # package/Class (구형)
+                module = importlib.import_module(f'{parts[0]}.msg')
+                return getattr(module, parts[1])
+        except Exception:
+            return None
+        return None
 
     # ── PointCloud2 → binary 패킷 변환 ───────────────────────────────────────
 
