@@ -409,11 +409,19 @@
                         </div>
                         <!-- 오른쪽: 3D 뷰어 캔버스 -->
                         <div class="viewer-canvas-panel">
-                            <div id="3d-viewer-container" style="width: 100%; height: 100%; background: #2a2a2a; border-radius: 8px; position: relative; overflow: hidden;">
+                            <div id="3d-viewer-container" style="width: 100%; background: #2a2a2a; border-radius: 8px; position: relative; overflow: hidden;">
                                 <!-- Three.js canvas will be inserted here -->
                                 <div id="3d-viewer-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 14px;">
                                     Initializing 3D Viewer...
                                 </div>
+                            </div>
+                            <!-- 이미지 패널 토글 버튼 (3D viewer 아래, 이미지 패널 위 가로 바) -->
+                            <button id="image-panel-toggle-btn" onclick="toggleImagePanel()" title="이미지 패널 접기/펼치기" style="display:none;">▼</button>
+                            <!-- 이미지 패널 리사이즈 핸들 -->
+                            <div id="image-panel-resize-handle" style="display:none;"></div>
+                            <!-- 이미지 패널 영역 -->
+                            <div id="image-panel-area" style="display:none;">
+                                <div id="image-panel-container"></div>
                             </div>
                         </div>
 
