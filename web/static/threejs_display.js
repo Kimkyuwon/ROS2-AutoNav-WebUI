@@ -1504,9 +1504,11 @@ function _getPC2StreamWorker() {
         _uploadPC2ToGPU(topicName, pos, col, count);
     };
 
-    // rosbridge에 Worker 전용 WebSocket 연결
+    // Python Backend PC2 WebSocket 서버에 연결 (포트 8081)
+    // rosbridge(9090) 대신 Python 백엔드가 직접 PointCloud2를 구독하여
+    // binary 패킷으로 전달 → JSON/base64 오버헤드 없음
     const hostname = window.location.hostname || 'localhost';
-    _pc2StreamWorker.postMessage({ cmd: 'connect', url: `ws://${hostname}:9090` });
+    _pc2StreamWorker.postMessage({ cmd: 'connect', url: `ws://${hostname}:8081` });
 
     return _pc2StreamWorker;
 }
@@ -1645,18 +1647,16 @@ function subscribeToPointCloud(topicName) {
     // 현재 색상 설정을 Worker에 전달
     const settings = viewer3DState.topicSettings.get(topicName) || {};
 
-    // 스트리밍 워커에 구독 요청 (Worker 스레드에서 rosbridge 직접 구독)
-    // throttle_rate 500ms(2Hz): Ouster PC2 메시지는 10MB+ 대용량이므로
-    // 100ms(10Hz) 요청 시 rosbridge WebSocket 전체가 블로킹되어 /tf 등 다른
-    // 토픽이 지연됨. 2Hz로 낮춰 WebSocket 트래픽을 1/5로 감소.
+    // Python Backend PC2 WebSocket Worker에 구독 요청
+    // throttle(5Hz)는 Python 백엔드(PC2WebSocketServer)에서 처리하므로
+    // Worker 측에는 전달할 필요 없음
     const worker = _getPC2StreamWorker();
     worker.postMessage({
-        cmd:           'subscribe',
+        cmd:        'subscribe',
         topicName,
-        throttle_rate: 500,
-        colorMode:     settings.colorMode  || 'rainbow',
-        colorField:    settings.colorField || 'intensity',
-        solidColor:    settings.solidColor || '#ffffff',
+        colorMode:  settings.colorMode  || 'rainbow',
+        colorField: settings.colorField || 'intensity',
+        solidColor: settings.solidColor || '#ffffff',
     });
 
     // topicSubscriptions에 sentinel 저장 (unsubscribeFromTopic() 호환)
@@ -1857,38 +1857,20 @@ async function waitForROSConnection(timeoutMs = 5000) {
 }
 
 // Get available PointCloud2 topics
+// Python Backend HTTP API 사용 — rosbridge getTopics() 대신
+// (PC2 데이터는 이제 포트 8081 Binary WS로 받으므로 rosbridge 조회 불필요)
 async function getAvailablePointCloudTopics() {
-    // Wait for connection if not connected yet
-    if (!viewer3DState.rosConnected) {
-        console.log('Waiting for ROS connection...');
-        const connected = await waitForROSConnection(5000);
-
-        if (!connected) {
-            console.warn('Not connected to ROS after timeout');
-            return [];
-        }
+    try {
+        const res = await fetch('/api/viewer/pc2_topics');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const topics = data.topics || [];
+        console.log('[PC2] Available PointCloud2 topics (via API):', topics);
+        return topics;
+    } catch (e) {
+        console.error('[PC2] Failed to get PC2 topics from API:', e);
+        return [];
     }
-
-    return new Promise((resolve) => {
-        viewer3DState.ros.getTopics(function(topics) {
-            const pointCloudTopics = [];
-
-            if (topics.topics && topics.types) {
-                topics.topics.forEach((topic, index) => {
-                    const type = topics.types[index];
-                    if (type === 'sensor_msgs/PointCloud2' || type === 'sensor_msgs/msg/PointCloud2') {
-                        pointCloudTopics.push(topic);
-                    }
-                });
-            }
-
-            console.log('Available PointCloud2 topics:', pointCloudTopics);
-            resolve(pointCloudTopics);
-        }, function(error) {
-            console.error('Failed to get topics:', error);
-            resolve([]);
-        });
-    });
 }
 
 // Get available Livox LiDAR topics (livox_ros_driver2/msg/CustomMsg)

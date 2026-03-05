@@ -5,7 +5,7 @@ from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.serialization import serialize_message
 from std_msgs.msg import Bool
-from sensor_msgs.msg import Image, Imu, CameraInfo
+from sensor_msgs.msg import Image, Imu, CameraInfo, PointCloud2
 from geometry_msgs.msg import PointStamped
 from rosgraph_msgs.msg import Clock
 from cv_bridge import CvBridge
@@ -13,6 +13,7 @@ import cv2
 import struct
 import glob
 import threading
+import asyncio
 import json
 import os
 import time
@@ -23,6 +24,22 @@ import signal
 import yaml
 from pathlib import Path as PathLib
 import rosbag2_py
+
+# ── Optional: numpy (PointCloud2 binary 파싱용) ──────────────────────────────
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+    print("Warning: numpy not available. PC2 WebSocket server disabled.")
+
+# ── Optional: websockets (PC2 Binary WebSocket 서버용) ───────────────────────
+try:
+    import websockets
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    print("Warning: websockets not available. PC2 WebSocket server disabled.")
 
 # Try to import ruamel.yaml for better formatting
 try:
@@ -715,6 +732,262 @@ class Ros1BagRecorderThread(threading.Thread):
             )
 
 
+class PC2WebSocketServer:
+    """Python 백엔드 직접 PointCloud2 → Binary WebSocket 스트리밍 서버.
+
+    rosbridge를 우회하여 PointCloud2를 Python에서 직접 구독한 뒤
+    numpy로 XYZ + colorField(intensity/rgb)를 추출해 binary 패킷으로
+    브라우저에 전달한다. JSON/base64 오버헤드가 없어 메시지 크기가
+    ~10 MB → ~600 KB 수준으로 줄어든다.
+
+    Binary 패킷 포맷 (little-endian):
+      [3B]  magic = b'PC2'
+      [1B]  version = 1
+      [1B]  flags  (bit0=has_intensity, bit1=has_rgb)
+      [4B]  uint32  topic_name 길이
+      [4B]  uint32  frame_id 길이
+      [4B]  uint32  point_count
+      [N B] topic_name  (UTF-8)
+      [M B] frame_id    (UTF-8)
+      [count*12 B] XYZ float32 interleaved  (x0,y0,z0, x1,y1,z1, ...)
+      [count*4  B] colorField float32        (intensity 또는 0.0)
+      [count*4  B] rgb uint32               (has_rgb 일 때만)
+
+    Ports:
+      8081 — WebSocket (ws://host:8081)
+
+    Client → Server 명령 (JSON 문자열):
+      { "cmd": "subscribe",   "topic": "/ouster/points" }
+      { "cmd": "unsubscribe", "topic": "/ouster/points" }
+    """
+
+    MAX_POINTS   = 50_000   # 다운샘플링 상한
+    THROTTLE_SEC = 0.2      # 최대 5Hz (200 ms) — 10MB+ 메시지 대역폭 고려
+
+    # PointCloud2 field datatype → numpy dtype 매핑
+    _DTYPE = {
+        1: np.int8,   2: np.uint8,
+        3: np.int16,  4: np.uint16,
+        5: np.int32,  6: np.uint32,
+        7: np.float32, 8: np.float64,
+    } if NUMPY_AVAILABLE else {}
+
+    def __init__(self, ros_node, port: int = 8081):
+        self._node = ros_node
+        self._port = port
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()
+        # topic_name → set[websocket]
+        self._clients: dict = {}
+        # topic_name → rclpy Subscription
+        self._subs: dict = {}
+        # topic_name → 마지막 전송 단조시각 (throttle)
+        self._last_sent: dict = {}
+
+    # ── 공개 API ─────────────────────────────────────────────────────────────
+
+    def start(self):
+        """별도 daemon 스레드에서 asyncio WebSocket 서버를 시작한다."""
+        if not WEBSOCKETS_AVAILABLE or not NUMPY_AVAILABLE:
+            self._node.get_logger().warn(
+                '[PC2WS] websockets 또는 numpy 미설치 — PC2 Binary WS 비활성화')
+            return
+        t = threading.Thread(
+            target=self._run_loop, daemon=True, name='pc2-ws-server')
+        t.start()
+
+    # ── 내부: asyncio 루프 ────────────────────────────────────────────────────
+
+    def _run_loop(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._serve())
+
+    async def _serve(self):
+        try:
+            async with websockets.serve(
+                    self._handler, '0.0.0.0', self._port,
+                    max_size=None,
+                    ping_interval=20,
+                    ping_timeout=20):
+                self._node.get_logger().info(
+                    f'[PC2WS] Binary WebSocket server on ws://0.0.0.0:{self._port}')
+                await asyncio.Future()   # 종료 없이 영원히 실행
+        except Exception as e:
+            self._node.get_logger().error(f'[PC2WS] server error: {e}')
+
+    async def _handler(self, websocket):
+        """WebSocket 연결 핸들러 — subscribe/unsubscribe 명령 수신."""
+        my_topics: set = set()
+        try:
+            async for raw in websocket:
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                cmd   = msg.get('cmd', '')
+                topic = msg.get('topic', '').strip()
+                if not topic:
+                    continue
+                if cmd == 'subscribe':
+                    self._add_client(topic, websocket)
+                    my_topics.add(topic)
+                elif cmd == 'unsubscribe':
+                    self._remove_client(topic, websocket)
+                    my_topics.discard(topic)
+        except Exception:
+            pass
+        finally:
+            for t in list(my_topics):
+                self._remove_client(t, websocket)
+
+    # ── 클라이언트 / 구독 관리 ────────────────────────────────────────────────
+
+    def _add_client(self, topic: str, ws):
+        with self._lock:
+            if topic not in self._clients:
+                self._clients[topic] = set()
+            self._clients[topic].add(ws)
+            if topic not in self._subs:
+                sub = self._node.create_subscription(
+                    PointCloud2, topic,
+                    lambda m, t=topic: self._on_pc2(m, t),
+                    10)
+                self._subs[topic]      = sub
+                self._last_sent[topic] = 0.0
+                self._node.get_logger().info(f'[PC2WS] subscribed → {topic}')
+
+    def _remove_client(self, topic: str, ws):
+        with self._lock:
+            s = self._clients.get(topic)
+            if not s:
+                return
+            s.discard(ws)
+            if not s:
+                sub = self._subs.pop(topic, None)
+                if sub:
+                    self._node.destroy_subscription(sub)
+                self._clients.pop(topic, None)
+                self._last_sent.pop(topic, None)
+                self._node.get_logger().info(f'[PC2WS] unsubscribed ← {topic}')
+
+    # ── rclpy 콜백 ───────────────────────────────────────────────────────────
+
+    def _on_pc2(self, msg: PointCloud2, topic_name: str):
+        """PointCloud2 수신 → throttle → binary 변환 → asyncio 브로드캐스트."""
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_sent.get(topic_name, 0.0) < self.THROTTLE_SEC:
+                return
+            clients = self._clients.get(topic_name, set()).copy()
+        if not clients:
+            return
+
+        payload = self._build_payload(msg, topic_name)
+        if payload is None:
+            return
+
+        with self._lock:
+            self._last_sent[topic_name] = now
+
+        loop = self._loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast(clients, payload), loop)
+
+    async def _broadcast(self, clients, payload: bytes):
+        for ws in list(clients):
+            try:
+                await ws.send(payload)
+            except Exception:
+                pass
+
+    # ── PointCloud2 → binary 패킷 변환 ───────────────────────────────────────
+
+    def _build_payload(self, msg: PointCloud2, topic_name: str):
+        """PointCloud2 메시지를 binary 패킷으로 변환. 실패 시 None 반환."""
+        try:
+            frame_id  = msg.header.frame_id if msg.header else ''
+            field_map = {f.name: f for f in msg.fields}
+
+            if not ('x' in field_map and 'y' in field_map and 'z' in field_map):
+                return None
+
+            n_total    = msg.width * msg.height
+            point_step = msg.point_step
+            if n_total == 0 or point_step == 0:
+                return None
+
+            # raw bytes → uint8 numpy array → (N, point_step) 형태
+            raw = np.frombuffer(bytes(msg.data), dtype=np.uint8)
+            if raw.size < n_total * point_step:
+                n_total = raw.size // point_step
+            arr = raw[:n_total * point_step].reshape(n_total, point_step)
+
+            def _extract_f32(field_name):
+                f   = field_map[field_name]
+                off = f.offset
+                dt  = self._DTYPE.get(f.datatype, np.float32)
+                bw  = dt().itemsize
+                return np.frombuffer(
+                    arr[:, off:off + bw].tobytes(), dtype=dt
+                ).astype(np.float32)
+
+            x = _extract_f32('x')
+            y = _extract_f32('y')
+            z = _extract_f32('z')
+
+            # NaN/Inf 필터링
+            valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+            x, y, z = x[valid], y[valid], z[valid]
+
+            n = len(x)
+            if n == 0:
+                return None
+
+            # 다운샘플링 (voxel-free: 균등 step)
+            step = max(1, n // self.MAX_POINTS)
+            x, y, z = x[::step], y[::step], z[::step]
+            n_out = len(x)
+
+            xyz = np.column_stack([x, y, z]).astype(np.float32)
+
+            # intensity 추출
+            has_intensity = 'intensity' in field_map
+            color_f32 = np.zeros(n_out, dtype=np.float32)
+            if has_intensity:
+                ci = _extract_f32('intensity')
+                color_f32 = ci[valid][::step][:n_out]
+
+            # RGB 추출
+            has_rgb = 'rgb' in field_map or 'rgba' in field_map
+            rgb_u32 = np.zeros(n_out, dtype=np.uint32)
+            if has_rgb:
+                rkey = 'rgb' if 'rgb' in field_map else 'rgba'
+                f    = field_map[rkey]
+                ri   = np.frombuffer(
+                    arr[:, f.offset:f.offset + 4].tobytes(), dtype=np.uint32)
+                rgb_u32 = ri[valid][::step][:n_out]
+
+            flags  = (0x01 if has_intensity else 0) | (0x02 if has_rgb else 0)
+            topic_b = topic_name.encode('utf-8')
+            frame_b = frame_id.encode('utf-8')
+
+            header = struct.pack(
+                '<3sBBIII',
+                b'PC2', 1, flags,
+                len(topic_b), len(frame_b), n_out)
+
+            parts = [header, topic_b, frame_b, xyz.tobytes(), color_f32.tobytes()]
+            if has_rgb:
+                parts.append(rgb_u32.tobytes())
+            return b''.join(parts)
+
+        except Exception as e:
+            self._node.get_logger().error(f'[PC2WS] _build_payload error: {e}')
+            return None
+
+
 class WebGUINode(Node):
     def __init__(self):
         super().__init__('web_gui_node')
@@ -807,6 +1080,11 @@ class WebGUINode(Node):
 
         # Setup reusable environment for subprocess calls
         self._setup_ros_environment()
+
+        # ── PC2 Binary WebSocket 서버 (포트 8081) ─────────────────────────────
+        # rosbridge를 우회해 PointCloud2를 Python에서 직접 처리 후 binary 전송
+        self.pc2_ws_server = PC2WebSocketServer(self, port=8081)
+        self.pc2_ws_server.start()
 
         self.get_logger().info('Web GUI Node initialized with full ROS2 integration')
 
@@ -2781,6 +3059,21 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json_response({'success': True, 'topics': topic_names})
             except Exception as e:
                 self.send_json_response({'success': False, 'error': str(e)})
+        elif parsed_path.path == '/api/viewer/pc2_topics':
+            # PC2 전용: 현재 활성화된 PointCloud2 토픽 목록
+            try:
+                all_topics = self.node.get_recorder_topics()
+                pc2_topics = [
+                    t['name'] if isinstance(t, dict) else t
+                    for t in all_topics
+                    if (t.get('type', '') if isinstance(t, dict) else '') in (
+                        'sensor_msgs/msg/PointCloud2',
+                        'sensor_msgs/PointCloud2',
+                    )
+                ]
+                self.send_json_response({'success': True, 'topics': pc2_topics})
+            except Exception as e:
+                self.send_json_response({'success': False, 'error': str(e), 'topics': []})
         else:
             # Serve static files
             if parsed_path.path == '/':
