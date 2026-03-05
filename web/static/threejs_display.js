@@ -280,7 +280,11 @@ const viewer3DState = {
     viewSettings: {
         orbit:   { distance: 10, yaw: 0.785, pitch: 0.785, nearClip: 0.01 },
         topdown: { scale: 1.0, nearClip: 0.01 }
-    }
+    },
+
+    // Dirty 렌더링 플래그
+    // true 일 때만 renderer.render() 호출 → 불필요한 60fps GPU 렌더 제거
+    needsRender: true,   // 초기에 한 번은 렌더해서 빈 씬을 표시
 };
 
 // Get the active display container based on current subtab
@@ -425,6 +429,10 @@ function initThreeJSDisplay() {
             viewer3DState.controls = new window.OrbitControls(viewer3DState.camera, viewer3DState.renderer.domElement);
             viewer3DState.controls.enableDamping = true;
             viewer3DState.controls.dampingFactor = 0.25;
+            // Dirty 렌더링: 카메라 이동(damping 포함)이 있을 때만 렌더
+            viewer3DState.controls.addEventListener('change', function () {
+                viewer3DState.needsRender = true;
+            });
             console.log('OrbitControls initialized successfully');
         } catch (error) {
             console.error('Failed to initialize OrbitControls:', error);
@@ -830,8 +838,13 @@ function onWindowResize() {
  * Decay Time: 만료된 PointCloud2 Points mesh를 scene에서 제거
  * animate() 루프에서 매 프레임 호출
  */
+/**
+ * Decay 오브젝트 만료 처리
+ * @returns {boolean} 아직 살아있는 decay 오브젝트가 있으면 true (→ 다음 프레임도 렌더 필요)
+ */
 function tickDecayObjects() {
     const now = performance.now();
+    let hasLiving = false;
     viewer3DState.decayObjects.forEach((arr, topicName) => {
         if (arr.length === 0) return;
         const settings  = viewer3DState.topicSettings.get(topicName) || {};
@@ -851,17 +864,24 @@ function tickDecayObjects() {
             }
         }
         if (removed) viewer3DState.decayObjects.set(topicName, arr);
+        if (arr.length > 0) hasLiving = true;
     });
+    return hasLiving;
 }
 
 function animate() {
     requestAnimationFrame(animate);
+
     if (viewer3DState.controls && viewer3DState.controls.update) {
-        viewer3DState.controls.update();
+        viewer3DState.controls.update();  // enableDamping 감쇠 처리 (내부에서 'change' 이벤트 발생)
     }
 
     // 카메라 Target Frame 추적 (Orbit / TopDown 공통)
     const vt = viewer3DState.currentViewType;
+    // Target Frame이 <Fixed Frame> 이 아니면 카메라가 프레임을 따라 움직이므로 항상 렌더 필요
+    if (viewer3DState.cameraTargetFrame && viewer3DState.cameraTargetFrame !== '<Fixed Frame>') {
+        viewer3DState.needsRender = true;
+    }
     updateOrbitTargetFrame();
 
     // TopDown 뷰: frustum zoom 변화에 맞춰 포인트 픽셀 크기 매 프레임 갱신
@@ -869,12 +889,16 @@ function animate() {
         updateTopdownPointSizes();
     }
 
-    tickDecayObjects();
+    // Decay 오브젝트가 살아있으면 매 프레임 렌더 (fade-out 애니메이션)
+    const hasDecay = tickDecayObjects();
+    if (hasDecay) viewer3DState.needsRender = true;
 
-    // Phase 2.4: activeCamera 사용 (없으면 기본 camera fallback)
+    // ── Dirty 렌더링: needsRender 플래그가 설정됐을 때만 GPU 호출 ──
+    // 변경사항 없으면 렌더 생략 → GPU 부하↓, PC2 프레임 업로드 경합 제거
     const cam = viewer3DState.activeCamera || viewer3DState.camera;
-    if (viewer3DState.renderer && viewer3DState.scene && cam) {
+    if (viewer3DState.needsRender && viewer3DState.renderer && viewer3DState.scene && cam) {
         viewer3DState.renderer.render(viewer3DState.scene, cam);
+        viewer3DState.needsRender = false;
     }
 }
 
@@ -935,6 +959,12 @@ const PC2_MAX_POINTS = 50000;
 const _pc2PosBuffer = new Float32Array(PC2_MAX_POINTS * 3);
 const _pc2ColBuffer = new Float32Array(PC2_MAX_POINTS * 3);
 
+// ── PC2 스트리밍 워커 (단일 인스턴스, 모든 PC2 토픽 공유) ──
+// rosbridge에 직접 WebSocket 연결 → JSON.parse 포함 전처리를 Worker 스레드에서 수행
+// 메인 스레드는 GPU 업로드(~3ms)만 담당하여 render loop 60fps 유지
+let _pc2StreamWorker = null;
+const _pc2FrameCounts = new Map(); // topicName → frameCount (BoundingSphere 갱신 주기용)
+
 /**
  * PointCloud2 메시지 고성능 파싱 (단일 패스, 재사용 버퍼)
  * @param {Object} message       - rosbridge PointCloud2 메시지
@@ -964,15 +994,33 @@ function parsePointCloud2(message, settings, prevMin, prevMax) {
         return { count: 0, newMin: 0, newMax: 1 };
     }
 
-    // base64 → Uint8Array 디코딩
-    const binaryString = atob(message.data);
-    const len = binaryString.length;
-    const data = new Uint8Array(len);
-    for (let i = 0; i < len; i++) data[i] = binaryString.charCodeAt(i);
-    const view = new DataView(data.buffer);
+    const pointStep = message.point_step;
+    const numPoints = Math.min(message.width * message.height, PC2_MAX_POINTS);
 
-    const pointStep  = message.point_step;
-    const numPoints  = Math.min(message.width * message.height, PC2_MAX_POINTS);
+    // ── 최적화 base64 디코딩: 필요한 바이트만 디코딩 ──
+    // PC2_MAX_POINTS 캡으로 실제 사용하는 바이트는 numPoints × point_step 만큼이다.
+    // base64는 3바이트 → 4문자 단위이므로, ceil(needed/3)*4 문자만 잘라서 atob().
+    // 예) Ouster 131K pt: 7.6MB 전체 → 50K pt: 2.9MB = 디코딩 71% 절감.
+    const bytesNeeded  = numPoints * pointStep;
+    const charsNeeded  = Math.ceil(bytesNeeded / 3) * 4;  // 항상 4의 배수 → 유효한 base64
+    const b64Slice     = (charsNeeded < message.data.length)
+        ? message.data.substring(0, charsNeeded)
+        : message.data;
+    const binaryString = atob(b64Slice);
+    const len          = binaryString.length;
+    const data         = new Uint8Array(len);
+
+    // 4× 루프 언롤링: charCodeAt 배치 처리 (JIT 최적화 유도)
+    let _j = 0;
+    for (; _j + 3 < len; _j += 4) {
+        data[_j]     = binaryString.charCodeAt(_j);
+        data[_j + 1] = binaryString.charCodeAt(_j + 1);
+        data[_j + 2] = binaryString.charCodeAt(_j + 2);
+        data[_j + 3] = binaryString.charCodeAt(_j + 3);
+    }
+    for (; _j < len; _j++) data[_j] = binaryString.charCodeAt(_j);
+
+    const view = new DataView(data.buffer);
 
     // ── Solid 색상 사전 파싱 ──
     let solidR = 1, solidG = 1, solidB = 1;
@@ -1429,10 +1477,153 @@ function resetAll3DViewer() {
     console.log('[resetAll3DViewer] Visualization cleared. Subscriptions maintained. Awaiting fresh data.');
 }
 
+/**
+ * PC2 스트리밍 워커 초기화 (단일 인스턴스)
+ * rosbridge에 Worker 전용 WebSocket 연결 → JSON.parse 포함 전처리를 Worker 스레드로 완전 분리
+ */
+function _getPC2StreamWorker() {
+    if (_pc2StreamWorker) return _pc2StreamWorker;
+
+    _pc2StreamWorker = new Worker('/static/pc2_stream_worker.js');
+
+    // ── 스트림 워커 결과 수신 (메인 스레드) ──
+    _pc2StreamWorker.onmessage = function (ev) {
+        const msg = ev.data;
+        if (msg.type !== 'pc2frame') return;
+
+        const { topicName, frameId, pos, col, count } = msg;
+
+        // frame 변환 적용 (메인 스레드에서 수행 — Three.js 접근 필요)
+        const pcFrameGroup = viewer3DState.pcFrameGroups.get(topicName);
+        if (pcFrameGroup) {
+            viewer3DState.topicFrameIds.set(topicName, frameId);
+            applyFrameTransformToObject(pcFrameGroup, frameId);
+        }
+
+        // pos/col 은 이미 count 크기만큼의 뷰(subarray)로 전달됨
+        _uploadPC2ToGPU(topicName, pos, col, count);
+    };
+
+    // rosbridge에 Worker 전용 WebSocket 연결
+    const hostname = window.location.hostname || 'localhost';
+    _pc2StreamWorker.postMessage({ cmd: 'connect', url: `ws://${hostname}:9090` });
+
+    return _pc2StreamWorker;
+}
+
+/**
+ * PC2 GPU 업로드 (메인 스레드 전용)
+ * Worker로부터 받은 Float32Array를 Three.js BufferGeometry에 업로드
+ */
+function _uploadPC2ToGPU(topicName, pos, col, count) {
+    if (count === 0) return;
+
+    const pcFrameGroup = viewer3DState.pcFrameGroups.get(topicName);
+    if (!pcFrameGroup) return;
+
+    // 새 데이터 도착 → 다음 animate()에서 렌더 트리거
+    viewer3DState.needsRender = true;
+
+    const settings  = viewer3DState.topicSettings.get(topicName) || {};
+    const pointSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
+    const alpha     = settings.alpha     !== undefined ? settings.alpha     : 1.0;
+    const decayTime = settings.decayTime !== undefined ? settings.decayTime : 0;
+
+    // TopDown(OrthographicCamera) 시 frustum 스케일 적용
+    // Orbit(PerspectiveCamera) 시 sizeAttenuation:true → 원근감 자동 적용
+    function makeMaterial(sz, a) {
+        let renderSz = sz;
+        if (viewer3DState.currentViewType === 'topdown') {
+            renderSz = Math.max(1, sz * _getTopdownPixelsPerUnit());
+        }
+        return new THREE.PointsMaterial({
+            size: renderSz,
+            vertexColors: true,
+            sizeAttenuation: true,
+            transparent: a < 1.0,
+            opacity: a,
+        });
+    }
+
+    const mesh = viewer3DState.pointCloudMeshes[topicName];
+    const fc   = (_pc2FrameCounts.get(topicName) || 0) + 1;
+    _pc2FrameCounts.set(topicName, fc);
+
+    if (decayTime > 0) {
+        // ═══ DECAY 모드: 매 프레임 독립 Points 객체 생성·누적 ═══
+        if (mesh) {
+            pcFrameGroup.remove(mesh);
+            mesh.geometry.dispose();
+            mesh.material.dispose();
+            viewer3DState.pointCloudMeshes[topicName] = null;
+        }
+        // pos/col 은 Worker에서 이미 count 크기로 subarray되어 전달됨
+        // slice()로 독립 복사 → 이 Points 객체가 살아있는 동안 데이터 보존
+        const posArr = pos.slice();
+        const colArr = col.slice();
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+        geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+        const decayPoints = new THREE.Points(geo, makeMaterial(pointSize, alpha));
+        pcFrameGroup.add(decayPoints);
+        const arr = viewer3DState.decayObjects.get(topicName) || [];
+        arr.push({ points: decayPoints, time: performance.now() });
+        viewer3DState.decayObjects.set(topicName, arr);
+
+    } else {
+        // ═══ 일반 모드: 단일 mesh in-place 업데이트 ═══
+        const decayArr = viewer3DState.decayObjects.get(topicName);
+        if (decayArr && decayArr.length > 0) {
+            decayArr.forEach(item => {
+                pcFrameGroup.remove(item.points);
+                item.points.geometry.dispose();
+                item.points.material.dispose();
+            });
+            viewer3DState.decayObjects.set(topicName, []);
+        }
+
+        if (!mesh) {
+            // ── 첫 메시지: GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
+            const posArr = new Float32Array(PC2_MAX_POINTS * 3);
+            const colArr = new Float32Array(PC2_MAX_POINTS * 3);
+            posArr.set(pos);   // pos는 이미 count 크기
+            colArr.set(col);
+            const posAttr = new THREE.BufferAttribute(posArr, 3);
+            const colAttr = new THREE.BufferAttribute(colArr, 3);
+            posAttr.setUsage(THREE.DynamicDrawUsage);
+            colAttr.setUsage(THREE.DynamicDrawUsage);
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', posAttr);
+            geometry.setAttribute('color',    colAttr);
+            geometry.setDrawRange(0, count);
+            geometry.computeBoundingSphere();
+            const newMesh = new THREE.Points(geometry, makeMaterial(pointSize, alpha));
+            viewer3DState.pointCloudMeshes[topicName] = newMesh;
+            pcFrameGroup.add(newMesh);
+            console.log('[PC2] Mesh created (StreamWorker):', topicName, '|', count, 'pts');
+        } else {
+            // ── 업데이트: 기존 GPU 버퍼를 in-place 갱신 (할당 0회) ──
+            const geometry = mesh.geometry;
+            const posAttr  = geometry.attributes.position;
+            const colAttr  = geometry.attributes.color;
+                posAttr.array.set(pos);   // pos는 이미 count 크기
+                colAttr.array.set(col);
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+            geometry.setDrawRange(0, count);
+            mesh.material.size        = pointSize;
+            mesh.material.opacity     = alpha;
+            mesh.material.transparent = alpha < 1.0;
+            mesh.material.needsUpdate = true;
+            if (fc % 30 === 0) geometry.computeBoundingSphere();
+        }
+    }
+}
+
 // Subscribe to PointCloud2 topic
 function subscribeToPointCloud(topicName) {
     if (!viewer3DState.rosConnected) {
-        console.warn('Not connected to ROS');
+        console.warn('[PC2] Not connected to ROS');
         return;
     }
 
@@ -1441,23 +1632,7 @@ function subscribeToPointCloud(topicName) {
         return viewer3DState.topicSubscriptions.get(topicName);
     }
 
-    console.log('[PC2] Subscribing to topic:', topicName);
-
-    // ── 토픽별 적응형 rainbow 범위 상태 (클로저) ──
-    // 첫 프레임: [0,1] 으로 초기화, 이후 실제 데이터로 갱신
-    let adaptiveMin = 0;
-    let adaptiveMax = 1;
-    let frameCount  = 0;
-
-    const topic = new ROSLIB.Topic({
-        ros: viewer3DState.ros,
-        name: topicName,
-        messageType: 'sensor_msgs/msg/PointCloud2',
-        throttle_rate: 100,   // 최대 10 Hz
-        queue_length: 1       // 오래된 메시지 드롭 → 항상 최신 프레임 처리
-    });
-
-    viewer3DState.topicSubscriptions.set(topicName, topic);
+    console.log('[PC2] Subscribing to topic (StreamWorker):', topicName);
 
     // PC2 frame 래퍼 그룹 (frame_id → fixedFrame 변환 적용 대상)
     let pcFrameGroup = viewer3DState.pcFrameGroups.get(topicName);
@@ -1467,137 +1642,33 @@ function subscribeToPointCloud(topicName) {
         viewer3DState.pcFrameGroups.set(topicName, pcFrameGroup);
     }
 
-    topic.subscribe(function(message) {
-        // 숨겨진 토픽은 파싱 자체를 건너뜀 (CPU 절약)
-        const mesh = viewer3DState.pointCloudMeshes[topicName];
-        if (mesh && mesh.visible === false) return;
+    // 현재 색상 설정을 Worker에 전달
+    const settings = viewer3DState.topicSettings.get(topicName) || {};
 
-        // frame_id 저장 및 frame 변환 적용
-        const frameId = (message.header && message.header.frame_id) ? message.header.frame_id : '';
-        viewer3DState.topicFrameIds.set(topicName, frameId);
-        applyFrameTransformToObject(pcFrameGroup, frameId);
-
-        const settings   = viewer3DState.topicSettings.get(topicName) || {};
-        const pointSize  = settings.pointSize  !== undefined ? settings.pointSize  : 0.1;
-        const alpha      = settings.alpha      !== undefined ? settings.alpha      : 1.0;
-        const decayTime  = settings.decayTime  !== undefined ? settings.decayTime  : 0;
-
-        // ── 고성능 파싱 (단일 패스, 재사용 버퍼) ──
-        const { count, newMin, newMax } = parsePointCloud2(
-            message, settings, adaptiveMin, adaptiveMax
-        );
-
-        if (count === 0) return;
-
-        // 적응형 범위 갱신 (다음 프레임에 사용)
-        adaptiveMin = newMin;
-        adaptiveMax = newMax;
-        frameCount++;
-
-        // ── Helper: PointsMaterial 생성 ──
-        // ── Helper: PointsMaterial 생성 ──
-        // TopDown(OrthographicCamera) 시 gl_PointSize = size(픽셀)이므로 frustum 스케일 적용
-        // Orbit(PerspectiveCamera) 시 sizeAttenuation:true → 원근감 자동 적용
-        function makeMaterial(sz, a) {
-            let renderSz = sz;
-            if (viewer3DState.currentViewType === 'topdown') {
-                renderSz = Math.max(1, sz * _getTopdownPixelsPerUnit());
-            }
-            return new THREE.PointsMaterial({
-                size: renderSz,
-                vertexColors: true,
-                sizeAttenuation: true,   // 항상 true 유지 (셰이더 재컴파일 방지)
-                transparent: a < 1.0,
-                opacity: a,
-            });
-        }
-
-        if (decayTime > 0) {
-            // ═══ DECAY 모드: 매 프레임 독립 Points 객체 생성·누적 ═══
-            // 기존 단일 mesh가 있으면 frameGroup에서 제거 (모드 전환)
-            if (viewer3DState.pointCloudMeshes[topicName]) {
-                pcFrameGroup.remove(viewer3DState.pointCloudMeshes[topicName]);
-                viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
-                viewer3DState.pointCloudMeshes[topicName].material.dispose();
-                viewer3DState.pointCloudMeshes[topicName] = null;
-            }
-
-            // 실제 count만큼만 복사 (GPU 메모리 절약)
-            const posArr = _pc2PosBuffer.subarray(0, count * 3).slice();
-            const colArr = _pc2ColBuffer.subarray(0, count * 3).slice();
-
-            const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-            geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
-
-            const decayPoints = new THREE.Points(geo, makeMaterial(pointSize, alpha));
-            pcFrameGroup.add(decayPoints);
-
-            const arr = viewer3DState.decayObjects.get(topicName) || [];
-            arr.push({ points: decayPoints, time: performance.now() });
-            viewer3DState.decayObjects.set(topicName, arr);
-
-        } else {
-            // ═══ 일반 모드: 단일 mesh in-place 업데이트 ═══
-            // 혹시 decayObjects에 남은 것이 있으면 정리 (모드 전환 시)
-            const decayArr = viewer3DState.decayObjects.get(topicName);
-            if (decayArr && decayArr.length > 0) {
-                decayArr.forEach(item => {
-                    pcFrameGroup.remove(item.points);
-                    item.points.geometry.dispose();
-                    item.points.material.dispose();
-                });
-                viewer3DState.decayObjects.set(topicName, []);
-            }
-
-            if (!mesh) {
-                // ── 첫 메시지: GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
-                const posArr = new Float32Array(PC2_MAX_POINTS * 3);
-                const colArr = new Float32Array(PC2_MAX_POINTS * 3);
-                posArr.set(_pc2PosBuffer.subarray(0, count * 3));
-                colArr.set(_pc2ColBuffer.subarray(0, count * 3));
-
-                const posAttr = new THREE.BufferAttribute(posArr, 3);
-                const colAttr = new THREE.BufferAttribute(colArr, 3);
-                posAttr.setUsage(THREE.DynamicDrawUsage);
-                colAttr.setUsage(THREE.DynamicDrawUsage);
-
-                const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute('position', posAttr);
-                geometry.setAttribute('color',    colAttr);
-                geometry.setDrawRange(0, count);
-                geometry.computeBoundingSphere();
-
-                const newMesh = new THREE.Points(geometry, makeMaterial(pointSize, alpha));
-                viewer3DState.pointCloudMeshes[topicName] = newMesh;
-                pcFrameGroup.add(newMesh);
-                console.log('[PC2] Mesh added:', topicName, '|', count, 'pts');
-
-            } else {
-                // ── 업데이트: 기존 GPU 버퍼를 in-place 갱신 (할당 0회) ──
-                const geometry = mesh.geometry;
-                const posAttr  = geometry.attributes.position;
-                const colAttr  = geometry.attributes.color;
-
-                posAttr.array.set(_pc2PosBuffer.subarray(0, count * 3));
-                colAttr.array.set(_pc2ColBuffer.subarray(0, count * 3));
-                posAttr.needsUpdate = true;
-                colAttr.needsUpdate = true;
-                geometry.setDrawRange(0, count);
-
-                // 포인트 사이즈·투명도 실시간 반영
-                mesh.material.size        = pointSize;
-                mesh.material.opacity     = alpha;
-                mesh.material.transparent = alpha < 1.0;
-                mesh.material.needsUpdate = true;
-
-                // BoundingSphere 는 30프레임마다 1회만
-                if (frameCount % 30 === 0) geometry.computeBoundingSphere();
-            }
-        }
+    // 스트리밍 워커에 구독 요청 (Worker 스레드에서 rosbridge 직접 구독)
+    const worker = _getPC2StreamWorker();
+    worker.postMessage({
+        cmd:           'subscribe',
+        topicName,
+        throttle_rate: 100,
+        colorMode:     settings.colorMode  || 'rainbow',
+        colorField:    settings.colorField || 'intensity',
+        solidColor:    settings.solidColor || '#ffffff',
     });
 
-    return topic;
+    // topicSubscriptions에 sentinel 저장 (unsubscribeFromTopic() 호환)
+    // sentinel.unsubscribe() → 워커에 unsubscribe 명령 전송
+    const sentinel = {
+        unsubscribe: function () {
+            if (_pc2StreamWorker) {
+                _pc2StreamWorker.postMessage({ cmd: 'unsubscribe', topicName });
+            }
+            _pc2FrameCounts.delete(topicName);
+        },
+    };
+    viewer3DState.topicSubscriptions.set(topicName, sentinel);
+
+    return sentinel;
 }
 
 /**
@@ -1627,7 +1698,7 @@ function subscribeToLivox(topicName) {
         ros: viewer3DState.ros,
         name: topicName,
         messageType: 'livox_ros_driver2/msg/CustomMsg',
-        throttle_rate: 100,   // 최대 10 Hz
+        throttle_rate: 200,   // 5 Hz: 200ms마다 1프레임 → 프레임당 처리 시간 확보
         queue_length: 1       // 오래된 메시지 드롭 → 항상 최신 프레임 처리
     });
 
@@ -1650,6 +1721,9 @@ function subscribeToLivox(topicName) {
         const frameId = (message.header && message.header.frame_id) ? message.header.frame_id : '';
         viewer3DState.topicFrameIds.set(topicName, frameId);
         applyFrameTransformToObject(pcFrameGroup, frameId);
+
+        // 새 데이터 → 다음 animate()에서 렌더 트리거 (dirty 렌더링)
+        viewer3DState.needsRender = true;
 
         const settings  = viewer3DState.topicSettings.get(topicName) || {};
         const pointSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
@@ -2037,6 +2111,16 @@ function updateTopicSetting(topicName, key, value) {
     current[key] = value;
     viewer3DState.topicSettings.set(topicName, current);
     console.log(`Updated setting for ${topicName}: ${key} = ${value}`);
+
+    // PC2 스트리밍 워커에 색상 관련 설정 동기화
+    // (워커가 색상 계산을 수행하므로 메인 스레드의 설정 변경을 워커에도 반영)
+    if (_pc2StreamWorker && (key === 'colorMode' || key === 'colorField' || key === 'solidColor')) {
+        _pc2StreamWorker.postMessage({
+            cmd: 'updateSettings',
+            topicName,
+            [key]: value,
+        });
+    }
 }
 
 /**
@@ -3008,6 +3092,7 @@ function subscribeToPath(topicName) {
         // frame_id 저장
         const frameId = (message.header && message.header.frame_id) ? message.header.frame_id : '';
         viewer3DState.topicFrameIds.set(topicName, frameId);
+        viewer3DState.needsRender = true;
 
         const existingObj = viewer3DState.pathObjects.get(topicName);
 
@@ -3213,6 +3298,7 @@ function subscribeToOdometry(topicName) {
     viewer3DState.topicSubscriptions.set(topicName, topic);
 
     topic.subscribe(function(message) {
+        viewer3DState.needsRender = true;
         const pos = message.pose.pose.position;
         const ori = message.pose.pose.orientation;
 
@@ -4545,6 +4631,7 @@ function subscribeToTF(topicName) {
         const tfObj = viewer3DState.tfObjects.get(topicName);
         if (tfObj && tfObj.visible === false) return;
 
+        viewer3DState.needsRender = true;
         parseTFMessage(message);
 
         if (_tfThrottleTimer) return;

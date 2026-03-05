@@ -183,6 +183,20 @@
                         <div></div>
                     </div>
 
+                    <!-- 재생 속도 슬라이더 (bag 로드 시 표시, ROS1/ROS2 공용) -->
+                    <div id="ros1-playback-controls" style="display:none; padding: 8px 0 4px 0;">
+                        <div class="form-group">
+                            <label>Playback Rate:</label>
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <input type="range" id="bag-playback-rate" min="1" max="40" value="10"
+                                       style="flex: 1; min-width: 160px;"
+                                       oninput="updatePlaybackRate(this.value)" />
+                                <span id="playback-rate-label" style="min-width: 36px; color: var(--accent, #4ad6ff); font-weight: 600;">1.0x</span>
+                            </div>
+                            <div></div>
+                        </div>
+                    </div>
+
                     <div class="separator"></div>
 
                     <div class="bag-timeline">

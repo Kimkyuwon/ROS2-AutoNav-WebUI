@@ -8,7 +8,8 @@ const bagPlayerState = {
     selectedTopics: [],
     availableTopics: [],
     bagDuration: 0.0,
-    bagType: 'ros2'   // 'ros1' or 'ros2'
+    bagType: 'ros2',   // 'ros1' or 'ros2'
+    playbackRate: 1.0  // ROS1 재생 속도 배율
 };
 
 const bagRecorderState = {
@@ -358,19 +359,38 @@ async function loadBagFile() {
         if (result.success) {
             console.log('Bag file loaded successfully:', path);
             // Get topics, duration and bag_type from result
+            // topics는 string[] (ROS2) 또는 {name, type, publishable}[] (ROS1) 형태일 수 있음
             bagPlayerState.availableTopics = result.topics || [];
-            bagPlayerState.selectedTopics = [...bagPlayerState.availableTopics];
             bagPlayerState.bagDuration = result.duration || 0.0;
             bagPlayerState.bagType = result.bag_type || 'ros2';
+
+            // ROS1 bag의 경우 선택 가능한(publishable) 토픽만 기본 선택
+            if (bagPlayerState.bagType === 'ros1' && bagPlayerState.availableTopics.length > 0
+                    && typeof bagPlayerState.availableTopics[0] === 'object') {
+                bagPlayerState.selectedTopics = bagPlayerState.availableTopics
+                    .filter(t => t.publishable)
+                    .map(t => t.name);
+            } else {
+                bagPlayerState.selectedTopics = bagPlayerState.availableTopics.map(
+                    t => (typeof t === 'object' ? t.name : t)
+                );
+            }
 
             console.log('Loaded topics:', bagPlayerState.availableTopics);
             console.log('Duration:', bagPlayerState.bagDuration, 'seconds');
             console.log('Bag type:', bagPlayerState.bagType);
 
-            // Show/hide ROS1 badge and convert button
+            // Show/hide ROS1 badge, convert button, and playback rate controls
             const isRos1 = bagPlayerState.bagType === 'ros1';
             domCache.get('bag-ros1-badge').style.display = isRos1 ? 'inline' : 'none';
             domCache.get('convert-to-ros2-btn').style.display = isRos1 ? 'inline-block' : 'none';
+            // Rate 슬라이더: ROS1 / ROS2 bag 모두 표시
+            const rateControls = domCache.get('ros1-playback-controls');
+            if (rateControls) {
+                rateControls.style.display = 'block';
+            }
+            // 슬라이더 레이블 업데이트 (bag 로드 시 초기화)
+            updatePlaybackRate(document.getElementById('bag-playback-rate')?.value ?? 10);
 
             // Update time label
             updateBagTimeLabel(0, bagPlayerState.bagDuration);
@@ -414,19 +434,42 @@ async function selectTopics() {
     const topicList = domCache.get('topic-list');
     topicList.innerHTML = '';
 
-    bagPlayerState.availableTopics.forEach(topic => {
+    bagPlayerState.availableTopics.forEach(topicEntry => {
+        // topicEntry: string (ROS2) 또는 {name, type, publishable} (ROS1)
+        const topicName = typeof topicEntry === 'object' ? topicEntry.name : topicEntry;
+        const topicType = typeof topicEntry === 'object' ? topicEntry.type : '';
+        const publishable = typeof topicEntry === 'object' ? topicEntry.publishable : true;
+
         const div = document.createElement('div');
         div.className = 'topic-item';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.id = `topic-${topic}`;
-        checkbox.value = topic;
-        checkbox.checked = bagPlayerState.selectedTopics.includes(topic);
+        checkbox.id = `topic-${topicName}`;
+        checkbox.value = topicName;
+        checkbox.checked = bagPlayerState.selectedTopics.includes(topicName);
+
+        // publish 불가 토픽은 비활성화 처리
+        if (!publishable) {
+            checkbox.disabled = true;
+            checkbox.checked = false;
+        }
 
         const label = document.createElement('label');
-        label.htmlFor = `topic-${topic}`;
-        label.textContent = topic;
+        label.htmlFor = `topic-${topicName}`;
+
+        // 토픽 타입 표시 (있는 경우)
+        if (topicType) {
+            label.innerHTML = `<span style="font-weight:600;">${topicName}</span>`
+                + ` <span style="color:#888; font-size:0.85em;">${topicType}</span>`
+                + (!publishable ? ' <span style="color:#f66; font-size:0.82em;">(not publishable)</span>' : '');
+        } else {
+            label.textContent = topicName;
+        }
+
+        if (!publishable) {
+            div.style.opacity = '0.45';
+        }
 
         div.appendChild(checkbox);
         div.appendChild(label);
@@ -481,17 +524,83 @@ async function playBag() {
         return;
     }
 
-    const result = await apiCall('/api/bag/play', { topics: bagPlayerState.selectedTopics });
+    // ROS1 bag: /api/bag/play_ros1 또는 /api/bag/stop_ros1 경로로 분기
+    if (bagPlayerState.bagType === 'ros1') {
+        const playButton = domCache.get('bag-play-button');
+
+        // 이미 재생 중이면 정지
+        if (playButton && playButton.textContent === 'Stop') {
+            const stopResult = await apiCall('/api/bag/stop_ros1', {});
+            if (stopResult.success) {
+                playButton.textContent = 'Play';
+                domCache.get('bag-pause-button').textContent = 'Pause';
+                console.log('ROS1 bag playback stopped');
+            } else {
+                console.error('Failed to stop ROS1 playback');
+            }
+            return;
+        }
+
+        // publish 불가 토픽이 있는 경우 경고 다이얼로그 표시
+        const unpublishable = bagPlayerState.availableTopics.filter(
+            t => typeof t === 'object' && !t.publishable
+        );
+        if (unpublishable.length > 0) {
+            const names = unpublishable.map(t => t.name).join('\n  - ');
+            const proceed = confirm(
+                `다음 토픽은 ROS2에서 지원되지 않아 publish되지 않습니다:\n  - ${names}\n\n계속하시겠습니까?`
+            );
+            if (!proceed) {
+                return;
+            }
+        }
+
+        const result = await apiCall('/api/bag/play_ros1', {
+            bag_path: bagPath,
+            topics: bagPlayerState.selectedTopics,
+            playback_rate: bagPlayerState.playbackRate
+        });
+        if (result.success) {
+            if (playButton) {
+                playButton.textContent = 'Stop';
+            }
+            console.log('ROS1 bag playback started');
+        } else {
+            alert('Failed to start ROS1 playback: ' + (result.message || 'Unknown error'));
+        }
+        return;
+    }
+
+    // ROS2 bag: topics + rate 전달
+    const result = await apiCall('/api/bag/play', {
+        topics: bagPlayerState.selectedTopics,
+        rate: bagPlayerState.playbackRate
+    });
     if (result.success) {
         const button = domCache.get('bag-play-button');
         button.textContent = result.playing ? 'Stop' : 'Play';
-        console.log('Bag playback:', result.playing ? 'started' : 'stopped');
+        console.log('Bag playback:', result.playing ? 'started' : 'stopped',
+                    `(rate=${bagPlayerState.playbackRate}x)`);
     } else {
         alert('Failed to play bag file: ' + (result.message || 'Unknown error'));
     }
 }
 
 async function pauseBag() {
+    // ROS1 bag: /api/bag/pause_ros1 경로로 분기
+    if (bagPlayerState.bagType === 'ros1') {
+        const result = await apiCall('/api/bag/pause_ros1', {});
+        if (result.success) {
+            const button = domCache.get('bag-pause-button');
+            button.textContent = result.paused ? 'Resume' : 'Pause';
+            console.log('ROS1 bag playback:', result.paused ? 'paused' : 'resumed');
+        } else {
+            console.error('Failed to pause/resume ROS1 bag');
+        }
+        return;
+    }
+
+    // ROS2 bag: 기존 경로 유지
     const result = await apiCall('/api/bag/pause', {});
     if (result.success) {
         const button = domCache.get('bag-pause-button');
@@ -513,6 +622,56 @@ async function setBagPosition(position) {
 }
 
 async function updateBagState() {
+    // ROS1 bag 재생 중이면 /api/bag/ros1_play_status 폴링
+    if (bagPlayerState.bagType === 'ros1') {
+        const ros1State = await apiCall('/api/bag/ros1_play_status');
+        if (ros1State) {
+            const { status, elapsed_sec, total_sec } = ros1State;
+
+            // Progress bar(슬라이더) 업데이트
+            const duration = total_sec || bagPlayerState.bagDuration;
+            if (duration > 0 && elapsed_sec !== undefined) {
+                const ratio = elapsed_sec / duration;
+                const sliderValue = Math.floor(ratio * 10000);
+                const slider = domCache.get('bag-slider');
+                if (slider && document.activeElement !== slider) {
+                    slider.value = sliderValue;
+                }
+                updateBagTimeLabel(elapsed_sec, duration);
+            }
+
+            // 버튼 상태 업데이트
+            const playButton = domCache.get('bag-play-button');
+            const pauseButton = domCache.get('bag-pause-button');
+
+            if (status === 'stopped') {
+                // 재생 완료 → 버튼 초기화
+                if (playButton) {
+                    playButton.textContent = 'Play';
+                }
+                if (pauseButton) {
+                    pauseButton.textContent = 'Pause';
+                }
+            } else if (status === 'playing') {
+                if (playButton) {
+                    playButton.textContent = 'Stop';
+                }
+                if (pauseButton) {
+                    pauseButton.textContent = 'Pause';
+                }
+            } else if (status === 'paused') {
+                if (playButton) {
+                    playButton.textContent = 'Stop';
+                }
+                if (pauseButton) {
+                    pauseButton.textContent = 'Resume';
+                }
+            }
+        }
+        return;
+    }
+
+    // ROS2 bag: 기존 폴링 유지
     const state = await apiCall('/api/bag/state');
     if (state) {
         // Update slider position based on current time
@@ -544,6 +703,19 @@ async function updateBagState() {
         } else {
             pauseButton.textContent = 'Pause';
         }
+    }
+}
+
+/**
+ * ROS1 재생 속도 슬라이더 변경 핸들러
+ * @param {string|number} sliderValue - 슬라이더 값 (1~40, 실제 속도 = value / 10)
+ */
+function updatePlaybackRate(sliderValue) {
+    const rate = parseFloat(sliderValue) / 10.0;
+    bagPlayerState.playbackRate = rate;
+    const label = domCache.get('playback-rate-label');
+    if (label) {
+        label.textContent = `${rate.toFixed(1)}x`;
     }
 }
 
@@ -582,10 +754,15 @@ async function convertToRos2() {
                 bagPlayerState.bagDuration = loadResult.duration || 0.0;
                 bagPlayerState.bagType = loadResult.bag_type || 'ros2';
 
-                // ROS1 배지 및 Convert 버튼 숨기기 (이제 ROS2 bag)
+                // ROS1 배지, Convert 버튼 숨기기 (이제 ROS2 bag); 속도 슬라이더는 유지
                 const isRos1 = bagPlayerState.bagType === 'ros1';
                 domCache.get('bag-ros1-badge').style.display = isRos1 ? 'inline' : 'none';
                 domCache.get('convert-to-ros2-btn').style.display = isRos1 ? 'inline-block' : 'none';
+                // 변환 후에도 rate 슬라이더는 표시 유지
+                const ros1Controls = domCache.get('ros1-playback-controls');
+                if (ros1Controls) {
+                    ros1Controls.style.display = 'block';
+                }
 
                 updateBagTimeLabel(0, bagPlayerState.bagDuration);
                 updateSelectedTopicsDisplay();
