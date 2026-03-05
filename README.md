@@ -27,20 +27,26 @@ Web-based graphical user interface providing intuitive control and real-time vis
   - Drag-and-drop topic selection from tree view
   - Auto-save/restore plot configurations
   - Zoom, pan, play/pause controls
-  - Export plots (PNG, CSV) _(coming soon)_
+  - Export plots (PNG)
+  - XY Plot support
+  - Filter (Low-pass, High-pass, Band-pass)
   
-- **3D Visualization** _(in development)_
-  - Real-time PointCloud2 rendering
+- **3D Visualization**
+  - Real-time PointCloud2 rendering (Ouster, Velodyne, Hesai, Livox)
   - Path and odometry display
+  - TF tree visualization with Fixed Frame support
   - Interactive camera controls
-  - WebSocket-based low-latency updates
+  - Python backend binary WebSocket for low-latency updates (port 8081)
+  - Point Size / Alpha / Decay Time settings
+  - Snapshot export
 
 ### 💾 Data Management
 - **Bag Player**
   - Play ROS2 bag files with topic filtering
-  - Timeline control with play/pause
+  - Timeline control with play/pause/seek
   - Variable playback speed
-  - Integration with 3D visualization
+  - Integration with 3D visualization and Plot
+  - **ROS1 bag support**: Auto-detect `.bag` files, offline convert to ROS2, or direct real-time playback via `rosbags`
 
 - **Bag Recorder**
   - Record live ROS2 topics to bag files
@@ -57,12 +63,6 @@ Web-based graphical user interface providing intuitive control and real-time vis
 ### 🌐 Network Tools
 - **Latency Monitor** for real-time network performance tracking
 - **Remote Access** via web browser from any device on network
-
----
-
-## 📸 Screenshots
-
-_Coming soon: Web interface screenshots and demo videos_
 
 ---
 
@@ -201,7 +201,7 @@ The Plot feature provides PlotJuggler-style visualization directly in your brows
 
 1. **Load Bag**
    - Click "Load Bag File" to browse for bag directory
-   - ROS2 bags are stored as directories
+   - ROS2 bags are stored as directories; ROS1 `.bag` files are also supported
 
 2. **Select Topics**
    - Click "Select Topic" to filter which topics to play
@@ -211,6 +211,11 @@ The Plot feature provides PlotJuggler-style visualization directly in your brows
    - Click "Play" to start playback
    - Use timeline slider for seeking
    - Click "Stop" to stop playback
+
+4. **ROS1 Bag Support**
+   - `.bag` files are auto-detected as ROS1 format ("ROS1 Bag" badge shown)
+   - Click "Convert to ROS2" for offline conversion using `rosbags-convert`
+   - Click "Play" to stream directly as ROS2 messages without conversion
 
 ### 🌐 3D Visualization
 
@@ -223,6 +228,10 @@ The Plot feature provides PlotJuggler-style visualization directly in your brows
    - **Rotate**: Left mouse drag
    - **Zoom**: Mouse scroll wheel
    - **Pan**: Right mouse drag
+
+3. **Fixed Frame**
+   - Select the reference coordinate frame from the dropdown
+   - TF transformations are applied automatically
 
 ---
 
@@ -304,6 +313,11 @@ cd ~/your_workspace
 colcon build --packages-select livox_ros_driver2
 ```
 
+**rosbags** (for ROS1 bag support):
+```bash
+pip install rosbags
+```
+
 ---
 
 ## 🏗️ Project Structure
@@ -311,7 +325,7 @@ colcon build --packages-select livox_ros_driver2
 ```
 ros2_autonav_webui/
 ├── ros2_autonav_webui/
-│   ├── web_server.py              # Main HTTP server & ROS2 node
+│   ├── web_server.py              # Main HTTP server, ROS2 node & backend WebSocket (port 8081)
 │   └── __init__.py
 ├── web/
 │   ├── index.html                 # Main web interface
@@ -321,46 +335,15 @@ ros2_autonav_webui/
 │       ├── plot_tab_manager.js    # Plot tab management
 │       ├── plot_tree.js           # PlotJuggler-style tree view
 │       ├── threejs_display.js     # Three.js 3D visualization
+│       ├── pc2_stream_worker.js   # Web Worker for binary PointCloud2 streaming
 │       └── style.css              # UI styling
 ├── launch/
 │   └── ros2_autonav_webui.launch.py  # ROS2 launch configuration
 ├── package.xml                    # ROS2 package manifest
 ├── setup.py                       # Python package setup
 ├── README.md                      # This file
-├── Project.md                     # Detailed project documentation
 └── LICENSE                        # Apache 2.0 License
 ```
-
----
-
-## 🔌 API Reference
-
-### SLAM Endpoints
-- `POST /api/slam/load_config_file` - Load SLAM configuration
-- `POST /api/slam/save_config_file` - Save SLAM configuration
-- `POST /api/slam/start_mapping` - Start SLAM process
-- `POST /api/slam/stop_mapping` - Stop SLAM process
-- `POST /api/slam/save_map` - Trigger map save
-- `GET /api/slam/get_terminal_output` - Get real-time terminal output
-
-### Localization Endpoints
-- `POST /api/localization/load_config_file` - Load localization config
-- `POST /api/localization/save_config_file` - Save localization config
-- `POST /api/localization/start_mapping` - Start localization
-- `POST /api/localization/stop_mapping` - Stop localization
-- `GET /api/localization/get_terminal_output` - Get terminal output
-
-### Data Management Endpoints
-- `POST /api/recorder/set_bag_name` - Set recording bag name
-- `GET /api/recorder/get_topics` - Get available topics
-- `POST /api/recorder/record` - Start/stop recording
-- `GET /api/recorder/state` - Get recorder state
-- `POST /api/player/load_bag` - Load bag file for playback
-- `POST /api/player/play` - Start playback
-- `POST /api/player/stop` - Stop playback
-
-### Network Endpoints
-- `GET /api/ping` - Ping server for latency measurement
 
 ---
 
@@ -468,55 +451,6 @@ colcon build --packages-select ros2_autonav_webui
 
 ---
 
-## 🗺️ Roadmap
-
-### Current (Phase 1.3 - Complete ✅)
-- [x] PlotJuggler-style real-time plotting
-- [x] Multi-tab plot management
-- [x] Plot state save/restore
-- [x] SLAM/Localization control
-- [x] Bag Player/Recorder
-
-### Upcoming (Phase 1.4-2)
-- [ ] XY Plot functionality
-- [ ] Plot export (PNG, CSV)
-- [ ] 3D Viewer completion
-  - [ ] PointCloud2 rainbow coloring
-  - [ ] Path/Odometry visualization
-  - [ ] TF tree visualization
-- [ ] Navigation control (Phase 4)
-
-### Future Enhancements
-- [ ] Multi-robot support
-- [ ] Map editor
-- [ ] Parameter tuning wizard
-- [ ] Mobile app companion
-- [ ] Cloud deployment support
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these guidelines:
-
-1. **Fork the repository**
-2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
-3. **Follow code conventions** (see `.cursor/rules/01.developerules.mdc`)
-4. **Test thoroughly** (build, run, browser test)
-5. **Commit with clear messages** (see existing commit history)
-6. **Push to your branch** (`git push origin feature/amazing-feature`)
-7. **Open a Pull Request**
-
-### Development Guidelines
-
-- Follow ROS2 naming conventions
-- Use ES6+ JavaScript features
-- Add JSDoc comments for functions
-- Test on both Chrome and Firefox
-- Update documentation for new features
-
----
-
 ## 📚 Related Projects
 
 ### SLAM & Localization
@@ -553,20 +487,6 @@ Special thanks to:
 - **PlotJuggler** for UI inspiration
 - **ROS2 community** for excellent documentation
 - All contributors and users of this project
-
----
-
-## 📧 Contact & Support
-
-- **Issues**: [GitHub Issues](https://github.com/Kimkyuwon/Web-based-GUI-for-ROS2-SLAM-and-File-Player/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/Kimkyuwon/Web-based-GUI-for-ROS2-SLAM-and-File-Player/discussions)
-- **Email**: Contact repository owner via GitHub profile
-
----
-
-## ⭐ Star History
-
-If you find this project useful, please consider giving it a star! ⭐
 
 ---
 

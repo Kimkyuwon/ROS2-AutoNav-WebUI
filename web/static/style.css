@@ -1940,6 +1940,19 @@ h3 {
     margin-bottom: 2px;
 }
 
+.livox-badge {
+    display: inline-block;
+    background-color: #29b6f6;
+    color: #000;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-left: 4px;
+    vertical-align: middle;
+    letter-spacing: 0.5px;
+}
+
 /* ======================================
    Path 아이템 스타일 (display-topic-item 확장)
    ====================================== */
@@ -2092,4 +2105,38 @@ h3 {
     font-size: 11px;
     color: var(--muted);
     user-select: none;
+}
+
+/* ROS1 / ROS2 Bag 배지 공통 */
+.ros1-badge,
+.ros2-badge {
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.8em;
+    font-weight: bold;
+    margin-left: 6px;
+    vertical-align: middle;
+    color: white;
+}
+
+.ros1-badge {
+    background: #e67e22;
+}
+
+.ros2-badge {
+    background: #1a7abf;
+}
+
+/* Convert 버튼 — ROS2/ROS1 공통 스타일 */
+#convert-to-ros2-btn,
+#convert-to-ros1-btn {
+    background: linear-gradient(135deg, #1a5276, #154360);
+    border-color: rgba(74, 180, 255, 0.4);
+    color: #7ec8e3;
+}
+#convert-to-ros2-btn:hover,
+#convert-to-ros1-btn:hover {
+    border-color: rgba(74, 180, 255, 0.7);
+    box-shadow: 0 6px 20px rgba(74, 180, 255, 0.25);
+    color: #aedff7;
 }

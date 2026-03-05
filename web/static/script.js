@@ -7,7 +7,9 @@ const fileBrowserState = {
 const bagPlayerState = {
     selectedTopics: [],
     availableTopics: [],
-    bagDuration: 0.0
+    bagDuration: 0.0,
+    bagType: 'ros2',   // 'ros1' or 'ros2'
+    playbackRate: 1.0  // ROS1 재생 속도 배율
 };
 
 const bagRecorderState = {
@@ -138,7 +140,10 @@ function initPlotSubtab() {
         console.log('[initPlotSubtab] rosbridge already connected, loading topics');
         loadPlotTopics();
     }
-    
+
+    // Python 백엔드 WebSocket (8081) 연결 — throttle 없이 원래 주기로 plot
+    _initBackendWs();
+
     // 주기적으로 토픽 목록 갱신 시작
     startTopicRefresh();
 }
@@ -356,13 +361,41 @@ async function loadBagFile() {
         const result = await apiCall('/api/bag/load', { path });
         if (result.success) {
             console.log('Bag file loaded successfully:', path);
-            // Get topics and duration from result
+            // Get topics, duration and bag_type from result
+            // topics는 string[] (ROS2) 또는 {name, type, publishable}[] (ROS1) 형태일 수 있음
             bagPlayerState.availableTopics = result.topics || [];
-            bagPlayerState.selectedTopics = [...bagPlayerState.availableTopics];
             bagPlayerState.bagDuration = result.duration || 0.0;
+            bagPlayerState.bagType = result.bag_type || 'ros2';
+
+            // ROS1 bag의 경우 선택 가능한(publishable) 토픽만 기본 선택
+            if (bagPlayerState.bagType === 'ros1' && bagPlayerState.availableTopics.length > 0
+                    && typeof bagPlayerState.availableTopics[0] === 'object') {
+                bagPlayerState.selectedTopics = bagPlayerState.availableTopics
+                    .filter(t => t.publishable)
+                    .map(t => t.name);
+            } else {
+                bagPlayerState.selectedTopics = bagPlayerState.availableTopics.map(
+                    t => (typeof t === 'object' ? t.name : t)
+                );
+            }
 
             console.log('Loaded topics:', bagPlayerState.availableTopics);
             console.log('Duration:', bagPlayerState.bagDuration, 'seconds');
+            console.log('Bag type:', bagPlayerState.bagType);
+
+            // Show/hide ROS1/ROS2 badge, convert button, and playback rate controls
+            const isRos1 = bagPlayerState.bagType === 'ros1';
+            domCache.get('bag-ros1-badge').style.display = isRos1 ? 'inline' : 'none';
+            domCache.get('bag-ros2-badge').style.display = !isRos1 ? 'inline' : 'none';
+            domCache.get('convert-to-ros2-btn').style.display = isRos1 ? 'inline-block' : 'none';
+            domCache.get('convert-to-ros1-btn').style.display = !isRos1 ? 'inline-block' : 'none';
+            // Rate 슬라이더: ROS1 / ROS2 bag 모두 표시
+            const rateControls = domCache.get('ros1-playback-controls');
+            if (rateControls) {
+                rateControls.style.display = 'block';
+            }
+            // 슬라이더 레이블 업데이트 (bag 로드 시 초기화)
+            updatePlaybackRate(document.getElementById('bag-playback-rate')?.value ?? 10);
 
             // Update time label
             updateBagTimeLabel(0, bagPlayerState.bagDuration);
@@ -406,19 +439,42 @@ async function selectTopics() {
     const topicList = domCache.get('topic-list');
     topicList.innerHTML = '';
 
-    bagPlayerState.availableTopics.forEach(topic => {
+    bagPlayerState.availableTopics.forEach(topicEntry => {
+        // topicEntry: string (ROS2) 또는 {name, type, publishable} (ROS1)
+        const topicName = typeof topicEntry === 'object' ? topicEntry.name : topicEntry;
+        const topicType = typeof topicEntry === 'object' ? topicEntry.type : '';
+        const publishable = typeof topicEntry === 'object' ? topicEntry.publishable : true;
+
         const div = document.createElement('div');
         div.className = 'topic-item';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.id = `topic-${topic}`;
-        checkbox.value = topic;
-        checkbox.checked = bagPlayerState.selectedTopics.includes(topic);
+        checkbox.id = `topic-${topicName}`;
+        checkbox.value = topicName;
+        checkbox.checked = bagPlayerState.selectedTopics.includes(topicName);
+
+        // publish 불가 토픽은 비활성화 처리
+        if (!publishable) {
+            checkbox.disabled = true;
+            checkbox.checked = false;
+        }
 
         const label = document.createElement('label');
-        label.htmlFor = `topic-${topic}`;
-        label.textContent = topic;
+        label.htmlFor = `topic-${topicName}`;
+
+        // 토픽 타입 표시 (있는 경우)
+        if (topicType) {
+            label.innerHTML = `<span style="font-weight:600;">${topicName}</span>`
+                + ` <span style="color:#888; font-size:0.85em;">${topicType}</span>`
+                + (!publishable ? ' <span style="color:#f66; font-size:0.82em;">(not publishable)</span>' : '');
+        } else {
+            label.textContent = topicName;
+        }
+
+        if (!publishable) {
+            div.style.opacity = '0.45';
+        }
 
         div.appendChild(checkbox);
         div.appendChild(label);
@@ -473,17 +529,83 @@ async function playBag() {
         return;
     }
 
-    const result = await apiCall('/api/bag/play', { topics: bagPlayerState.selectedTopics });
+    // ROS1 bag: /api/bag/play_ros1 또는 /api/bag/stop_ros1 경로로 분기
+    if (bagPlayerState.bagType === 'ros1') {
+        const playButton = domCache.get('bag-play-button');
+
+        // 이미 재생 중이면 정지
+        if (playButton && playButton.textContent === 'Stop') {
+            const stopResult = await apiCall('/api/bag/stop_ros1', {});
+            if (stopResult.success) {
+                playButton.textContent = 'Play';
+                domCache.get('bag-pause-button').textContent = 'Pause';
+                console.log('ROS1 bag playback stopped');
+            } else {
+                console.error('Failed to stop ROS1 playback');
+            }
+            return;
+        }
+
+        // publish 불가 토픽이 있는 경우 경고 다이얼로그 표시
+        const unpublishable = bagPlayerState.availableTopics.filter(
+            t => typeof t === 'object' && !t.publishable
+        );
+        if (unpublishable.length > 0) {
+            const names = unpublishable.map(t => t.name).join('\n  - ');
+            const proceed = confirm(
+                `다음 토픽은 ROS2에서 지원되지 않아 publish되지 않습니다:\n  - ${names}\n\n계속하시겠습니까?`
+            );
+            if (!proceed) {
+                return;
+            }
+        }
+
+        const result = await apiCall('/api/bag/play_ros1', {
+            bag_path: bagPath,
+            topics: bagPlayerState.selectedTopics,
+            playback_rate: bagPlayerState.playbackRate
+        });
+        if (result.success) {
+            if (playButton) {
+                playButton.textContent = 'Stop';
+            }
+            console.log('ROS1 bag playback started');
+        } else {
+            alert('Failed to start ROS1 playback: ' + (result.message || 'Unknown error'));
+        }
+        return;
+    }
+
+    // ROS2 bag: topics + rate 전달
+    const result = await apiCall('/api/bag/play', {
+        topics: bagPlayerState.selectedTopics,
+        rate: bagPlayerState.playbackRate
+    });
     if (result.success) {
         const button = domCache.get('bag-play-button');
         button.textContent = result.playing ? 'Stop' : 'Play';
-        console.log('Bag playback:', result.playing ? 'started' : 'stopped');
+        console.log('Bag playback:', result.playing ? 'started' : 'stopped',
+                    `(rate=${bagPlayerState.playbackRate}x)`);
     } else {
         alert('Failed to play bag file: ' + (result.message || 'Unknown error'));
     }
 }
 
 async function pauseBag() {
+    // ROS1 bag: /api/bag/pause_ros1 경로로 분기
+    if (bagPlayerState.bagType === 'ros1') {
+        const result = await apiCall('/api/bag/pause_ros1', {});
+        if (result.success) {
+            const button = domCache.get('bag-pause-button');
+            button.textContent = result.paused ? 'Resume' : 'Pause';
+            console.log('ROS1 bag playback:', result.paused ? 'paused' : 'resumed');
+        } else {
+            console.error('Failed to pause/resume ROS1 bag');
+        }
+        return;
+    }
+
+    // ROS2 bag: 기존 경로 유지
     const result = await apiCall('/api/bag/pause', {});
     if (result.success) {
         const button = domCache.get('bag-pause-button');
@@ -505,6 +627,56 @@ async function setBagPosition(position) {
 }
 
 async function updateBagState() {
+    // ROS1 bag 재생 중이면 /api/bag/ros1_play_status 폴링
+    if (bagPlayerState.bagType === 'ros1') {
+        const ros1State = await apiCall('/api/bag/ros1_play_status');
+        if (ros1State) {
+            const { status, elapsed_sec, total_sec } = ros1State;
+
+            // Progress bar(슬라이더) 업데이트
+            const duration = total_sec || bagPlayerState.bagDuration;
+            if (duration > 0 && elapsed_sec !== undefined) {
+                const ratio = elapsed_sec / duration;
+                const sliderValue = Math.floor(ratio * 10000);
+                const slider = domCache.get('bag-slider');
+                if (slider && document.activeElement !== slider) {
+                    slider.value = sliderValue;
+                }
+                updateBagTimeLabel(elapsed_sec, duration);
+            }
+
+            // 버튼 상태 업데이트
+            const playButton = domCache.get('bag-play-button');
+            const pauseButton = domCache.get('bag-pause-button');
+
+            if (status === 'stopped') {
+                // 재생 완료 → 버튼 초기화
+                if (playButton) {
+                    playButton.textContent = 'Play';
+                }
+                if (pauseButton) {
+                    pauseButton.textContent = 'Pause';
+                }
+            } else if (status === 'playing') {
+                if (playButton) {
+                    playButton.textContent = 'Stop';
+                }
+                if (pauseButton) {
+                    pauseButton.textContent = 'Pause';
+                }
+            } else if (status === 'paused') {
+                if (playButton) {
+                    playButton.textContent = 'Stop';
+                }
+                if (pauseButton) {
+                    pauseButton.textContent = 'Resume';
+                }
+            }
+        }
+        return;
+    }
+
+    // ROS2 bag: 기존 폴링 유지
     const state = await apiCall('/api/bag/state');
     if (state) {
         // Update slider position based on current time
@@ -536,6 +708,111 @@ async function updateBagState() {
         } else {
             pauseButton.textContent = 'Pause';
         }
+    }
+}
+
+/**
+ * ROS1 재생 속도 슬라이더 변경 핸들러
+ * @param {string|number} sliderValue - 슬라이더 값 (1~40, 실제 속도 = value / 10)
+ */
+function updatePlaybackRate(sliderValue) {
+    const rate = parseFloat(sliderValue) / 10.0;
+    bagPlayerState.playbackRate = rate;
+    const label = domCache.get('playback-rate-label');
+    if (label) {
+        label.textContent = `${rate.toFixed(1)}x`;
+    }
+}
+
+/**
+ * ROS1 bag 파일을 ROS2 포맷으로 변환
+ * POST /api/bag/convert_ros1 호출 후 변환된 ROS2 bag 자동 로드
+ */
+async function convertToRos2() {
+    const bagPath = domCache.get('bag-directory').value;
+    if (!bagPath) {
+        alert('Please load a ROS1 bag file first');
+        return;
+    }
+
+    const btn = domCache.get('convert-to-ros2-btn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Converting...';
+
+    try {
+        const result = await apiCall('/api/bag/convert_ros1', { path: bagPath });
+        if (result.success) {
+            // 버튼 상태 항상 복원 (재사용 가능하도록)
+            btn.disabled = false;
+            btn.textContent = originalText;
+
+            alert(`Conversion complete!\nOutput: ${result.output_path}`);
+
+            // 변환된 ROS2 bag 자동 로드
+            const outputPath = result.output_path;
+            domCache.get('bag-directory').value = outputPath;
+            const loadResult = await apiCall('/api/bag/load', { path: outputPath });
+            if (loadResult.success) {
+                bagPlayerState.availableTopics = loadResult.topics || [];
+                bagPlayerState.selectedTopics = [...bagPlayerState.availableTopics];
+                bagPlayerState.bagDuration = loadResult.duration || 0.0;
+                bagPlayerState.bagType = loadResult.bag_type || 'ros2';
+
+                // ROS1/ROS2 배지, Convert 버튼 업데이트; 속도 슬라이더는 유지
+                const isRos1 = bagPlayerState.bagType === 'ros1';
+                domCache.get('bag-ros1-badge').style.display = isRos1 ? 'inline' : 'none';
+                domCache.get('bag-ros2-badge').style.display = !isRos1 ? 'inline' : 'none';
+                domCache.get('convert-to-ros2-btn').style.display = isRos1 ? 'inline-block' : 'none';
+                domCache.get('convert-to-ros1-btn').style.display = !isRos1 ? 'inline-block' : 'none';
+                // 변환 후에도 rate 슬라이더는 표시 유지
+                const ros1Controls = domCache.get('ros1-playback-controls');
+                if (ros1Controls) {
+                    ros1Controls.style.display = 'block';
+                }
+
+                updateBagTimeLabel(0, bagPlayerState.bagDuration);
+                updateSelectedTopicsDisplay();
+                console.log('Converted ROS2 bag loaded:', outputPath);
+            }
+        } else {
+            alert('Conversion failed: ' + (result.error || 'Unknown error'));
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    } catch (error) {
+        console.error('convertToRos2 error:', error);
+        alert('Conversion failed: ' + error.message);
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+async function convertToRos1() {
+    const bagPath = domCache.get('bag-directory').value;
+    if (!bagPath || bagPlayerState.bagType !== 'ros2') {
+        alert('Please load a ROS2 bag first');
+        return;
+    }
+
+    const btn = domCache.get('convert-to-ros1-btn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Converting...';
+
+    try {
+        const result = await apiCall('/api/bag/convert_to_ros1', {});
+        btn.disabled = false;
+        btn.textContent = originalText;
+        if (result.success) {
+            alert(`Conversion complete!\nOutput: ${result.output_path}`);
+        } else {
+            alert('Conversion failed: ' + (result.error || 'Unknown error'));
+        }
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        alert('Conversion error: ' + e.message);
     }
 }
 
@@ -672,19 +949,34 @@ async function selectRecorderTopics() {
     const topicList = domCache.get('recorder-topic-list');
     topicList.innerHTML = '';
 
-    result.topics.forEach(topic => {
+    // 이미 선택된 토픽 이름 집합 (빠른 검색용)
+    const selectedNames = new Set(
+        bagRecorderState.selectedTopics.map(t => (typeof t === 'object' ? t.name : t))
+    );
+
+    result.topics.forEach(topicEntry => {
+        // topicEntry는 {name, type} 객체 또는 문자열일 수 있음
+        const topicName = (typeof topicEntry === 'object') ? topicEntry.name : topicEntry;
+        const topicType = (typeof topicEntry === 'object') ? topicEntry.type : '';
+
         const div = document.createElement('div');
         div.className = 'topic-item';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.id = `recorder-topic-${topic}`;
-        checkbox.value = topic;
-        checkbox.checked = bagRecorderState.selectedTopics.includes(topic);
+        checkbox.id = `recorder-topic-${topicName}`;
+        checkbox.value = topicName;
+        checkbox.dataset.topicType = topicType;   // 타입 정보를 data 속성에 보존
+        checkbox.checked = selectedNames.has(topicName);
 
         const label = document.createElement('label');
-        label.htmlFor = `recorder-topic-${topic}`;
-        label.textContent = topic;
+        label.htmlFor = `recorder-topic-${topicName}`;
+        if (topicType) {
+            label.innerHTML = `<span style="font-weight:600;">${topicName}</span>`
+                + ` <span style="color:#888; font-size:0.85em;">${topicType}</span>`;
+        } else {
+            label.textContent = topicName;
+        }
 
         div.appendChild(checkbox);
         div.appendChild(label);
@@ -699,11 +991,14 @@ function closeRecorderTopicSelection() {
 }
 
 function confirmRecorderTopicSelection() {
-    // Get all checked topics
+    // Get all checked topics — {name, type} 객체로 저장하여 ROS1 녹화 시 타입 정보 전달
     bagRecorderState.selectedTopics = [];
     const checkboxes = document.querySelectorAll('#recorder-topic-list input[type="checkbox"]:checked');
     checkboxes.forEach(checkbox => {
-        bagRecorderState.selectedTopics.push(checkbox.value);
+        bagRecorderState.selectedTopics.push({
+            name: checkbox.value,
+            type: checkbox.dataset.topicType || '',
+        });
     });
 
     console.log('Selected topics for recording:', bagRecorderState.selectedTopics);
@@ -725,9 +1020,11 @@ function updateRecorderSelectedTopicsDisplay() {
     if (bagRecorderState.selectedTopics.length === 0) {
         display.innerHTML = '<span style="color: #888;">No topics selected</span>';
     } else {
-        const topicsHtml = bagRecorderState.selectedTopics.map(topic =>
-            `<div style="display: inline-block; background: #8a2a2a; padding: 3px 8px; margin: 2px; border-radius: 3px; font-size: 0.9em;">${topic}</div>`
-        ).join('');
+        // selectedTopics는 {name, type} 객체 또는 문자열 모두 지원
+        const topicsHtml = bagRecorderState.selectedTopics.map(topic => {
+            const name = typeof topic === 'object' ? topic.name : topic;
+            return `<div style="display: inline-block; background: #8a2a2a; padding: 3px 8px; margin: 2px; border-radius: 3px; font-size: 0.9em;">${name}</div>`;
+        }).join('');
         display.innerHTML = topicsHtml;
     }
 }
@@ -743,14 +1040,23 @@ async function recordBag() {
         return;
     }
 
-    const result = await apiCall('/api/recorder/record', { topics: bagRecorderState.selectedTopics });
+    const saveAsRos1 = domCache.get('recorder-save-ros1-toggle').checked;
+    const result = await apiCall('/api/recorder/record', {
+        topics: bagRecorderState.selectedTopics,
+        save_as_ros1: saveAsRos1,
+    });
     if (result.success) {
         const button = domCache.get('recorder-record-button');
         button.textContent = result.recording ? 'Stop' : 'Record';
         console.log('Recording:', result.recording ? 'started' : 'stopped');
 
+        // 녹화 중 모드 배지 표시
+        const badge = domCache.get('recorder-mode-badge');
+        badge.style.display = result.recording ? 'inline' : 'none';
+        badge.textContent = result.mode === 'ros1' ? 'ROS1 .bag' : 'ROS2 bag';
+
         if (result.recording) {
-            alert(`Recording started in /home/kkw/${bagRecorderState.bagName}`);
+            alert(`Recording started in /home/kkw/dataset/${bagRecorderState.bagName}`);
         } else {
             alert('Recording stopped');
         }
@@ -768,6 +1074,13 @@ async function updateRecorderState() {
             button.textContent = 'Stop';
         } else {
             button.textContent = 'Record';
+        }
+
+        // 모드 배지 업데이트
+        const badge = domCache.get('recorder-mode-badge');
+        if (badge) {
+            badge.style.display = state.recording ? 'inline' : 'none';
+            badge.textContent = state.mode === 'ros1' ? 'ROS1 .bag' : 'ROS2 bag';
         }
     }
 }
@@ -1439,8 +1752,100 @@ const plotState = {
     plotTabManager: null, // PlotTabManager 인스턴스 (탭 관리)
     plottedPaths: [], // 현재 Plot에 표시된 path들 (모든 탭 공유)
     isLoadingTopics: false, // 토픽 로딩 중 플래그
-    pathsRestored: false // 저장된 paths 복원 여부 (최초 1회만)
+    pathsRestored: false, // 저장된 paths 복원 여부 (최초 1회만)
+    // ── Python 백엔드 WebSocket (포트 8081) ──────────────────────────────────
+    // rosbridge를 우회하여 throttle 없이 원래 주기로 plot 데이터 수신
+    backendWs: null,            // WebSocket 인스턴스
+    _pendingPlotSubs: []        // WS 연결 전에 요청된 subscribe_plot 대기열
 };
+
+// ── Python 백엔드 WebSocket 클라이언트 (포트 8081) ──────────────────────────
+// rosbridge 없이 원래 토픽 주기 그대로 plot 데이터 수신.
+// PC2WebSocketServer의 subscribe_plot 명령을 사용한다.
+// ─────────────────────────────────────────────────────────────────────────────
+function _initBackendWs() {
+    const host = window.location.hostname;
+    const url  = `ws://${host}:8081`;
+
+    if (plotState.backendWs &&
+        (plotState.backendWs.readyState === WebSocket.OPEN ||
+         plotState.backendWs.readyState === WebSocket.CONNECTING)) {
+        return; // 이미 연결 중
+    }
+
+    const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer'; // binary 메시지는 무시 (PC2 binary는 worker가 처리)
+    plotState.backendWs = ws;
+
+    ws.onopen = () => {
+        console.log('[BackendWs] 연결됨:', url);
+        // 대기 중이던 subscribe_plot 명령 전송
+        const pending = plotState._pendingPlotSubs.splice(0);
+        for (const req of pending) {
+            ws.send(JSON.stringify(req));
+        }
+    };
+
+    ws.onmessage = (evt) => {
+        if (typeof evt.data === 'string') {
+            _handleBackendWsMessage(evt.data);
+        }
+        // binary(PC2 포인트클라우드)는 pc2_stream_worker.js가 처리 — 여기서는 무시
+    };
+
+    ws.onerror = () => {
+        console.warn('[BackendWs] 연결 오류');
+    };
+
+    ws.onclose = () => {
+        console.log('[BackendWs] 연결 끊김, 3초 후 재연결...');
+        plotState.backendWs = null;
+        setTimeout(_initBackendWs, 3000);
+    };
+}
+
+function _handleBackendWsMessage(rawData) {
+    let msg;
+    try { msg = JSON.parse(rawData); } catch (e) { return; }
+
+    if (msg.type === 'plot_data') {
+        // { type:'plot_data', topic, stamp_sec, stamp_nanosec, values:{field:value,...} }
+        const { topic, stamp_sec, stamp_nanosec, values } = msg;
+        const timestamp = stamp_sec + stamp_nanosec / 1e9;
+        const topicKey  = topic.startsWith('/') ? topic.substring(1) : topic;
+
+        for (const [field, value] of Object.entries(values)) {
+            const fullPath = `${topicKey}/${field}`;
+            if (plotState.plotTabManager && plotState.plotTabManager.tabs.length > 0) {
+                plotState.plotTabManager.tabs.forEach(tab => {
+                    if (tab.plotManager && tab.plotManager.dataBuffers.has(fullPath)) {
+                        tab.plotManager.updatePlot(fullPath, timestamp, value);
+                    }
+                });
+            }
+        }
+    } else if (msg.type === 'pc2meta') {
+        // PC2 메타데이터는 threejs_display.js가 dispatch하는 CustomEvent와 동일
+        window.dispatchEvent(new CustomEvent('pc2_topic_meta', { detail: msg }));
+    }
+}
+
+// 8081 WebSocket으로 subscribe_plot 명령 전송 (연결 전이면 대기열에 추가)
+// msgType: 클라이언트가 이미 알고 있는 토픽 타입 → 서버에서 get_topic_names_and_types() 불필요
+function _sendBackendSubscribePlot(topic, fieldPath, msgType) {
+    const cmd = {
+        cmd:      'subscribe_plot',
+        topic:    topic,
+        fields:   [fieldPath],
+        msg_type: msgType || ''   // 서버에 전달하여 타이밍 문제 없이 즉시 subscription 생성
+    };
+    if (plotState.backendWs && plotState.backendWs.readyState === WebSocket.OPEN) {
+        plotState.backendWs.send(JSON.stringify(cmd));
+    } else {
+        plotState._pendingPlotSubs.push(cmd);
+        _initBackendWs(); // 연결 시도
+    }
+}
 
 // Plot subscriber 키 생성 헬퍼 함수 (setupPlotDataUpdate와 동일한 형식)
 function getPlotSubscriberKey(fullPath) {
@@ -1924,19 +2329,29 @@ function subscribeToTopic(topic) {
 
     console.log(`[subscribeToTopic] Subscribing to ${topic} (${messageType})`);
 
-    // 메시지 구독
+    // 메시지 트리 표시 목적 — 구조 파악 후 즉시 unsubscribe.
+    // throttle_rate:0 (원래 주기, rosbridge 측 throttle 없음) + queue_length:1.
+    // PC2 여부와 무관하게 첫 메시지 1개 수신 후 바로 unsubscribe하므로 rosbridge 부하 없음.
+    const isPC2 = (messageType === 'sensor_msgs/msg/PointCloud2' ||
+                   messageType === 'sensor_msgs/PointCloud2');
+
     const listener = new ROSLIB.Topic({
         ros: plotState.ros,
         name: topic,
-        messageType: messageType
+        messageType: messageType,
+        throttle_rate: isPC2 ? 2000 : 0, // PC2는 여전히 2초 (10MB+ 보호), 나머지는 즉시
+        queue_length: 1
     });
 
     listener.subscribe((message) => {
-        // 첫 메시지만 로그 출력
         if (!plotState.messageTrees.has(topic)) {
             console.log(`[subscribeToTopic] First message received for ${topic}`);
         }
         updateMessageTree(topic, message);
+        // 첫 메시지로 구조 파악 완료 → 즉시 unsubscribe (rosbridge 부하 최소화)
+        listener.unsubscribe();
+        plotState.subscribers.delete(topic);
+        console.log(`[subscribeToTopic] Tree captured, unsubscribed: ${topic}`);
     });
 
     plotState.subscribers.set(topic, listener);
@@ -2348,74 +2763,35 @@ function setupPlotDataUpdate(fullPath) {
     }
     
     console.log('[setupPlotDataUpdate] Creating subscriber for topic:', topic, 'type:', topicType);
-    
-    // Plot 전용 subscriber 생성
-    const plotSubscriber = new window.ROSLIB.Topic({
-        ros: plotState.ros,
-        name: topic,
-        messageType: topicType
-    });
-    
-    let messageCount = 0;
-    
-    // Subscribe 전에 연결 상태 확인
-    console.log(`[setupPlotDataUpdate] Subscribing to ${topic}... Waiting for messages...`);
-    
-    plotSubscriber.subscribe((message) => {
-        messageCount++;
-        
-        // 처음 메시지 수신 시 알림
-        if (messageCount === 1) {
-            console.log(`✅ [setupPlotDataUpdate] First message received from ${topic}!`);
-        }
-        
-        // 필드 경로를 따라가서 값 추출
-        const value = extractFieldValue(message, fieldPath);
-        
-        if (messageCount <= 5) {
-            console.log(`[setupPlotDataUpdate] Message #${messageCount} for ${topic}:`, message);
-            console.log(`[setupPlotDataUpdate] Extracted value for ${fieldPath}:`, value);
-        }
-        
-        if (value === undefined || value === null) {
-            if (messageCount <= 5) {
-                console.warn('[setupPlotDataUpdate] Failed to extract value from message');
-            }
-            return;
-        }
-        
-        // timestamp 추출 (header.stamp 또는 현재 시간)
-        let timestamp = Date.now() / 1000.0; // 기본값: 현재 시간 (초 단위)
-        
-        if (message.header && message.header.stamp) {
-            timestamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9;
-        }
-        
-        if (messageCount <= 5) {
-            console.log(`[setupPlotDataUpdate] Timestamp:`, timestamp, 'Value:', value);
-        }
-        
-        // PlotlyPlotManager 업데이트 (모든 탭에 전달)
-        if (plotState.plotTabManager && plotState.plotTabManager.tabs.length > 0) {
-            if (messageCount <= 5) {
-                console.log(`[setupPlotDataUpdate] Calling updatePlot("${fullPath}", ${timestamp}, ${value}) on all tabs`);
-            }
-            
-            // 모든 탭의 plotManager에 데이터 추가
-            plotState.plotTabManager.tabs.forEach(tab => {
-                if (tab.plotManager && tab.plotManager.dataBuffers.has(fullPath)) {
-                    tab.plotManager.updatePlot(fullPath, timestamp, value);
-                }
-            });
-        } else {
-            if (messageCount === 1) {
-                console.warn('[setupPlotDataUpdate] plotTabManager is null or has no tabs!');
+
+    // ── 모든 토픽 (PC2 포함): Python 백엔드 8081 WebSocket (throttle 없이 원래 주기) ─
+    //
+    // [이전 구조의 버그]
+    //   PC2 타입 → pc2_topic_meta CustomEvent 방식 사용
+    //   BUT: 이 이벤트는 3D Viewer의 pc2_stream_worker가 dispatch하므로
+    //        3D Viewer에서 해당 PC2 토픽을 선택해야만 plot이 작동했음.
+    //
+    // [수정 후]
+    //   PC2 포함 모든 토픽 → subscribe_plot 명령으로 통일.
+    //   msg_type을 클라이언트에서 서버에 직접 전달하여 서버의
+    //   get_topic_names_and_types() 의존성 제거 (타이밍 문제 해결).
+    //
+    // PC2의 point_count는 width*height 계산이 필요하므로 서버 특수 처리.
+    // 나머지 header/stamp/sec 등은 _extract_nested()로 처리.
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log(`[setupPlotDataUpdate] Backend WS 경로 사용: ${fullPath} (type: ${topicType})`);
+    _sendBackendSubscribePlot(topic, fieldPath, topicType);
+
+    plotState.subscribers.set(plotSubscriberKey, {
+        unsubscribe: () => {
+            if (plotState.backendWs && plotState.backendWs.readyState === WebSocket.OPEN) {
+                plotState.backendWs.send(JSON.stringify({
+                    cmd: 'unsubscribe_plot', topic: topic, fields: [fieldPath]
+                }));
             }
         }
     });
-    
-    plotState.subscribers.set(plotSubscriberKey, plotSubscriber);
-    console.log('[setupPlotDataUpdate] Plot subscriber created successfully:', plotSubscriberKey);
+    console.log('[setupPlotDataUpdate] Backend WS plot subscriber 등록:', plotSubscriberKey);
 }
 
 // 필드 경로를 따라가서 값 추출

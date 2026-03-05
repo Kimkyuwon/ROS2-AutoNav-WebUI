@@ -5,7 +5,7 @@ from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.serialization import serialize_message
 from std_msgs.msg import Bool
-from sensor_msgs.msg import Image, Imu, CameraInfo
+from sensor_msgs.msg import Image, Imu, CameraInfo, PointCloud2
 from geometry_msgs.msg import PointStamped
 from rosgraph_msgs.msg import Clock
 from cv_bridge import CvBridge
@@ -13,6 +13,7 @@ import cv2
 import struct
 import glob
 import threading
+import asyncio
 import json
 import os
 import time
@@ -23,6 +24,22 @@ import signal
 import yaml
 from pathlib import Path as PathLib
 import rosbag2_py
+
+# ── Optional: numpy (PointCloud2 binary 파싱용) ──────────────────────────────
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+    print("Warning: numpy not available. PC2 WebSocket server disabled.")
+
+# ── Optional: websockets (PC2 Binary WebSocket 서버용) ───────────────────────
+try:
+    import websockets
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    print("Warning: websockets not available. PC2 WebSocket server disabled.")
 
 # Try to import ruamel.yaml for better formatting
 try:
@@ -52,6 +69,1167 @@ except ImportError:
 _web_server = None
 _ros_node = None
 
+
+class Ros1BagPlayerThread(threading.Thread):
+    """ROS1 .bag 파일을 rosbags로 읽어 rclpy Publisher로 실시간 ROS2 publish하는 스레드.
+
+    Attributes:
+        bag_path (str): ROS1 .bag 파일 경로
+        topics (list[str]): publish할 토픽 이름 목록 (빈 리스트 = 전체)
+        playback_rate (float): 재생 속도 배율 (1.0 = 원본 속도)
+        ros_node (rclpy.node.Node): publisher를 생성할 ROS2 노드 참조
+    """
+
+    def __init__(self, bag_path, topics, playback_rate, ros_node):
+        super().__init__(daemon=True)
+        self._bag_path = bag_path
+        self._topics = set(topics) if topics else None  # None = 전체 토픽
+        self._playback_rate = max(playback_rate, 0.01)
+        self._ros_node = ros_node
+
+        # 제어 플래그
+        self._stop_flag = False
+        self._play_event = threading.Event()
+        self._play_event.set()  # 기본적으로 재생 상태
+
+        # 상태 추적
+        self._status = 'stopped'   # 'playing' | 'paused' | 'stopped'
+        self._elapsed_sec = 0.0
+        self._total_sec = 0.0
+        self._lock = threading.Lock()
+
+        # 동적으로 생성된 ROS2 publisher 캐시 {topic_name: publisher}
+        self._publishers = {}
+
+    # ------------------------------------------------------------------
+    # 제어 메서드
+    # ------------------------------------------------------------------
+    def pause(self):
+        """재생 일시정지"""
+        self._play_event.clear()
+        with self._lock:
+            self._status = 'paused'
+
+    def resume(self):
+        """재생 재개"""
+        self._play_event.set()
+        with self._lock:
+            self._status = 'playing'
+
+    def stop(self):
+        """스레드 종료 요청"""
+        self._stop_flag = True
+        self._play_event.set()  # block 해제 후 종료
+        with self._lock:
+            self._status = 'stopped'
+
+    def get_status(self):
+        """현재 상태 딕셔너리 반환"""
+        with self._lock:
+            return {
+                'status': self._status,
+                'elapsed_sec': self._elapsed_sec,
+                'total_sec': self._total_sec,
+            }
+
+    # ------------------------------------------------------------------
+    # 내부 헬퍼 메서드
+    # ------------------------------------------------------------------
+    def _resolve_ros2_type(self, ros1_type_str):
+        """ROS1 메시지 타입 문자열을 ROS2 Python 클래스로 동적 import.
+
+        rosbags 라이브러리는 ROS1 bag에서도 ROS2 포맷으로 타입을 반환합니다.
+        - ROS1 포맷: 'sensor_msgs/Image'       (parts 2개)
+        - ROS2 포맷: 'sensor_msgs/msg/Image'   (parts 3개)
+        두 포맷을 모두 처리합니다.
+
+        Args:
+            ros1_type_str (str): 예) 'sensor_msgs/msg/Image' 또는 'sensor_msgs/Image'
+
+        Returns:
+            type | None: 성공 시 메시지 클래스, 실패 시 None
+        """
+        import importlib
+        try:
+            parts = ros1_type_str.split('/')
+            if len(parts) == 2:
+                # ROS1 포맷: 'sensor_msgs/Image'
+                pkg, msg_class = parts[0], parts[1]
+            elif len(parts) == 3 and parts[1] == 'msg':
+                # ROS2 포맷: 'sensor_msgs/msg/Image'
+                pkg, msg_class = parts[0], parts[2]
+            else:
+                return None
+            mod = importlib.import_module(f'{pkg}.msg')
+            cls = getattr(mod, msg_class, None)
+            return cls
+        except Exception:
+            return None
+
+    def _get_or_create_publisher(self, topic_name, ros1_type_str, msg_cls):
+        """토픽별 ROS2 publisher를 캐시해서 반환 (없으면 생성).
+
+        Args:
+            topic_name (str): publish할 토픽 이름
+            ros1_type_str (str): ROS1 메시지 타입 문자열 (로그용)
+            msg_cls (type): ROS2 메시지 클래스
+
+        Returns:
+            rclpy Publisher | None
+        """
+        if topic_name in self._publishers:
+            return self._publishers[topic_name]
+
+        try:
+            pub = self._ros_node.create_publisher(msg_cls, topic_name, 10)
+            self._publishers[topic_name] = pub
+            self._ros_node.get_logger().info(
+                f'[Ros1BagPlayer] Created publisher: {topic_name} ({ros1_type_str})'
+            )
+            return pub
+        except Exception as e:
+            self._ros_node.get_logger().error(
+                f'[Ros1BagPlayer] Failed to create publisher for {topic_name}: {e}'
+            )
+            return None
+
+    def _destroy_publishers(self):
+        """생성한 모든 publisher 정리"""
+        for topic_name, pub in self._publishers.items():
+            try:
+                self._ros_node.destroy_publisher(pub)
+            except Exception:
+                pass
+        self._publishers.clear()
+
+    # ------------------------------------------------------------------
+    # 메인 실행 루프
+    # ------------------------------------------------------------------
+    def run(self):
+        """rosbags Reader로 순차 읽기 → rclpy publisher로 publish.
+
+        rosbags 최신 API:
+          - get_typestore(Stores.ROS1_NOETIC) 로 typestore 생성 (reader.typestore 없음)
+          - typestore.deserialize_ros1(rawdata, conn.msgtype) 로 역직렬화
+          - 역직렬화 결과는 dataclass 기반 객체 (NamedTuple 아님)
+        """
+        try:
+            from rosbags.rosbag1 import Reader
+            from rosbags.typesys import get_typestore, Stores
+        except ImportError as e:
+            self._ros_node.get_logger().error(
+                f'[Ros1BagPlayer] rosbags not available: {e}'
+            )
+            with self._lock:
+                self._status = 'stopped'
+            return
+
+        with self._lock:
+            self._status = 'playing'
+
+        try:
+            # typestore는 Reader 밖에서 한 번만 생성
+            typestore = get_typestore(Stores.ROS1_NOETIC)
+
+            with Reader(self._bag_path) as reader:
+                # 전체 재생 시간 계산 (nanoseconds → seconds)
+                total_ns = reader.end_time - reader.start_time
+                with self._lock:
+                    self._total_sec = total_ns / 1e9
+
+                # 토픽별 메시지 타입 정보 수집
+                # reader.topics: {topic_name: TopicInfo}
+                topic_type_map = {}  # topic_name → ros1_type_str
+                for topic_name, topic_info in reader.topics.items():
+                    if self._topics is not None and topic_name not in self._topics:
+                        continue
+                    topic_type_map[topic_name] = topic_info.msgtype
+
+                # publisher 사전 생성 (publishable한 토픽만)
+                publishable_topics = set()
+                for topic_name, ros1_type_str in topic_type_map.items():
+                    msg_cls = self._resolve_ros2_type(ros1_type_str)
+                    if msg_cls is not None:
+                        pub = self._get_or_create_publisher(topic_name, ros1_type_str, msg_cls)
+                        if pub is not None:
+                            publishable_topics.add(topic_name)
+                    else:
+                        self._ros_node.get_logger().warn(
+                            f'[Ros1BagPlayer] Skipping {topic_name} ({ros1_type_str}): '
+                            'ROS2 type not found'
+                        )
+
+                if not publishable_topics:
+                    self._ros_node.get_logger().warn(
+                        '[Ros1BagPlayer] No publishable topics found. Stopping.'
+                    )
+                    with self._lock:
+                        self._status = 'stopped'
+                    return
+
+                prev_ros_time = None   # 직전 메시지의 ROS timestamp (nanoseconds)
+                start_ns = reader.start_time
+
+                # 메시지 순차 순회
+                for conn, timestamp, rawdata in reader.messages():
+                    if self._stop_flag:
+                        break
+
+                    # 일시정지 대기 (blocking)
+                    self._play_event.wait()
+                    if self._stop_flag:
+                        break
+
+                    topic_name = conn.topic
+                    ros1_type_str = conn.msgtype
+
+                    # 선택되지 않은 토픽 스킵
+                    if topic_name not in publishable_topics:
+                        continue
+
+                    # elapsed 업데이트
+                    elapsed_ns = timestamp - start_ns
+                    with self._lock:
+                        self._elapsed_sec = elapsed_ns / 1e9
+
+                    # 메시지 간 시간차 기반 sleep (속도 제어)
+                    if prev_ros_time is not None:
+                        dt_ns = timestamp - prev_ros_time
+                        if dt_ns > 0:
+                            sleep_sec = (dt_ns / 1e9) / self._playback_rate
+                            # 최대 2초 sleep 제한 (긴 공백 방지)
+                            time.sleep(min(sleep_sec, 2.0))
+                    prev_ros_time = timestamp
+
+                    # 역직렬화 + publish
+                    try:
+                        msg_cls = self._resolve_ros2_type(ros1_type_str)
+                        if msg_cls is None:
+                            continue
+
+                        # rosbags 최신 API: typestore.deserialize_ros1()
+                        ros1_msg = typestore.deserialize_ros1(rawdata, conn.msgtype)
+                        # ROS2 메시지로 변환
+                        ros2_msg = self._convert_ros1_to_ros2(ros1_msg, msg_cls)
+                        if ros2_msg is None:
+                            continue
+
+                        pub = self._publishers.get(topic_name)
+                        if pub is not None:
+                            pub.publish(ros2_msg)
+
+                    except Exception as e:
+                        self._ros_node.get_logger().debug(
+                            f'[Ros1BagPlayer] Publish error on {topic_name}: {e}'
+                        )
+
+        except Exception as e:
+            self._ros_node.get_logger().error(
+                f'[Ros1BagPlayer] Fatal error during playback: {e}'
+            )
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._destroy_publishers()
+            with self._lock:
+                self._status = 'stopped'
+            self._ros_node.get_logger().info('[Ros1BagPlayer] Playback finished.')
+
+    @staticmethod
+    def _ros2_cls_from_rosbags_name(rosbags_type_name: str):
+        """rosbags 타입명에서 ROS2 메시지 클래스를 임포트.
+
+        예: 'sensor_msgs__msg__PointField' → sensor_msgs.msg.PointField
+        ROS2에 없는 타입이면 None 반환.
+        """
+        import importlib
+        parts = rosbags_type_name.split('__')
+        # rosbags 이름 패턴: pkg__msg__ClassName  (3 parts)
+        if len(parts) == 3 and parts[1] == 'msg':
+            pkg, _, cls_name = parts
+            try:
+                mod = importlib.import_module(f'{pkg}.msg')
+                return getattr(mod, cls_name, None)
+            except Exception:
+                pass
+        return None
+
+    def _convert_ros1_to_ros2(self, ros1_msg, ros2_cls):
+        """rosbags 메시지 객체(dataclass 기반)를 ROS2 Python 메시지로 재귀 변환.
+
+        rosbags 최신 버전에서 역직렬화 결과는 dataclass로,
+        NamedTuple의 __struct_fields__ 가 없습니다.
+        - 중첩 메시지: dataclasses.is_dataclass() 로 판별
+        - 배열: numpy.ndarray → list() 변환
+        - ROS1에만 있는 필드(예: header.seq)는 ROS2 메시지에 없으면 자동 스킵
+        - 빈 배열([])의 중첩 메시지 배열: rosbags 타입명으로 ROS2 타입 추론
+          (PointCloud2.fields 같은 기본 빈 배열 필드에서 SIGABRT 방지)
+
+        Args:
+            ros1_msg: rosbags 역직렬화된 메시지 객체 (dataclass)
+            ros2_cls (type): 대상 ROS2 메시지 클래스
+
+        Returns:
+            ROS2 메시지 인스턴스 | None
+        """
+        import dataclasses
+        import numpy as np
+
+        try:
+            ros2_msg = ros2_cls()
+
+            if not dataclasses.is_dataclass(ros1_msg):
+                return None
+
+            for field in dataclasses.fields(ros1_msg):
+                field_name = field.name
+                # __msgtype__ 같은 rosbags 내부 메타 필드 스킵
+                if field_name.startswith('__'):
+                    continue
+                # ROS2 메시지에 해당 필드가 없으면 스킵 (예: header.seq)
+                if not hasattr(ros2_msg, field_name):
+                    continue
+
+                src_val = getattr(ros1_msg, field_name)
+                dst_attr = getattr(ros2_msg, field_name)
+
+                if dataclasses.is_dataclass(src_val):
+                    # 단일 중첩 메시지 → 재귀 변환
+                    nested_cls = type(dst_attr)
+                    converted = self._convert_ros1_to_ros2(src_val, nested_cls)
+                    if converted is not None:
+                        setattr(ros2_msg, field_name, converted)
+
+                elif isinstance(src_val, np.ndarray):
+                    # ── numpy 배열 → ROS2 필드 고속 할당 ──
+                    # uint8 배열(예: PointCloud2.data 7.6MB): bytes()가 tolist()보다 16배 빠름
+                    #   tolist(): 37ms / bytes(): 2.3ms  (7.6MB 기준 실측)
+                    # tolist()로 Python list를 생성하면 메시지당 37ms 추가 지연 →
+                    #   10Hz LiDAR 실효 publish 주기가 137ms(7.3Hz)로 떨어지는 원인.
+                    try:
+                        if src_val.dtype == np.uint8:
+                            # uint8[] (PointCloud2.data, Image.data 등) → bytes
+                            setattr(ros2_msg, field_name, bytes(src_val))
+                        else:
+                            # float32[], float64[], int32[] 등 → list (호환성 유지)
+                            setattr(ros2_msg, field_name, src_val.tolist())
+                    except Exception:
+                        try:
+                            setattr(ros2_msg, field_name, src_val.tolist())
+                        except Exception:
+                            try:
+                                setattr(ros2_msg, field_name, list(src_val))
+                            except Exception:
+                                pass
+
+                elif isinstance(src_val, (list, tuple)) and len(src_val) > 0:
+                    elem = src_val[0]
+                    if dataclasses.is_dataclass(elem):
+                        # 중첩 메시지 배열 (예: PointCloud2.fields → [PointField, ...])
+                        dst_list = getattr(ros2_msg, field_name)
+                        if dst_list:
+                            # 배열에 기본 원소가 있으면 타입을 그대로 사용
+                            nested_cls = type(dst_list[0])
+                        else:
+                            # 기본 빈 배열: rosbags 타입명에서 ROS2 타입 추론
+                            # type(elem).__name__ 예: 'sensor_msgs__msg__PointField'
+                            nested_cls = self._ros2_cls_from_rosbags_name(
+                                type(elem).__name__
+                            )
+                        if nested_cls is not None:
+                            converted_list = [
+                                self._convert_ros1_to_ros2(m, nested_cls)
+                                for m in src_val
+                            ]
+                            setattr(ros2_msg, field_name,
+                                    [m for m in converted_list if m is not None])
+                        # nested_cls 추론 실패 → 스킵 (SIGABRT 방지)
+                    else:
+                        try:
+                            setattr(ros2_msg, field_name, type(dst_attr)(src_val))
+                        except Exception:
+                            try:
+                                setattr(ros2_msg, field_name, list(src_val))
+                            except Exception:
+                                pass
+
+                else:
+                    try:
+                        setattr(ros2_msg, field_name, src_val)
+                    except Exception:
+                        pass
+
+            return ros2_msg
+
+        except Exception:
+            return None
+
+
+class Ros1BagRecorderThread(threading.Thread):
+    """rclpy subscriber로 ROS2 토픽을 구독하여 rosbags.rosbag1.Writer로
+    ROS1 .bag 파일에 직접 기록하는 스레드.
+
+    변환 흐름:
+        rclpy subscriber → serialize_message() → CDR bytes
+        → typestore.deserialize_cdr(bytes, msgtype)   # rosbags 객체
+        → typestore.serialize_ros1(obj, msgtype)       # ROS1 raw bytes
+        → rosbag1.Writer.write(connection, timestamp, raw)
+
+    Attributes:
+        output_path (str): 출력 ROS1 .bag 파일 경로
+        topic_type_map (dict): {'/topic': 'sensor_msgs/msg/PointCloud2'} 형태의 맵
+        ros_node (rclpy.node.Node): subscriber를 생성할 ROS2 노드 참조
+    """
+
+    def __init__(self, output_path, topic_type_map, ros_node):
+        super().__init__(daemon=True)
+        self._output_path = output_path
+        self._topic_type_map = topic_type_map  # {'/topic': 'sensor_msgs/msg/PointCloud2'}
+        self._ros_node = ros_node
+
+        self._stop_flag = False
+        self._start_time = None
+        self._lock = threading.Lock()
+        self._status = 'recording'
+
+    # ------------------------------------------------------------------
+    # 제어 메서드
+    # ------------------------------------------------------------------
+    def stop(self):
+        """스레드 종료 요청"""
+        self._stop_flag = True
+        with self._lock:
+            self._status = 'stopped'
+
+    def get_status(self):
+        """현재 상태 딕셔너리 반환"""
+        with self._lock:
+            elapsed = time.time() - self._start_time if self._start_time else 0.0
+            return {
+                'status': self._status,
+                'elapsed_sec': elapsed,
+            }
+
+    # ------------------------------------------------------------------
+    # 내부 헬퍼 메서드
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _import_ros2_msg_class(ros2_type):
+        """ROS2 타입명으로 메시지 클래스를 동적 import.
+
+        예: 'sensor_msgs/msg/PointCloud2' → sensor_msgs.msg.PointCloud2
+
+        Returns:
+            type | None: 성공 시 메시지 클래스, 실패 시 None
+        """
+        import importlib
+        try:
+            parts = ros2_type.split('/')
+            if len(parts) == 3 and parts[1] == 'msg':
+                pkg, _, cls_name = parts
+                mod = importlib.import_module(f'{pkg}.msg')
+                return getattr(mod, cls_name, None)
+        except Exception:
+            pass
+        return None
+
+    # ------------------------------------------------------------------
+    # 메인 실행 루프
+    # ------------------------------------------------------------------
+    def run(self):
+        """rclpy subscriber로 CDR bytes 수신 → rosbag1 Writer로 .bag 기록.
+
+        rosbags API 주의사항:
+          - writer.add_connection()의 msgtype은 ROS2 포맷('sensor_msgs/msg/PointCloud2')을
+            그대로 사용해야 함. ROS1 포맷('sensor_msgs/PointCloud2')은 typestore에 없어 실패.
+          - CDR → ROS1 변환은 typestore.cdr_to_ros1(cdr_bytes, typename) 을 사용.
+
+        아키텍처:
+          - 녹화 전용 임시 ROS2 노드(recorder_node)를 생성하고,
+            SingleThreadedExecutor를 이 스레드 안에서 직접 spin하여 콜백을 처리한다.
+          - 메인 스레드의 rclpy.spin()에 의존하지 않아 새 subscription이 누락되지 않는다.
+        """
+        try:
+            from rosbags.rosbag1 import Writer
+            from rosbags.typesys import get_typestore, Stores
+            from rosbags.convert.converter import migrate_bytes
+        except ImportError as e:
+            self._ros_node.get_logger().error(f'[Ros1BagRecorder] rosbags not available: {e}')
+            with self._lock:
+                self._status = 'stopped'
+            return
+
+        import rclpy
+        from rclpy.node import Node as RclpyNode
+        from rclpy.executors import SingleThreadedExecutor
+        from rclpy.serialization import serialize_message
+
+        self._start_time = time.time()
+        msg_queue = []
+        queue_lock = threading.Lock()
+
+        # src: ROS2 typestore — CDR 역직렬화 (ROS2 Header 정의, seq 없음)
+        # dst: ROS1 typestore — ROS1 직렬화 + add_connection msgdef 생성 (Header.seq 포함)
+        # migrate_bytes()가 두 typestore 간 필드 차이(예: Header.seq)를 자동 처리함
+        src_typestore = get_typestore(Stores.ROS2_JAZZY)
+        dst_typestore = get_typestore(Stores.ROS1_NOETIC)
+        migrate_cache: dict = {}
+
+        # ── 녹화 전용 임시 노드 + 전용 Executor 생성 ──────────────────────────
+        # 메인 노드(self._ros_node)의 SingleThreadedExecutor는 새 subscription을
+        # 실시간으로 감지하지 못하는 경우가 있어, 독립 노드를 사용한다.
+        recorder_node = None
+        executor = None
+        try:
+            # 노드 이름 중복 방지: 짧은 타임스탬프로 유일성 확보
+            _node_id = int(time.time() * 1000) % 100000
+            recorder_node = RclpyNode(f'ros1_bag_recorder_{_node_id}')
+            executor = SingleThreadedExecutor()
+            executor.add_node(recorder_node)
+        except Exception as e:
+            self._ros_node.get_logger().error(
+                f'[Ros1BagRecorder] Failed to create recorder node: {e}'
+            )
+            with self._lock:
+                self._status = 'stopped'
+            return
+
+        def make_callback(topic_name):
+            """토픽별 subscriber callback 생성 (closure로 topic_name 캡처)"""
+            def callback(msg):
+                if self._stop_flag:
+                    return
+                ts_ns = int(time.time() * 1e9)
+                cdr_bytes = bytes(serialize_message(msg))
+                with queue_lock:
+                    msg_queue.append((topic_name, ts_ns, cdr_bytes))
+            return callback
+
+        written_count = 0
+        try:
+            with Writer(self._output_path) as writer:
+                connections = {}
+
+                for topic_name, ros2_type in self._topic_type_map.items():
+                    msg_cls = self._import_ros2_msg_class(ros2_type)
+
+                    if msg_cls is None:
+                        self._ros_node.get_logger().warn(
+                            f'[Ros1BagRecorder] Cannot import {ros2_type}, skipping {topic_name}'
+                        )
+                        continue
+
+                    # rosbag1 Writer에 connection 등록
+                    # dst_typestore(ROS1_NOETIC)로 msgdef 생성 → ROS1 bag에 올바른 메시지 정의 기록
+                    # dst_typestore에 타입이 없는 경우 src_typestore에서 등록 시도
+                    if ros2_type not in dst_typestore.fielddefs:
+                        try:
+                            from rosbags.typesys import get_types_from_msg
+                            typs = get_types_from_msg(
+                                src_typestore.generate_msgdef(ros2_type, ros_version=1)[0],
+                                ros2_type,
+                            )
+                            typs.pop('std_msgs/msg/Header', None)  # Header는 ROS1 버전 유지
+                            dst_typestore.register(typs)
+                            self._ros_node.get_logger().info(
+                                f'[Ros1BagRecorder] Registered custom type in dst_typestore: {ros2_type}'
+                            )
+                        except Exception as reg_e:
+                            self._ros_node.get_logger().warn(
+                                f'[Ros1BagRecorder] Cannot register type {ros2_type} in ROS1 typestore: {reg_e}'
+                            )
+                            continue
+                    try:
+                        conn = writer.add_connection(topic_name, ros2_type, typestore=dst_typestore)
+                        connections[topic_name] = conn
+                        self._ros_node.get_logger().info(
+                            f'[Ros1BagRecorder] Connection registered: {topic_name} ({ros2_type})'
+                        )
+                    except Exception as e:
+                        self._ros_node.get_logger().warn(
+                            f'[Ros1BagRecorder] Failed to add connection for {topic_name}: {e}'
+                        )
+                        continue
+
+                    # 녹화 전용 노드에 subscriber 생성 (메인 노드의 spin과 독립)
+                    try:
+                        recorder_node.create_subscription(
+                            msg_cls, topic_name, make_callback(topic_name), 10
+                        )
+                        self._ros_node.get_logger().info(
+                            f'[Ros1BagRecorder] Subscribed: {topic_name}'
+                        )
+                    except Exception as e:
+                        self._ros_node.get_logger().warn(
+                            f'[Ros1BagRecorder] Failed to subscribe to {topic_name}: {e}'
+                        )
+
+                self._ros_node.get_logger().info(
+                    f'[Ros1BagRecorder] Recording started → {self._output_path} '
+                    f'({len(connections)} topics)'
+                )
+
+                last_log_time = time.time()
+
+                # 메인 루프 — 전용 executor를 여기서 직접 spin하여 콜백 처리 후 bag에 기록
+                while not self._stop_flag:
+                    # 이 스레드에서 recorder_node의 콜백을 직접 처리
+                    executor.spin_once(timeout_sec=0.01)
+
+                    with queue_lock:
+                        pending = list(msg_queue)
+                        msg_queue.clear()
+
+                    for topic_name, ts_ns, cdr_bytes in pending:
+                        conn = connections.get(topic_name)
+                        if conn is None:
+                            continue
+                        try:
+                            # ROS2 CDR bytes → ROS1 raw bytes 변환
+                            #
+                            # migrate_bytes()는 rosbags.convert 공식 변환 경로로:
+                            # 1. src_typestore(ROS2_JAZZY)로 CDR 역직렬화 (Header에 seq 없음)
+                            # 2. migrate_message()로 필드 매핑 (ROS1 Header의 seq=0 자동 추가 등)
+                            # 3. dst_typestore(ROS1_NOETIC)로 ROS1 직렬화
+                            raw = bytes(migrate_bytes(
+                                src_typestore, dst_typestore,
+                                conn.msgtype, conn.msgtype,
+                                migrate_cache, cdr_bytes,
+                                src_is2=True, dst_is2=False,
+                            ))
+                            writer.write(conn, ts_ns, raw)
+                            written_count += 1
+                        except Exception as e:
+                            self._ros_node.get_logger().warn(
+                                f'[Ros1BagRecorder] Write error on {topic_name} '
+                                f'({conn.msgtype}): {e}'
+                            )
+
+                    # 5초마다 진행 상황 로그
+                    now = time.time()
+                    if now - last_log_time >= 5.0:
+                        self._ros_node.get_logger().info(
+                            f'[Ros1BagRecorder] Written {written_count} messages so far...'
+                        )
+                        last_log_time = now
+
+        except Exception as e:
+            self._ros_node.get_logger().error(f'[Ros1BagRecorder] Fatal error: {e}')
+            import traceback
+            traceback.print_exc()
+        finally:
+            # 전용 노드 정리
+            if executor is not None and recorder_node is not None:
+                try:
+                    executor.remove_node(recorder_node)
+                    recorder_node.destroy_node()
+                except Exception:
+                    pass
+            with self._lock:
+                self._status = 'stopped'
+            self._ros_node.get_logger().info(
+                f'[Ros1BagRecorder] Recording finished. Total messages written: {written_count}'
+            )
+
+
+class PC2WebSocketServer:
+    """Python 백엔드 직접 PointCloud2 → Binary WebSocket 스트리밍 서버.
+
+    rosbridge를 우회하여 PointCloud2를 Python에서 직접 구독한 뒤
+    numpy로 XYZ + colorField(intensity/rgb)를 추출해 binary 패킷으로
+    브라우저에 전달한다. JSON/base64 오버헤드가 없어 메시지 크기가
+    ~10 MB → ~600 KB 수준으로 줄어든다.
+
+    Binary 패킷 포맷 (little-endian):
+      [3B]  magic = b'PC2'
+      [1B]  version = 1
+      [1B]  flags  (bit0=has_intensity, bit1=has_rgb)
+      [4B]  uint32  topic_name 길이
+      [4B]  uint32  frame_id 길이
+      [4B]  uint32  point_count
+      [N B] topic_name  (UTF-8)
+      [M B] frame_id    (UTF-8)
+      [count*12 B] XYZ float32 interleaved  (x0,y0,z0, x1,y1,z1, ...)
+      [count*4  B] colorField float32        (intensity 또는 0.0)
+      [count*4  B] rgb uint32               (has_rgb 일 때만)
+
+    Ports:
+      8081 — WebSocket (ws://host:8081)
+
+    Client → Server 명령 (JSON 문자열):
+      { "cmd": "subscribe",   "topic": "/ouster/points" }
+      { "cmd": "unsubscribe", "topic": "/ouster/points" }
+    """
+
+    MAX_POINTS   = 50_000   # 다운샘플링 상한
+    THROTTLE_SEC = 0.05     # 최대 20Hz (50 ms) — binary 전송 ~600KB이므로 충분
+
+    # PointCloud2 field datatype → numpy dtype 매핑
+    _DTYPE = {
+        1: np.int8,   2: np.uint8,
+        3: np.int16,  4: np.uint16,
+        5: np.int32,  6: np.uint32,
+        7: np.float32, 8: np.float64,
+    } if NUMPY_AVAILABLE else {}
+
+    def __init__(self, ros_node, port: int = 8081):
+        self._node = ros_node
+        self._port = port
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()
+        # ── PointCloud2 전용 ───────────────────────────────────────────────────
+        # topic_name → set[websocket]
+        self._clients: dict = {}
+        # topic_name → rclpy Subscription
+        self._subs: dict = {}
+        # topic_name → 마지막 전송 단조시각 (throttle)
+        self._last_sent: dict = {}
+        # ── 범용 Plot 토픽 (throttle 없이 원래 주기로 전송) ────────────────────
+        # topic_name → { ws: set[field_path, ...] }
+        self._plot_clients: dict = {}
+        # topic_name → rclpy Subscription
+        self._plot_subs: dict = {}
+
+    # ── 공개 API ─────────────────────────────────────────────────────────────
+
+    def start(self):
+        """별도 daemon 스레드에서 asyncio WebSocket 서버를 시작한다."""
+        if not WEBSOCKETS_AVAILABLE or not NUMPY_AVAILABLE:
+            self._node.get_logger().warn(
+                '[PC2WS] websockets 또는 numpy 미설치 — PC2 Binary WS 비활성화')
+            return
+        t = threading.Thread(
+            target=self._run_loop, daemon=True, name='pc2-ws-server')
+        t.start()
+
+    # ── 내부: asyncio 루프 ────────────────────────────────────────────────────
+
+    def _run_loop(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._serve())
+
+    async def _serve(self):
+        try:
+            async with websockets.serve(
+                    self._handler, '0.0.0.0', self._port,
+                    max_size=None,
+                    ping_interval=20,
+                    ping_timeout=20):
+                self._node.get_logger().info(
+                    f'[PC2WS] Binary WebSocket server on ws://0.0.0.0:{self._port}')
+                await asyncio.Future()   # 종료 없이 영원히 실행
+        except Exception as e:
+            self._node.get_logger().error(f'[PC2WS] server error: {e}')
+
+    async def _handler(self, websocket):
+        """WebSocket 연결 핸들러 — subscribe/unsubscribe/subscribe_plot 명령 수신."""
+        my_pc2_topics: set  = set()   # PointCloud2 binary 구독
+        my_plot_topics: set = set()   # 범용 plot JSON 구독
+        try:
+            async for raw in websocket:
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                cmd   = msg.get('cmd', '')
+                topic = msg.get('topic', '').strip()
+                if not topic:
+                    continue
+                if cmd == 'subscribe':
+                    self._add_client(topic, websocket)
+                    my_pc2_topics.add(topic)
+                elif cmd == 'unsubscribe':
+                    self._remove_client(topic, websocket)
+                    my_pc2_topics.discard(topic)
+                elif cmd == 'subscribe_plot':
+                    # 범용 토픽 plot 구독 (throttle 없이 원래 주기)
+                    # msg_type: 클라이언트가 전달한 토픽 타입 (서버 조회 불필요)
+                    fields   = msg.get('fields', [])
+                    msg_type = msg.get('msg_type', '').strip()
+                    if fields:
+                        self._add_plot_client(topic, websocket, fields, msg_type)
+                        my_plot_topics.add(topic)
+                elif cmd == 'unsubscribe_plot':
+                    fields = msg.get('fields', [])
+                    self._remove_plot_client(topic, websocket, fields if fields else None)
+                    with self._lock:
+                        remaining = self._plot_clients.get(topic, {}).get(websocket)
+                    if not remaining:
+                        my_plot_topics.discard(topic)
+        except Exception:
+            pass
+        finally:
+            for t in list(my_pc2_topics):
+                self._remove_client(t, websocket)
+            for t in list(my_plot_topics):
+                self._remove_plot_client(t, websocket, None)
+
+    # ── 클라이언트 / 구독 관리 ────────────────────────────────────────────────
+
+    def _add_client(self, topic: str, ws):
+        with self._lock:
+            if topic not in self._clients:
+                self._clients[topic] = set()
+            self._clients[topic].add(ws)
+            if topic not in self._subs:
+                sub = self._node.create_subscription(
+                    PointCloud2, topic,
+                    lambda m, t=topic: self._on_pc2(m, t),
+                    10)
+                self._subs[topic]      = sub
+                self._last_sent[topic] = 0.0
+                self._node.get_logger().info(f'[PC2WS] subscribed → {topic}')
+
+    def _remove_client(self, topic: str, ws):
+        with self._lock:
+            s = self._clients.get(topic)
+            if not s:
+                return
+            s.discard(ws)
+            if not s:
+                sub = self._subs.pop(topic, None)
+                if sub:
+                    self._node.destroy_subscription(sub)
+                self._clients.pop(topic, None)
+                self._last_sent.pop(topic, None)
+                self._node.get_logger().info(f'[PC2WS] unsubscribed ← {topic}')
+
+    # ── rclpy 콜백 ───────────────────────────────────────────────────────────
+
+    def _on_pc2(self, msg: PointCloud2, topic_name: str):
+        """PointCloud2 수신 → throttle → binary + JSON 메타데이터 → asyncio 브로드캐스트.
+
+        전송 패킷 두 종류:
+          1) binary bytes   : XYZ + color 데이터 (3D Viewer용)
+          2) JSON string    : 헤더 스탬프·포인트 수 등 메타데이터 (Plot 탭용)
+             {"type":"pc2meta","topic":"...","stamp_sec":N,"stamp_nanosec":N,
+              "frame_id":"...","point_count":N}
+
+        JavaScript 쪽에서 ws.binaryType='arraybuffer' 이므로
+        ArrayBuffer → binary 핸들러, string → JSON 핸들러로 자동 분리된다.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_sent.get(topic_name, 0.0) < self.THROTTLE_SEC:
+                return
+            clients = self._clients.get(topic_name, set()).copy()
+        if not clients:
+            return
+
+        # ── 1) JSON 메타데이터 패킷 (헤더 스탬프 등) ────────────────────────
+        stamp = msg.header.stamp
+        meta_json = json.dumps({
+            'type':          'pc2meta',
+            'topic':         topic_name,
+            'stamp_sec':     stamp.sec,
+            'stamp_nanosec': stamp.nanosec,
+            'frame_id':      msg.header.frame_id,
+            'point_count':   msg.width * msg.height,
+        }, separators=(',', ':'))
+
+        # ── 2) binary 패킷 (XYZ + color) ────────────────────────────────────
+        payload = self._build_payload(msg, topic_name)
+        if payload is None:
+            return
+
+        with self._lock:
+            self._last_sent[topic_name] = now
+
+        loop = self._loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_both(clients, meta_json, payload), loop)
+
+    async def _broadcast_both(self, clients, meta_json: str, binary_payload: bytes):
+        """각 클라이언트에 JSON 메타데이터(text) + binary 데이터 순서로 전송."""
+        for ws in list(clients):
+            try:
+                await ws.send(meta_json)       # text → JSON 파싱 경로
+                await ws.send(binary_payload)  # binary → ArrayBuffer 경로
+            except Exception:
+                pass
+
+    async def _broadcast(self, clients, payload: bytes):
+        for ws in list(clients):
+            try:
+                await ws.send(payload)
+            except Exception:
+                pass
+
+    async def _broadcast_text(self, clients, data: str):
+        """text(JSON) 메시지를 여러 클라이언트에 전송."""
+        for ws in list(clients):
+            try:
+                await ws.send(data)
+            except Exception:
+                pass
+
+    # ── 범용 토픽 Plot 구독 (throttle 없이 원래 주기) ─────────────────────────
+
+    def _add_plot_client(self, topic: str, ws, fields: list, msg_type: str = ''):
+        """일반 토픽의 특정 필드를 실시간 plot하기 위한 클라이언트 등록.
+
+        msg_type: 클라이언트(browser)가 이미 알고 있는 토픽 타입 문자열.
+          전달하면 get_topic_names_and_types() 조회 없이 즉시 subscription 생성.
+          타이밍 문제(bag 재생 직후 조회 실패)를 방지한다.
+        """
+        need_sub = False
+        with self._lock:
+            if topic not in self._plot_clients:
+                self._plot_clients[topic] = {}
+            if ws not in self._plot_clients[topic]:
+                self._plot_clients[topic][ws] = set()
+            self._plot_clients[topic][ws].update(fields)
+            if topic not in self._plot_subs:
+                need_sub = True
+
+        if need_sub:
+            self._create_plot_subscription(topic, msg_type)
+
+    def _remove_plot_client(self, topic: str, ws, fields=None):
+        """plot 클라이언트 제거. fields=None 이면 해당 ws의 모든 필드 제거."""
+        with self._lock:
+            client_map = self._plot_clients.get(topic, {})
+            if ws not in client_map:
+                return
+            if fields is None:
+                del client_map[ws]
+            else:
+                client_map[ws].difference_update(fields)
+                if not client_map[ws]:
+                    del client_map[ws]
+            # 해당 topic 구독자가 0이면 subscription 삭제
+            if not client_map:
+                self._plot_clients.pop(topic, None)
+                sub = self._plot_subs.pop(topic, None)
+                if sub:
+                    try:
+                        self._node.destroy_subscription(sub)
+                    except Exception:
+                        pass
+                self._node.get_logger().info(f'[PC2WS/plot] unsubscribed ← {topic}')
+
+    def _create_plot_subscription(self, topic: str, msg_type: str = ''):
+        """토픽 타입을 자동 감지하여 rclpy subscription 동적 생성.
+
+        msg_type이 주어지면 ROS2 DDS 조회(get_topic_names_and_types) 없이
+        즉시 subscription을 생성한다. bag 재생 직후 등 타이밍 문제를 방지.
+        msg_type이 없으면 DDS에서 조회한다 (fallback).
+        """
+        # ── 1) 클라이언트가 전달한 타입 우선 사용 ─────────────────────────────
+        type_str = msg_type.strip() if msg_type else ''
+
+        # ── 2) fallback: DDS 조회 ─────────────────────────────────────────────
+        if not type_str:
+            try:
+                for name, types in self._node.get_topic_names_and_types():
+                    if name == topic and types:
+                        type_str = types[0]
+                        break
+            except Exception as e:
+                self._node.get_logger().error(f'[PC2WS/plot] 토픽 타입 조회 오류: {e}')
+
+        if not type_str:
+            self._node.get_logger().warn(
+                f'[PC2WS/plot] 토픽 타입 못 찾음 (msg_type 미제공, DDS 조회 실패): {topic}')
+            return
+
+        MsgClass = self._get_msg_class(type_str)
+        if MsgClass is None:
+            self._node.get_logger().warn(
+                f'[PC2WS/plot] 메시지 타입 로드 실패: {type_str}')
+            return
+
+        sub = self._node.create_subscription(
+            MsgClass,
+            topic,
+            lambda msg, t=topic: self._on_plot_msg(msg, t),
+            10
+        )
+        with self._lock:
+            self._plot_subs[topic] = sub
+        self._node.get_logger().info(
+            f'[PC2WS/plot] subscribed → {topic} ({type_str})')
+
+    def _on_plot_msg(self, msg, topic_name: str):
+        """범용 토픽 메시지 수신 → 요청된 필드 추출 → JSON broadcast.
+
+        throttle 없이 원래 주기 그대로 전송한다.
+        헤더가 있으면 header.stamp를 timestamp로 사용하고,
+        없으면 현재 단조 시간을 사용한다.
+        """
+        with self._lock:
+            client_map = self._plot_clients.get(topic_name, {})
+            if not client_map:
+                return
+            # 모든 클라이언트의 필드 합집합
+            all_fields: set = set()
+            for fields in client_map.values():
+                all_fields.update(fields)
+            clients = set(client_map.keys())
+
+        # 타임스탬프 추출
+        stamp_sec, stamp_nanosec = 0, 0
+        if hasattr(msg, 'header') and hasattr(msg.header, 'stamp'):
+            stamp_sec     = msg.header.stamp.sec
+            stamp_nanosec = msg.header.stamp.nanosec
+        else:
+            t = time.time()
+            stamp_sec     = int(t)
+            stamp_nanosec = int((t - stamp_sec) * 1e9)
+
+        # 요청된 필드 값 추출
+        values = {}
+        for field in all_fields:
+            # 특수 계산 필드 처리
+            if field == 'point_count':
+                # PointCloud2: point_count = width * height
+                if hasattr(msg, 'width') and hasattr(msg, 'height'):
+                    values[field] = float(msg.width * msg.height)
+                continue
+            val = self._extract_nested(msg, field)
+            if val is not None:
+                values[field] = val
+
+        if not values:
+            return
+
+        data = json.dumps({
+            'type':          'plot_data',
+            'topic':         topic_name,
+            'stamp_sec':     stamp_sec,
+            'stamp_nanosec': stamp_nanosec,
+            'values':        values,
+        }, separators=(',', ':'))
+
+        loop = self._loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_text(clients, data), loop)
+
+    @staticmethod
+    def _extract_nested(obj, field_path: str):
+        """슬래시 또는 점 표기법으로 중첩 필드 값 추출.
+
+        예) 'linear_acceleration/x'  →  obj.linear_acceleration.x
+            'header/stamp/sec'       →  obj.header.stamp.sec
+        """
+        for part in field_path.replace('.', '/').split('/'):
+            if hasattr(obj, part):
+                obj = getattr(obj, part)
+            else:
+                return None
+        if isinstance(obj, (int, float, bool)):
+            return float(obj)
+        if isinstance(obj, str):
+            return obj
+        return None
+
+    @staticmethod
+    def _get_msg_class(type_str: str):
+        """'sensor_msgs/msg/Imu'  →  sensor_msgs.msg.Imu 클래스 반환.
+           'sensor_msgs/Imu'      →  sensor_msgs.msg.Imu (deprecated 형식 대응)
+        """
+        import importlib
+        parts = type_str.split('/')
+        try:
+            if len(parts) == 3:                   # package/msg/Class
+                module = importlib.import_module(f'{parts[0]}.{parts[1]}')
+                return getattr(module, parts[2])
+            elif len(parts) == 2:                 # package/Class (구형)
+                module = importlib.import_module(f'{parts[0]}.msg')
+                return getattr(module, parts[1])
+        except Exception:
+            return None
+        return None
+
+    # ── PointCloud2 → binary 패킷 변환 ───────────────────────────────────────
+
+    def _build_payload(self, msg: PointCloud2, topic_name: str):
+        """PointCloud2 메시지를 binary 패킷으로 변환. 실패 시 None 반환."""
+        try:
+            frame_id  = msg.header.frame_id if msg.header else ''
+            field_map = {f.name: f for f in msg.fields}
+
+            if not ('x' in field_map and 'y' in field_map and 'z' in field_map):
+                return None
+
+            n_total    = msg.width * msg.height
+            point_step = msg.point_step
+            if n_total == 0 or point_step == 0:
+                return None
+
+            # raw bytes → uint8 numpy array → (N, point_step) 형태
+            raw = np.frombuffer(bytes(msg.data), dtype=np.uint8)
+            if raw.size < n_total * point_step:
+                n_total = raw.size // point_step
+            arr = raw[:n_total * point_step].reshape(n_total, point_step)
+
+            def _extract_f32(field_name):
+                f   = field_map[field_name]
+                off = f.offset
+                dt  = self._DTYPE.get(f.datatype, np.float32)
+                bw  = dt().itemsize
+                return np.frombuffer(
+                    arr[:, off:off + bw].tobytes(), dtype=dt
+                ).astype(np.float32)
+
+            x = _extract_f32('x')
+            y = _extract_f32('y')
+            z = _extract_f32('z')
+
+            # NaN/Inf 필터링
+            valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+            x, y, z = x[valid], y[valid], z[valid]
+
+            n = len(x)
+            if n == 0:
+                return None
+
+            # 다운샘플링 (voxel-free: 균등 step)
+            step = max(1, n // self.MAX_POINTS)
+            x, y, z = x[::step], y[::step], z[::step]
+            n_out = len(x)
+
+            xyz = np.column_stack([x, y, z]).astype(np.float32)
+
+            # intensity 추출
+            has_intensity = 'intensity' in field_map
+            color_f32 = np.zeros(n_out, dtype=np.float32)
+            if has_intensity:
+                ci = _extract_f32('intensity')
+                color_f32 = ci[valid][::step][:n_out]
+
+            # RGB 추출
+            has_rgb = 'rgb' in field_map or 'rgba' in field_map
+            rgb_u32 = np.zeros(n_out, dtype=np.uint32)
+            if has_rgb:
+                rkey = 'rgb' if 'rgb' in field_map else 'rgba'
+                f    = field_map[rkey]
+                ri   = np.frombuffer(
+                    arr[:, f.offset:f.offset + 4].tobytes(), dtype=np.uint32)
+                rgb_u32 = ri[valid][::step][:n_out]
+
+            flags  = (0x01 if has_intensity else 0) | (0x02 if has_rgb else 0)
+            topic_b = topic_name.encode('utf-8')
+            frame_b = frame_id.encode('utf-8')
+
+            header = struct.pack(
+                '<3sBBIII',
+                b'PC2', 1, flags,
+                len(topic_b), len(frame_b), n_out)
+
+            parts = [header, topic_b, frame_b, xyz.tobytes(), color_f32.tobytes()]
+            if has_rgb:
+                parts.append(rgb_u32.tobytes())
+            return b''.join(parts)
+
+        except Exception as e:
+            self._node.get_logger().error(f'[PC2WS] _build_payload error: {e}')
+            return None
+
+
 class WebGUINode(Node):
     def __init__(self):
         super().__init__('web_gui_node')
@@ -76,6 +1254,8 @@ class WebGUINode(Node):
         self.recorder_bag_name = ""
         self.recorder_recording = False
         self.recorder_process = None
+        self.recorder_ros1_thread = None   # Ros1BagRecorderThread 인스턴스
+        self.recorder_mode = 'ros2'        # 'ros2' | 'ros1'
         self.bag_topics = []
         self.bag_selected_topics = []
         self.bag_duration = 0.0  # Duration in seconds
@@ -100,32 +1280,26 @@ class WebGUINode(Node):
         self.player_processed_stamp = 0
         self.player_prev_time = 0
 
-        # File Player ROS2 Publishers
-        self.pose_pub = self.create_publisher(PointStamped, '/pose/position', 1000)
-        self.imu_pub = self.create_publisher(Imu, '/imu', 1000)
-        self.clock_pub = self.create_publisher(Clock, '/clock', 1)
+        # ROS1 Bag Player state
+        self.ros1_player_thread = None
+        self.ros1_player_rate = 1.0
 
-        # LiDAR and Camera publishers
-        if LIVOX_AVAILABLE:
-            self.livox_pub = self.create_publisher(CustomMsg, '/livox/lidar', 1000)
-        else:
-            self.livox_pub = None
-
-        self.cam_pub = self.create_publisher(Image, '/camera/color/image', 1000)
-        self.cam_info_pub = self.create_publisher(CameraInfo, '/camera/color/camera_info', 1000)
+        # File Player ROS2 Publishers/Subscribers — lazy initialized on load_player_data()
+        # (not created at startup to avoid polluting the topic list before file player is used)
+        self.pose_pub = None
+        self.imu_pub = None
+        self.clock_pub = None
+        self.livox_pub = None
+        self.cam_pub = None
+        self.cam_info_pub = None
+        self.start_sub = None
+        self.stop_sub = None
 
         # CV Bridge for image conversion
         self.cv_bridge = CvBridge()
 
-        # File Player ROS2 Subscribers
-        self.start_sub = self.create_subscription(
-            Bool, '/file_player_start', self.file_player_start_callback, 1)
-        self.stop_sub = self.create_subscription(
-            Bool, '/file_player_stop', self.file_player_stop_callback, 1)
-
-        # SLAM Subscribers
-        self.slam_complete_sub = self.create_subscription(
-            Bool, '/lt_mapping_complete', self.slam_complete_callback, 10)
+        # SLAM Subscribers — lazy initialized on start_slam_mapping()
+        self.slam_complete_sub = None
 
         # File Player data structures
         self.data_stamp = {}
@@ -148,6 +1322,11 @@ class WebGUINode(Node):
 
         # Setup reusable environment for subprocess calls
         self._setup_ros_environment()
+
+        # ── PC2 Binary WebSocket 서버 (포트 8081) ─────────────────────────────
+        # rosbridge를 우회해 PointCloud2를 Python에서 직접 처리 후 binary 전송
+        self.pc2_ws_server = PC2WebSocketServer(self, port=8081)
+        self.pc2_ws_server.start()
 
         self.get_logger().info('Web GUI Node initialized with full ROS2 integration')
 
@@ -241,6 +1420,45 @@ class WebGUINode(Node):
                 else:
                     self._ros_env['XAUTHORITY'] = os.path.expanduser('~/.Xauthority')
                     self.get_logger().warn('XAUTHORITY not found, using ~/.Xauthority (may not exist)')
+
+    def _init_file_player_ros_interfaces(self):
+        """Lazy initialization of File Player ROS2 publishers and subscribers.
+
+        Called once when file player data is first loaded via load_player_data().
+        This prevents File Player topics from appearing in the topic list at startup.
+        """
+        if self.imu_pub is not None:
+            return  # Already initialized
+
+        self.pose_pub = self.create_publisher(PointStamped, '/pose/position', 1000)
+        self.imu_pub = self.create_publisher(Imu, '/imu', 1000)
+        self.clock_pub = self.create_publisher(Clock, '/clock', 1)
+
+        if LIVOX_AVAILABLE:
+            self.livox_pub = self.create_publisher(CustomMsg, '/livox/lidar', 1000)
+
+        self.cam_pub = self.create_publisher(Image, '/camera/color/image', 1000)
+        self.cam_info_pub = self.create_publisher(CameraInfo, '/camera/color/camera_info', 1000)
+
+        self.start_sub = self.create_subscription(
+            Bool, '/file_player_start', self.file_player_start_callback, 1)
+        self.stop_sub = self.create_subscription(
+            Bool, '/file_player_stop', self.file_player_stop_callback, 1)
+
+        self.get_logger().info('File Player ROS2 publishers/subscribers initialized')
+
+    def _init_slam_subscriber(self):
+        """Lazy initialization of SLAM-related subscribers.
+
+        Called once when SLAM mapping is first started via start_slam_mapping().
+        This prevents /lt_mapping_complete from appearing in the topic list at startup.
+        """
+        if self.slam_complete_sub is not None:
+            return  # Already initialized
+
+        self.slam_complete_sub = self.create_subscription(
+            Bool, '/lt_mapping_complete', self.slam_complete_callback, 10)
+        self.get_logger().info('SLAM subscriber (/lt_mapping_complete) initialized')
 
     def _read_process_output(self, process, output_lock, output_attr_name, max_lines=10):
         """
@@ -392,6 +1610,9 @@ class WebGUINode(Node):
     def start_slam_mapping(self):
         """Start FAST_LIO mapping"""
         self.get_logger().info('=== Starting FAST_LIO SLAM Mapping ===')
+
+        # Ensure SLAM subscriber is ready before launching the process
+        self._init_slam_subscriber()
 
         # Kill any existing SLAM processes first
         self.kill_slam_processes()
@@ -671,10 +1892,14 @@ class WebGUINode(Node):
         return True
 
     def get_recorder_topics(self):
-        """Get list of current ROS2 topics"""
+        """Get list of current ROS2 topics with type information.
+
+        Returns:
+            list[dict]: [{'name': '/topic', 'type': 'pkg/msg/Type'}, ...]
+        """
         try:
-            # Use cached ROS environment
-            cmd = ['bash', '-c', 'source /opt/ros/jazzy/setup.bash && ros2 topic list']
+            # ros2 topic list -t: 타입 정보 포함 출력 (예: /topic [sensor_msgs/msg/PointCloud2])
+            cmd = ['bash', '-c', 'source /opt/ros/jazzy/setup.bash && ros2 topic list -t']
             result = subprocess.run(
                 cmd,
                 env=self._ros_env,
@@ -684,8 +1909,20 @@ class WebGUINode(Node):
             )
 
             if result.returncode == 0:
-                topics = [t.strip() for t in result.stdout.strip().split('\n') if t.strip()]
-                self.get_logger().info(f'Found {len(topics)} ROS2 topics: {topics}')
+                topics = []
+                for line in result.stdout.strip().split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # ros2 topic list -t 출력 형식: /topic_name [pkg/msg/Type]
+                    if ' [' in line and line.endswith(']'):
+                        name, rest = line.split(' [', 1)
+                        topic_type = rest[:-1].strip()  # trailing ']' 제거
+                        topics.append({'name': name.strip(), 'type': topic_type})
+                    else:
+                        # 타입 정보 없는 경우 fallback
+                        topics.append({'name': line, 'type': ''})
+                self.get_logger().info(f'Found {len(topics)} ROS2 topics')
                 return topics
             else:
                 self.get_logger().error(f'Failed to get ROS2 topics. Return code: {result.returncode}')
@@ -695,11 +1932,24 @@ class WebGUINode(Node):
             self.get_logger().error(f'Error getting topics: {str(e)}')
             return []
 
-    def record_bag(self, topics):
-        """Start or stop bag recording"""
+    def record_bag(self, topics, save_as_ros1=False):
+        """Start or stop bag recording.
+
+        Args:
+            topics: 녹화할 토픽 목록. 문자열 리스트 또는 {'name', 'type'} dict 리스트.
+            save_as_ros1 (bool): True이면 Ros1BagRecorderThread로 .bag 직접 기록,
+                                 False이면 기존 ros2 bag record subprocess 사용.
+
+        Returns:
+            bool: 성공 여부
+        """
         if self.recorder_recording:
-            # Stop recording
-            if self.recorder_process:
+            # Stop recording — ros1 thread 또는 ros2 subprocess 정리
+            if self.recorder_ros1_thread:
+                self.get_logger().info('Stopping ROS1 bag recording...')
+                self.recorder_ros1_thread.stop()
+                self.recorder_ros1_thread = None
+            elif self.recorder_process:
                 self.get_logger().info('Stopping bag recording...')
                 self.recorder_process.terminate()
                 try:
@@ -708,6 +1958,7 @@ class WebGUINode(Node):
                     self.recorder_process.kill()
                 self.recorder_process = None
             self.recorder_recording = False
+            self.recorder_mode = 'ros2'
             return True
         else:
             # Start recording
@@ -719,39 +1970,81 @@ class WebGUINode(Node):
                 self.get_logger().error('No topics selected')
                 return False
 
-            # Build ros2 bag record command
-            # ros2 bag record will automatically create the directory
-            output_dir = f'/home/kkw/dataset/{self.recorder_bag_name}'
-            cmd = [
-                'bash', '-c',
-                f'cd /home/kkw/dataset && '
-                f'source /opt/ros/jazzy/setup.bash && '
-                f'ros2 bag record -o {self.recorder_bag_name} ' + ' '.join(topics)
-            ]
+            # topics는 문자열 리스트 또는 {name, type} dict 리스트 모두 지원
+            topic_names = []
+            topic_type_map = {}
+            for t in topics:
+                if isinstance(t, dict):
+                    name = t.get('name', '')
+                    tp = t.get('type', '')
+                    if name:
+                        topic_names.append(name)
+                        if tp:
+                            topic_type_map[name] = tp
+                elif isinstance(t, str) and t:
+                    topic_names.append(t)
 
-            self.get_logger().info(f'Starting bag recording in: {output_dir}')
-            self.get_logger().info(f'Recording topics: {", ".join(topics)}')
-
-            try:
-                self.recorder_process = subprocess.Popen(
-                    cmd,
-                    env=self._ros_env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True
-                )
-                self.recorder_recording = True
-                self.get_logger().info('Bag recording started')
-                return True
-            except Exception as e:
-                self.get_logger().error(f'Failed to start recording: {str(e)}')
+            if not topic_names:
+                self.get_logger().error('No valid topics selected')
                 return False
+
+            if save_as_ros1:
+                # ROS1 .bag 직접 녹화 (Ros1BagRecorderThread)
+                if not topic_type_map:
+                    self.get_logger().error('Topic type information required for ROS1 recording')
+                    return False
+
+                output_path = f'/home/kkw/dataset/{self.recorder_bag_name}.bag'
+                self.get_logger().info(f'Starting ROS1 bag recording to: {output_path}')
+                self.get_logger().info(f'Recording topics: {", ".join(topic_names)}')
+
+                try:
+                    self.recorder_ros1_thread = Ros1BagRecorderThread(
+                        output_path, topic_type_map, self
+                    )
+                    self.recorder_ros1_thread.start()
+                    self.recorder_recording = True
+                    self.recorder_mode = 'ros1'
+                    self.get_logger().info('ROS1 bag recording started')
+                    return True
+                except Exception as e:
+                    self.get_logger().error(f'Failed to start ROS1 recording: {str(e)}')
+                    return False
+            else:
+                # 기존 ros2 bag record subprocess
+                output_dir = f'/home/kkw/dataset/{self.recorder_bag_name}'
+                cmd = [
+                    'bash', '-c',
+                    f'cd /home/kkw/dataset && '
+                    f'source /opt/ros/jazzy/setup.bash && '
+                    f'ros2 bag record -o {self.recorder_bag_name} ' + ' '.join(topic_names)
+                ]
+
+                self.get_logger().info(f'Starting bag recording in: {output_dir}')
+                self.get_logger().info(f'Recording topics: {", ".join(topic_names)}')
+
+                try:
+                    self.recorder_process = subprocess.Popen(
+                        cmd,
+                        env=self._ros_env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        start_new_session=True
+                    )
+                    self.recorder_recording = True
+                    self.recorder_mode = 'ros2'
+                    self.get_logger().info('Bag recording started')
+                    return True
+                except Exception as e:
+                    self.get_logger().error(f'Failed to start recording: {str(e)}')
+                    return False
 
     def get_recorder_state(self):
         """Get current recorder state"""
         return {
             'bag_name': self.recorder_bag_name,
-            'recording': self.recorder_recording
+            'recording': self.recorder_recording,
+            'mode': self.recorder_mode,  # 'ros2' | 'ros1'
         }
 
     # File Player Functions
@@ -851,6 +2144,8 @@ class WebGUINode(Node):
                 self.get_logger().warn('Camera directory not found (expected: {}/Camera/)'.format(path))
 
             self.player_data_loaded = True
+            # Lazy-initialize File Player ROS2 publishers/subscribers on first load
+            self._init_file_player_ros_interfaces()
             return True
 
         except Exception as e:
@@ -1034,10 +2329,18 @@ class WebGUINode(Node):
         return False
 
     def get_bag_info(self):
-        """Get bag file info including topics and duration"""
+        """Get bag file info including topics and duration.
+
+        Branches based on file extension:
+        - .bag  → ROS1 bag (parsed via rosbags library)
+        - other → ROS2 bag (parsed via ros2 bag info command)
+        """
         if not self.bag_path:
             self.get_logger().warn('No bag file loaded.')
-            return {'topics': [], 'duration': 0.0}
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros2'}
+
+        if self.bag_path.endswith('.bag'):
+            return self._get_ros1_bag_info()
 
         try:
             # Use ros2 bag info to get topic list and duration
@@ -1046,7 +2349,7 @@ class WebGUINode(Node):
 
             if result.returncode != 0:
                 self.get_logger().error(f'Failed to get bag info: {result.stderr}')
-                return {'topics': [], 'duration': 0.0}
+                return {'topics': [], 'duration': 0.0, 'bag_type': 'ros2'}
 
             # Parse output to extract topics and duration
             topics = []
@@ -1086,19 +2389,315 @@ class WebGUINode(Node):
             self.get_logger().info(f'Bag info: {len(topics)} topics, duration: {duration}s')
             self.get_logger().info(f'Topics: {topics}')
 
-            return {'topics': topics, 'duration': duration}
+            return {'topics': topics, 'duration': duration, 'bag_type': 'ros2'}
 
         except subprocess.TimeoutExpired:
             self.get_logger().error('Timeout while getting bag info')
-            return {'topics': [], 'duration': 0.0}
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros2'}
         except Exception as e:
             self.get_logger().error(f'Failed to get bag info: {str(e)}')
             import traceback
             traceback.print_exc()
-            return {'topics': [], 'duration': 0.0}
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros2'}
 
-    def bag_play_toggle(self, selected_topics=None, start_offset=None):
-        """Toggle bag play/stop with optional topic selection and start offset"""
+    def _get_ros1_bag_info(self):
+        """Get ROS1 .bag file info using the rosbags library.
+
+        각 토픽에 대해 ROS2 Python 패키지로 import 가능 여부를 검사하여
+        publishable 필드를 포함한 딕셔너리 목록을 반환합니다.
+
+        Returns:
+            dict: {
+                'topics': list[dict],  # {name, type, publishable} 형태
+                'duration': float,
+                'bag_type': 'ros1'
+            }
+        """
+        import importlib
+
+        def _check_publishable(ros1_type_str):
+            """importlib으로 ROS2 메시지 클래스 존재 여부 검사.
+
+            rosbags 라이브러리는 ROS1 bag에서도 ROS2 포맷으로 타입을 반환합니다.
+            - ROS1 포맷: 'sensor_msgs/Image'       (parts 2개)
+            - ROS2 포맷: 'sensor_msgs/msg/Image'   (parts 3개)
+            두 포맷을 모두 처리합니다.
+
+            Args:
+                ros1_type_str (str): 예) 'sensor_msgs/msg/Image' 또는 'sensor_msgs/Image'
+
+            Returns:
+                bool: True if importable and class exists
+            """
+            try:
+                parts = ros1_type_str.split('/')
+                if len(parts) == 2:
+                    # ROS1 포맷: 'sensor_msgs/Image'
+                    pkg, msg_class = parts[0], parts[1]
+                elif len(parts) == 3 and parts[1] == 'msg':
+                    # ROS2 포맷: 'sensor_msgs/msg/Image'
+                    pkg, msg_class = parts[0], parts[2]
+                else:
+                    return False
+                mod = importlib.import_module(f'{pkg}.msg')
+                return hasattr(mod, msg_class)
+            except Exception:
+                return False
+
+        try:
+            from rosbags.rosbag1 import Reader
+            with Reader(self.bag_path) as reader:
+                # {topic_name: TopicInfo}
+                raw_topics = reader.topics
+                duration = (reader.end_time - reader.start_time) / 1e9
+
+            # publishable 여부 포함 딕셔너리 목록 생성
+            topic_dicts = []
+            topic_names = []  # 기존 bag_topics 호환용
+            for topic_name, topic_info in raw_topics.items():
+                ros1_type = topic_info.msgtype
+                publishable = _check_publishable(ros1_type)
+                topic_dicts.append({
+                    'name': topic_name,
+                    'type': ros1_type,
+                    'publishable': publishable,
+                })
+                topic_names.append(topic_name)
+
+            # 기존 호환 상태 변수 업데이트 (이름 목록)
+            self.bag_topics = topic_names
+            self.bag_duration = duration
+
+            publishable_count = sum(1 for t in topic_dicts if t['publishable'])
+            self.get_logger().info(
+                f'ROS1 bag info: {len(topic_dicts)} topics '
+                f'({publishable_count} publishable), duration: {duration:.3f}s'
+            )
+            for t in topic_dicts:
+                flag = '✓' if t['publishable'] else '✗'
+                self.get_logger().info(f'  [{flag}] {t["name"]} ({t["type"]})')
+
+            return {'topics': topic_dicts, 'duration': duration, 'bag_type': 'ros1'}
+
+        except ImportError:
+            self.get_logger().error(
+                'rosbags library not found. Install with: pip install rosbags'
+            )
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros1'}
+        except Exception as e:
+            self.get_logger().error(f'Failed to read ROS1 bag: {str(e)}')
+            import traceback
+            traceback.print_exc()
+            return {'topics': [], 'duration': 0.0, 'bag_type': 'ros1'}
+
+    # ------------------------------------------------------------------
+    # ROS1 Bag Player — 상태 메서드
+    # ------------------------------------------------------------------
+    def start_ros1_playback(self, bag_path, topics, rate):
+        """ROS1 bag 재생 시작.
+
+        기존 스레드가 있으면 중지한 후 새 스레드를 시작합니다.
+
+        Args:
+            bag_path (str): ROS1 .bag 파일 경로
+            topics (list[str]): publish할 토픽 목록 (빈 리스트 = 전체)
+            rate (float): 재생 속도 배율
+
+        Returns:
+            bool: True if successfully started
+        """
+        # 기존 스레드 정리
+        self.stop_ros1_playback()
+
+        self.ros1_player_rate = rate
+        self.ros1_player_thread = Ros1BagPlayerThread(bag_path, topics, rate, self)
+        self.ros1_player_thread.start()
+        self.get_logger().info(
+            f'[ROS1 Player] Started: {bag_path}, topics={topics or "ALL"}, rate={rate}x'
+        )
+        return True
+
+    def pause_ros1_playback(self):
+        """ROS1 bag 재생 일시정지/재개 토글.
+
+        Returns:
+            dict: {'paused': bool}
+        """
+        thread = self.ros1_player_thread
+        if thread is None or not thread.is_alive():
+            return {'paused': False}
+
+        status = thread.get_status()
+        if status['status'] == 'paused':
+            thread.resume()
+            self.get_logger().info('[ROS1 Player] Resumed')
+            return {'paused': False}
+        else:
+            thread.pause()
+            self.get_logger().info('[ROS1 Player] Paused')
+            return {'paused': True}
+
+    def stop_ros1_playback(self):
+        """ROS1 bag 재생 중지 및 스레드 join.
+
+        Returns:
+            bool: True
+        """
+        thread = self.ros1_player_thread
+        if thread is not None and thread.is_alive():
+            thread.stop()
+            thread.join(timeout=5.0)
+            self.get_logger().info('[ROS1 Player] Stopped')
+        self.ros1_player_thread = None
+        return True
+
+    def get_ros1_playback_status(self):
+        """현재 ROS1 재생 상태 반환.
+
+        Returns:
+            dict: {'status': str, 'elapsed_sec': float, 'total_sec': float}
+        """
+        thread = self.ros1_player_thread
+        if thread is None or not thread.is_alive():
+            return {'status': 'stopped', 'elapsed_sec': 0.0, 'total_sec': 0.0}
+        return thread.get_status()
+
+    def convert_ros1_bag(self):
+        """Convert ROS1 .bag file to ROS2 bag format using rosbags-convert.
+
+        Output directory: {bag_filename_without_ext}/ (same parent directory, no _ros2 suffix)
+
+        Returns:
+            dict: {'success': bool, 'output_path': str, 'error': str (on failure)}
+        """
+        if not self.bag_path:
+            return {'success': False, 'error': 'No bag file loaded'}
+
+        if not self.bag_path.endswith('.bag'):
+            return {'success': False, 'error': 'Not a ROS1 .bag file'}
+
+        try:
+            import os
+            import shutil
+            bag_dir = os.path.dirname(self.bag_path)
+            bag_name = os.path.splitext(os.path.basename(self.bag_path))[0]
+            output_dir = os.path.join(bag_dir, bag_name)
+
+            # 이미 변환된 디렉토리가 존재하면 삭제 후 재변환
+            if os.path.isdir(output_dir):
+                self.get_logger().info(f'Removing existing output dir: {output_dir}')
+                shutil.rmtree(output_dir)
+
+            self.get_logger().info(
+                f'Converting ROS1 bag: {self.bag_path} -> {output_dir}'
+            )
+
+            # rosbags-convert 경로 탐색 (pip user install 경로 포함)
+            convert_cmd = shutil.which('rosbags-convert') or '/home/kkw/.local/bin/rosbags-convert'
+            if not os.path.isfile(convert_cmd):
+                self.get_logger().error('rosbags-convert not found. Install with: pip install rosbags')
+                return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
+
+            cmd = [convert_cmd, '--src', self.bag_path, '--dst', output_dir]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # Allow up to 5 minutes for large bags
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                self.get_logger().error(f'rosbags-convert failed: {error_msg}')
+                return {'success': False, 'error': error_msg}
+
+            self.get_logger().info(f'ROS1 bag converted successfully: {output_dir}')
+            return {'success': True, 'output_path': output_dir}
+
+        except subprocess.TimeoutExpired:
+            self.get_logger().error('Timeout during ROS1 bag conversion')
+            return {'success': False, 'error': 'Conversion timed out'}
+        except FileNotFoundError:
+            self.get_logger().error('rosbags-convert not found. Install with: pip install rosbags')
+            return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
+        except Exception as e:
+            self.get_logger().error(f'Failed to convert ROS1 bag: {str(e)}')
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'error': str(e)}
+
+    def convert_ros2_to_ros1_bag(self):
+        """Convert ROS2 bag directory to ROS1 .bag format using rosbags-convert.
+
+        Output: {bag_dirname}.bag (같은 부모 디렉토리, .bag 확장자)
+        예: /path/to/my_bag/ → /path/to/my_bag.bag
+
+        Returns:
+            dict: {'success': bool, 'output_path': str, 'error': str (on failure)}
+        """
+        if not self.bag_path:
+            return {'success': False, 'error': 'No bag file loaded'}
+
+        if self.bag_path.endswith('.bag'):
+            return {'success': False, 'error': 'Current bag is already a ROS1 .bag file'}
+
+        try:
+            import os
+            import shutil
+            bag_dir = self.bag_path.rstrip('/')
+            output_path = bag_dir + '.bag'
+
+            # 이미 변환된 .bag 파일이 존재하면 삭제 후 재변환
+            if os.path.isfile(output_path):
+                self.get_logger().info(f'Removing existing output file: {output_path}')
+                os.remove(output_path)
+
+            self.get_logger().info(
+                f'Converting ROS2 bag: {self.bag_path} -> {output_path}'
+            )
+
+            # rosbags-convert 경로 탐색 (pip user install 경로 포함)
+            convert_cmd = shutil.which('rosbags-convert') or '/home/kkw/.local/bin/rosbags-convert'
+            if not os.path.isfile(convert_cmd):
+                self.get_logger().error('rosbags-convert not found. Install with: pip install rosbags')
+                return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
+
+            cmd = [convert_cmd, '--src', self.bag_path, '--dst', output_path]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # Allow up to 5 minutes for large bags
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                self.get_logger().error(f'rosbags-convert failed: {error_msg}')
+                return {'success': False, 'error': error_msg}
+
+            self.get_logger().info(f'ROS2 bag converted to ROS1 successfully: {output_path}')
+            return {'success': True, 'output_path': output_path}
+
+        except subprocess.TimeoutExpired:
+            self.get_logger().error('Timeout during ROS2→ROS1 bag conversion')
+            return {'success': False, 'error': 'Conversion timed out'}
+        except FileNotFoundError:
+            self.get_logger().error('rosbags-convert not found. Install with: pip install rosbags')
+            return {'success': False, 'error': 'rosbags-convert not found. Run: pip install rosbags'}
+        except Exception as e:
+            self.get_logger().error(f'Failed to convert ROS2 bag to ROS1: {str(e)}')
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'error': str(e)}
+
+    def bag_play_toggle(self, selected_topics=None, start_offset=None, rate=1.0):
+        """Toggle bag play/stop with optional topic selection, start offset, and playback rate.
+
+        Args:
+            selected_topics (list[str]|None): 재생할 토픽 목록 (None = 전체)
+            start_offset (float|None): 시작 오프셋 (초)
+            rate (float): 재생 속도 배율 (기본 1.0, 예: 0.5 = 절반 속도)
+        """
         if not self.bag_path:
             self.get_logger().warn('No bag file loaded. Please load a bag file first.')
             return False
@@ -1133,6 +2732,12 @@ class WebGUINode(Node):
                 else:
                     self.bag_start_offset = 0.0
                     self.bag_current_time = 0.0
+
+                # Add playback rate (ros2 bag play --rate <rate>)
+                rate = max(0.01, float(rate))
+                if rate != 1.0:
+                    cmd.extend(['--rate', str(rate)])
+                self.get_logger().info(f'Playback rate: {rate}x')
 
                 # Add topic filter if topics are selected
                 if selected_topics and len(selected_topics) > 0:
@@ -1658,7 +3263,14 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             self.send_json_response(self.node.get_bag_state())
         elif parsed_path.path == '/api/bag/get_info':
             info = self.node.get_bag_info()
-            self.send_json_response({'success': True, 'topics': info['topics'], 'duration': info['duration']})
+            self.send_json_response({
+                'success': True,
+                'topics': info['topics'],
+                'duration': info['duration'],
+                'bag_type': info.get('bag_type', 'ros2')
+            })
+        elif parsed_path.path == '/api/bag/ros1_play_status':
+            self.send_json_response(self.node.get_ros1_playback_status())
         elif parsed_path.path == '/api/recorder/state':
             self.send_json_response(self.node.get_recorder_state())
         elif parsed_path.path == '/api/recorder/get_topics':
@@ -1678,22 +3290,32 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             domain_id = os.environ.get('ROS_DOMAIN_ID', '0')
             self.send_json_response({'success': True, 'domain_id': domain_id})
         elif parsed_path.path == '/api/plot/get_topics':
-            # Get ROS2 topics for Plot
-            import json
-            import traceback
+            # Get ROS2 topics for Plot (topic name strings, backward compatibility)
             try:
-                topics = self.node.get_recorder_topics()  # 재사용
-                # #region agent log
-                with open('/home/kkw/localization_ws/src/web_gui/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({'location':'web_server.py:1677','message':'API /api/plot/get_topics called','data':{'topicsCount':len(topics)},'timestamp':int(time.time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'C'})+'\n')
-                # #endregion
-                self.send_json_response({'success': True, 'topics': topics})
+                topic_infos = self.node.get_recorder_topics()
+                # get_recorder_topics() 반환값이 dict 리스트이므로 이름만 추출
+                topic_names = [
+                    t['name'] if isinstance(t, dict) else t
+                    for t in topic_infos
+                ]
+                self.send_json_response({'success': True, 'topics': topic_names})
             except Exception as e:
-                # #region agent log
-                with open('/home/kkw/localization_ws/src/web_gui/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({'location':'web_server.py:1682','message':'API /api/plot/get_topics error','data':{'error':str(e)},'timestamp':int(time.time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'C'})+'\n')
-                # #endregion
                 self.send_json_response({'success': False, 'error': str(e)})
+        elif parsed_path.path == '/api/viewer/pc2_topics':
+            # PC2 전용: 현재 활성화된 PointCloud2 토픽 목록
+            try:
+                all_topics = self.node.get_recorder_topics()
+                pc2_topics = [
+                    t['name'] if isinstance(t, dict) else t
+                    for t in all_topics
+                    if (t.get('type', '') if isinstance(t, dict) else '') in (
+                        'sensor_msgs/msg/PointCloud2',
+                        'sensor_msgs/PointCloud2',
+                    )
+                ]
+                self.send_json_response({'success': True, 'topics': pc2_topics})
+            except Exception as e:
+                self.send_json_response({'success': False, 'error': str(e), 'topics': []})
         else:
             # Serve static files
             if parsed_path.path == '/':
@@ -1750,12 +3372,14 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
                 'message': 'Bag path set',
                 'path': path,
                 'topics': info['topics'],
-                'duration': info['duration']
+                'duration': info['duration'],
+                'bag_type': info.get('bag_type', 'ros2')
             }
         elif parsed_path.path == '/api/bag/play':
             selected_topics = data.get('topics', [])
             start_offset = data.get('start_offset', None)
-            success = self.node.bag_play_toggle(selected_topics, start_offset)
+            rate = float(data.get('rate', 1.0))
+            success = self.node.bag_play_toggle(selected_topics, start_offset, rate)
             response = {'success': success, 'playing': self.node.bag_playing}
         elif parsed_path.path == '/api/bag/pause':
             success = self.node.bag_pause_toggle()
@@ -1765,6 +3389,26 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             position_ratio = position / 10000.0
             success = self.node.set_bag_position(position_ratio)
             response = {'success': success}
+        elif parsed_path.path == '/api/bag/convert_ros1':
+            result = self.node.convert_ros1_bag()
+            response = result
+        elif parsed_path.path == '/api/bag/convert_to_ros1':
+            result = self.node.convert_ros2_to_ros1_bag()
+            response = result
+
+        # ROS1 Bag Player API endpoints
+        elif parsed_path.path == '/api/bag/play_ros1':
+            bag_path = data.get('bag_path', self.node.bag_path)
+            topics = data.get('topics', [])
+            playback_rate = float(data.get('playback_rate', 1.0))
+            success = self.node.start_ros1_playback(bag_path, topics, playback_rate)
+            response = {'success': success, 'message': 'ROS1 playback started'}
+        elif parsed_path.path == '/api/bag/pause_ros1':
+            result = self.node.pause_ros1_playback()
+            response = {'success': True, 'paused': result.get('paused', False)}
+        elif parsed_path.path == '/api/bag/stop_ros1':
+            success = self.node.stop_ros1_playback()
+            response = {'success': success, 'message': 'ROS1 playback stopped'}
 
         # Bag Recorder API endpoints
         elif parsed_path.path == '/api/recorder/set_bag_name':
@@ -1773,8 +3417,13 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             response = {'success': success}
         elif parsed_path.path == '/api/recorder/record':
             topics = data.get('topics', [])
-            success = self.node.record_bag(topics)
-            response = {'success': success, 'recording': self.node.recorder_recording}
+            save_as_ros1 = data.get('save_as_ros1', False)
+            success = self.node.record_bag(topics, save_as_ros1=save_as_ros1)
+            response = {
+                'success': success,
+                'recording': self.node.recorder_recording,
+                'mode': self.node.recorder_mode,
+            }
 
         # SLAM Config API endpoints
         elif parsed_path.path == '/api/slam/load_config_file':
