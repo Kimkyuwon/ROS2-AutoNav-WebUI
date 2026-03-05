@@ -762,7 +762,7 @@ class PC2WebSocketServer:
     """
 
     MAX_POINTS   = 50_000   # 다운샘플링 상한
-    THROTTLE_SEC = 0.2      # 최대 5Hz (200 ms) — 10MB+ 메시지 대역폭 고려
+    THROTTLE_SEC = 0.05     # 최대 20Hz (50 ms) — binary 전송 ~600KB이므로 충분
 
     # PointCloud2 field datatype → numpy dtype 매핑
     _DTYPE = {

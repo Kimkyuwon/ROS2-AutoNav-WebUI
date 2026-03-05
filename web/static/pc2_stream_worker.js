@@ -146,54 +146,87 @@ function _sendSubscribe(topicName) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Alignment-safe TypedArray 생성 helpers
+// Float32Array / Uint32Array 는 byteOffset이 4의 배수여야 함.
+// topic/frame_id 길이 합에 따라 offset이 비정렬될 수 있으므로
+// 비정렬이면 Uint8Array로 복사 후 생성한다.
+// ─────────────────────────────────────────────────────────────────────────────
+function _safeFloat32(buf, byteOffset, elementCount) {
+    const byteLen = elementCount * 4;
+    if ((byteOffset & 3) === 0) {
+        return new Float32Array(buf, byteOffset, elementCount);
+    }
+    // byteOffset이 4의 배수 아님 → 복사 후 생성 (zero-copy 불가)
+    const tmp = new ArrayBuffer(byteLen);
+    new Uint8Array(tmp).set(new Uint8Array(buf, byteOffset, byteLen));
+    return new Float32Array(tmp);
+}
+
+function _safeUint32(buf, byteOffset, elementCount) {
+    const byteLen = elementCount * 4;
+    if ((byteOffset & 3) === 0) {
+        return new Uint32Array(buf, byteOffset, elementCount);
+    }
+    const tmp = new ArrayBuffer(byteLen);
+    new Uint8Array(tmp).set(new Uint8Array(buf, byteOffset, byteLen));
+    return new Uint32Array(tmp);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Binary 메시지 파싱
 // ─────────────────────────────────────────────────────────────────────────────
 function _handleBinaryMessage(evt) {
     const buf = evt.data;
-    if (!(buf instanceof ArrayBuffer) || buf.byteLength < 13) return;
+    if (!(buf instanceof ArrayBuffer) || buf.byteLength < 17) return;
 
-    const view = new DataView(buf);
+    try {
+        const view = new DataView(buf);
 
-    // magic 'PC2' 확인
-    if (view.getUint8(0) !== 0x50 ||   // 'P'
-        view.getUint8(1) !== 0x43 ||   // 'C'
-        view.getUint8(2) !== 0x32)     // '2'
-        return;
+        // magic 'PC2' 확인
+        if (view.getUint8(0) !== 0x50 ||   // 'P'
+            view.getUint8(1) !== 0x43 ||   // 'C'
+            view.getUint8(2) !== 0x32)     // '2'
+            return;
 
-    /* version */ view.getUint8(3);   // 현재 미사용 (version=1)
-    const flags        = view.getUint8(4);
-    const hasIntensity = (flags & 0x01) !== 0;
-    const hasRgb       = (flags & 0x02) !== 0;
+        /* version */ view.getUint8(3);   // 현재 미사용 (version=1)
+        const flags        = view.getUint8(4);
+        const hasIntensity = (flags & 0x01) !== 0;
+        const hasRgb       = (flags & 0x02) !== 0;
 
-    const topicLen  = view.getUint32(5,  true);
-    const frameLen  = view.getUint32(9,  true);
-    const count     = view.getUint32(13, true);
+        const topicLen  = view.getUint32(5,  true);
+        const frameLen  = view.getUint32(9,  true);
+        const count     = view.getUint32(13, true);
 
-    let offset = 17;
-    const topicName = _decoder.decode(new Uint8Array(buf, offset, topicLen));
-    offset += topicLen;
-    const frameId   = _decoder.decode(new Uint8Array(buf, offset, frameLen));
-    offset += frameLen;
+        let offset = 17;
+        const topicName = _decoder.decode(new Uint8Array(buf, offset, topicLen));
+        offset += topicLen;
+        const frameId   = _decoder.decode(new Uint8Array(buf, offset, frameLen));
+        offset += frameLen;
 
-    const entry = subscriptions.get(topicName);
-    if (!entry) return;
+        const entry = subscriptions.get(topicName);
+        if (!entry) return;
 
-    // XYZ float32 (Python 측에서 이미 다운샘플링 + NaN 필터 완료)
-    const xyzRaw = new Float32Array(buf, offset, count * 3);
-    offset += count * 12;
+        // XYZ float32 — alignment-safe 생성
+        // offset = 17 + topicLen + frameLen 이 4의 배수가 아닐 수 있음
+        const xyzRaw = _safeFloat32(buf, offset, count * 3);
+        offset += count * 12;
 
-    // colorField float32
-    const colorRaw = new Float32Array(buf, offset, count);
-    offset += count * 4;
+        // colorField float32
+        const colorRaw = _safeFloat32(buf, offset, count);
+        offset += count * 4;
 
-    // rgb uint32 (옵션)
-    let rgbRaw = null;
-    if (hasRgb) {
-        rgbRaw = new Uint32Array(buf, offset, count);
+        // rgb uint32 (옵션)
+        let rgbRaw = null;
+        if (hasRgb) {
+            rgbRaw = _safeUint32(buf, offset, count);
+        }
+
+        _colorAndPost(topicName, frameId, xyzRaw, colorRaw, rgbRaw,
+                      hasIntensity, hasRgb, count, entry);
+
+    } catch (e) {
+        console.error('[PC2Worker] _handleBinaryMessage error:', e);
     }
-
-    _colorAndPost(topicName, frameId, xyzRaw, colorRaw, rgbRaw,
-                  hasIntensity, hasRgb, count, entry);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
