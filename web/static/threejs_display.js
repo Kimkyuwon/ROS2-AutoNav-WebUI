@@ -284,7 +284,7 @@ const viewer3DState = {
     activeCamera: null,                // animate() 루프에서 사용하는 현재 활성 카메라
     cameraTargetFrame: '<Fixed Frame>', // Views 패널 Target Frame
     viewSettings: {
-        orbit:   { distance: 10, yaw: 0.785, pitch: 0.785, nearClip: 0.01 },
+        orbit:   { distance: 10, yaw: 0.785, pitch: 0.785, nearClip: 0.01, invertZ: false },
         topdown: { scale: 1.0, nearClip: 0.01 }
     },
 
@@ -509,9 +509,10 @@ function switchViewType(type) {
     const controls = viewer3DState.controls;
 
     if (type === 'orbit') {
-        // PerspectiveCamera 활성화 (Z-up 보장)
+        // PerspectiveCamera 활성화 (Z-up 보장, invertZ 설정 반영)
         viewer3DState.activeCamera = viewer3DState.camera;
-        viewer3DState.camera.up.set(0, 0, 1);
+        const orbitZUp = viewer3DState.viewSettings.orbit.invertZ ? -1 : 1;
+        viewer3DState.camera.up.set(0, 0, orbitZUp);
         if (controls) {
             // TopDown yaw 핸들러 해제 및 mouse button 복원
             if (viewer3DState.renderer) {
@@ -695,6 +696,7 @@ function renderViewsPanel() {
     let html = '';
 
     if (type === 'orbit') {
+        const invertZChecked = settings.invertZ ? ' checked' : '';
         html = `
             <div class="views-row">
                 <label>Distance:</label>
@@ -710,6 +712,13 @@ function renderViewsPanel() {
                 <label>Pitch:</label>
                 <input type="number" value="${settings.pitch || 0.785}" step="0.05"
                        onchange="onViewParamChange('orbit','pitch', parseFloat(this.value))">
+            </div>
+            <div class="views-row">
+                <label for="invert-z-checkbox">Invert Z Axis:</label>
+                <input type="checkbox" id="invert-z-checkbox"
+                       class="views-checkbox"${invertZChecked}
+                       onchange="onViewInvertZToggle()"
+                       title="Z축 반전 (RViz Invert Z Axis와 동일)">
             </div>`;
     } else if (type === 'topdown') {
         html = `
@@ -757,8 +766,9 @@ function resetViewCamera() {
     const type = viewer3DState.currentViewType;
     if (type === 'orbit') {
         // RViz Orbit 초기화 시점: 뒤쪽(-Y) + 위쪽(+Z)에서 원점을 비스듬히 바라봄
-        // camera.up=(0,0,1) → Z가 화면 위쪽, OrbitControls가 Z축 기준으로 orbit
-        viewer3DState.camera.up.set(0, 0, 1);
+        // camera.up Z 성분은 invertZ 설정을 반영
+        const resetZUp = viewer3DState.viewSettings.orbit.invertZ ? -1 : 1;
+        viewer3DState.camera.up.set(0, 0, resetZUp);
         viewer3DState.camera.position.set(0, -10, 7);
         viewer3DState.camera.lookAt(0, 0, 0);
         if (viewer3DState.controls) {
@@ -827,6 +837,31 @@ function onViewParamChange(viewType, param, value) {
     console.log('[Views] Param changed:', viewType, param, value);
 }
 window.onViewParamChange = onViewParamChange;
+
+/**
+ * onViewInvertZToggle()
+ * Orbit 뷰 전용: Z축 반전 토글 (RViz "Invert Z Axis"와 동일)
+ * camera.up의 Z 성분을 +1 / -1 로 반전하여 씬을 뒤집는다.
+ */
+function onViewInvertZToggle() {
+    const settings = viewer3DState.viewSettings.orbit;
+    settings.invertZ = !settings.invertZ;
+
+    // Orbit 뷰가 활성 상태일 때만 즉시 적용
+    if (viewer3DState.currentViewType === 'orbit' && viewer3DState.camera) {
+        const zUp = settings.invertZ ? -1 : 1;
+        viewer3DState.camera.up.set(0, 0, zUp);
+        if (viewer3DState.controls) {
+            viewer3DState.controls.update();
+        }
+        viewer3DState.needsRender = true;
+    }
+
+    // UI 토글 버튼 갱신
+    renderViewsPanel();
+    console.log('[Views] Invert Z Axis:', settings.invertZ);
+}
+window.onViewInvertZToggle = onViewInvertZToggle;
 
 function onWindowResize() {
     const container = getActiveDisplayContainer();
@@ -1153,9 +1188,9 @@ function parsePointCloud2(message, settings, prevMin, prevMax) {
             if (fv > newMax) newMax = fv;
 
             // ── HSV Rainbow 인라인 (s=1,v=1 특수화 → 객체/함수 생성 없음) ──
-            // t: 0.0(파랑) → 1.0(빨강)
+            // t: 0.0(빨강) → 1.0(보라)
             const t   = rangeSpan > 0 ? Math.min(1.0, Math.max(0.0, (fv - rangeMin) / rangeSpan)) : 0.5;
-            const hue = (1.0 - t) * 0.667;          // 파랑(0.667) → 빨강(0.0)
+            const hue = t * 0.75;                    // 빨강(0.0) → 보라(0.75)
             const h6  = hue * 6;
             const hi  = h6 | 0;                     // Math.floor 대체
             const f   = h6 - hi;
@@ -1305,9 +1340,9 @@ function parseLivoxCustomMsg(message, settings, prevMin, prevMax) {
                 if (fv < newMin) newMin = fv;
                 if (fv > newMax) newMax = fv;
             }
-            // HSV Rainbow 인라인 (파랑→빨강)
+            // HSV Rainbow 인라인 (빨강→보라)
             const t   = rangeSpan > 0 ? Math.min(1.0, Math.max(0.0, (fv - rangeMin) / rangeSpan)) : 0.5;
-            const hue = (1.0 - t) * 0.667;
+            const hue = t * 0.75;
             const h6  = hue * 6;
             const hi  = h6 | 0;
             const f   = h6 - hi;
@@ -1922,6 +1957,7 @@ function subscribeToLivox(topicName) {
         const pointSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
         const alpha     = settings.alpha     !== undefined ? settings.alpha     : 1.0;
         const decayTime = settings.decayTime !== undefined ? settings.decayTime : 0;
+        const pcStyle   = settings.style     || 'squares';  // RViz 스타일
 
         // ── Livox CustomMsg 고성능 파싱 (단일 패스, 재사용 버퍼) ──
         const { count, newMin, newMax } = parseLivoxCustomMsg(message, settings, adaptiveMin, adaptiveMax);
@@ -1932,42 +1968,94 @@ function subscribeToLivox(topicName) {
         if (isFinite(newMax)) adaptiveMax = newMax;
         frameCount++;
 
-        // ── Helper: PointsMaterial 생성 ──
+        // ── Helper: PointsMaterial 생성 (스타일 텍스처 적용) ──
         function makeMaterial(sz, a) {
             let renderSz = sz;
             if (viewer3DState.currentViewType === 'topdown') {
                 renderSz = Math.max(1, sz * _getTopdownPixelsPerUnit());
             }
+            const tex = _getStyleTexture(pcStyle);
             return new THREE.PointsMaterial({
-                size: renderSz,
-                vertexColors: true,
+                size:            renderSz,
+                vertexColors:    true,
                 sizeAttenuation: true,   // 항상 true 유지 (셰이더 재컴파일 방지)
-                transparent: a < 1.0,
-                opacity: a,
+                transparent:     a < 1.0,
+                opacity:         a,
+                map:             tex,
+                alphaTest:       tex ? 0.01 : 0,
+                depthWrite:      a >= 1.0,
             });
         }
 
+        // ── Helper: Boxes InstancedMesh 생성 (Livox용) ──
+        function makeBoxMesh(sz, a) {
+            const n = Math.min(count, PC2_BOX_MAX_INSTANCES);
+            const geo = new THREE.BoxGeometry(sz, sz, sz);
+            const mat = new THREE.MeshLambertMaterial({
+                transparent: a < 1.0,
+                opacity:     a,
+            });
+            const im = new THREE.InstancedMesh(geo, mat, n);
+            im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+            im.instanceColor.setUsage(THREE.DynamicDrawUsage);
+            const dummy  = new THREE.Object3D();
+            const colBuf = im.instanceColor.array;
+            for (let i = 0; i < n; i++) {
+                const pi = i * 3;
+                dummy.position.set(_pc2PosBuffer[pi], _pc2PosBuffer[pi + 1], _pc2PosBuffer[pi + 2]);
+                dummy.updateMatrix();
+                im.setMatrixAt(i, dummy.matrix);
+                colBuf[pi]     = _pc2ColBuffer[pi];
+                colBuf[pi + 1] = _pc2ColBuffer[pi + 1];
+                colBuf[pi + 2] = _pc2ColBuffer[pi + 2];
+            }
+            im.count = n;
+            im.instanceMatrix.needsUpdate = true;
+            im.instanceColor.needsUpdate  = true;
+            im._isBoxMesh = true;
+            return im;
+        }
+
+        // ── 스타일 전환 감지: boxes ↔ Points 계열 전환 시 기존 mesh 강제 제거 ──
+        const existMesh = viewer3DState.pointCloudMeshes[topicName];
+        if (existMesh) {
+            const wasBox   = existMesh._isBoxMesh === true;
+            const isNowBox = pcStyle === 'boxes';
+            if (wasBox !== isNowBox) {
+                pcFrameGroup.remove(existMesh);
+                existMesh.geometry.dispose();
+                existMesh.material.dispose();
+                viewer3DState.pointCloudMeshes[topicName] = null;
+            }
+        }
+
         if (decayTime > 0) {
-            // ═══ DECAY 모드: 매 프레임 독립 Points 객체 생성·누적 ═══
-            if (viewer3DState.pointCloudMeshes[topicName]) {
-                pcFrameGroup.remove(viewer3DState.pointCloudMeshes[topicName]);
-                viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
-                viewer3DState.pointCloudMeshes[topicName].material.dispose();
+            // ═══ DECAY 모드: 매 프레임 독립 Points/Boxes 객체 생성·누적 ═══
+            const curMesh = viewer3DState.pointCloudMeshes[topicName];
+            if (curMesh) {
+                pcFrameGroup.remove(curMesh);
+                curMesh.geometry.dispose();
+                curMesh.material.dispose();
                 viewer3DState.pointCloudMeshes[topicName] = null;
             }
 
-            const posArr = _pc2PosBuffer.subarray(0, count * 3).slice();
-            const colArr = _pc2ColBuffer.subarray(0, count * 3).slice();
+            let decayObj;
+            if (pcStyle === 'boxes') {
+                // Boxes 스타일: InstancedMesh를 프레임마다 생성하여 누적
+                decayObj = makeBoxMesh(pointSize, alpha);
+            } else {
+                const posArr = _pc2PosBuffer.subarray(0, count * 3).slice();
+                const colArr = _pc2ColBuffer.subarray(0, count * 3).slice();
+                const geo = new THREE.BufferGeometry();
+                geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+                geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+                decayObj = new THREE.Points(geo, makeMaterial(pointSize, alpha));
+            }
 
-            const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-            geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
-
-            const decayPoints = new THREE.Points(geo, makeMaterial(pointSize, alpha));
-            pcFrameGroup.add(decayPoints);
-
+            pcFrameGroup.add(decayObj);
             const arr = viewer3DState.decayObjects.get(topicName) || [];
-            arr.push({ points: decayPoints, time: performance.now() });
+            arr.push({ points: decayObj, time: performance.now() });
             viewer3DState.decayObjects.set(topicName, arr);
 
         } else {
@@ -1982,8 +2070,21 @@ function subscribeToLivox(topicName) {
                 viewer3DState.decayObjects.set(topicName, []);
             }
 
-            if (!mesh) {
-                // ── 첫 메시지: GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
+            const curMesh = viewer3DState.pointCloudMeshes[topicName];
+
+            if (pcStyle === 'boxes') {
+                // ── Boxes: 매 프레임 InstancedMesh 재생성 (수 변동 대응) ──
+                if (curMesh) {
+                    pcFrameGroup.remove(curMesh);
+                    curMesh.geometry.dispose();
+                    curMesh.material.dispose();
+                }
+                const newBox = makeBoxMesh(pointSize, alpha);
+                viewer3DState.pointCloudMeshes[topicName] = newBox;
+                pcFrameGroup.add(newBox);
+
+            } else if (!curMesh) {
+                // ── 첫 메시지(Points 계열): GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
                 const posArr = new Float32Array(PC2_MAX_POINTS * 3);
                 const colArr = new Float32Array(PC2_MAX_POINTS * 3);
                 posArr.set(_pc2PosBuffer.subarray(0, count * 3));
@@ -2003,11 +2104,11 @@ function subscribeToLivox(topicName) {
                 const newMesh = new THREE.Points(geometry, makeMaterial(pointSize, alpha));
                 viewer3DState.pointCloudMeshes[topicName] = newMesh;
                 pcFrameGroup.add(newMesh);
-                console.log('[Livox] Mesh added:', topicName, '|', count, 'pts');
+                console.log('[Livox] Mesh added:', topicName, '|', count, 'pts', '| style:', pcStyle);
 
             } else {
                 // ── 업데이트: 기존 GPU 버퍼를 in-place 갱신 (할당 0회) ──
-                const geometry = mesh.geometry;
+                const geometry = curMesh.geometry;
                 const posAttr  = geometry.attributes.position;
                 const colAttr  = geometry.attributes.color;
 
@@ -2017,10 +2118,11 @@ function subscribeToLivox(topicName) {
                 colAttr.needsUpdate = true;
                 geometry.setDrawRange(0, count);
 
-                mesh.material.size        = pointSize;
-                mesh.material.opacity     = alpha;
-                mesh.material.transparent = alpha < 1.0;
-                mesh.material.needsUpdate = true;
+                curMesh.material.size        = pointSize;
+                curMesh.material.opacity     = alpha;
+                curMesh.material.transparent = alpha < 1.0;
+                curMesh.material.depthWrite  = alpha >= 1.0;
+                curMesh.material.needsUpdate = true;
 
                 if (frameCount % 30 === 0) geometry.computeBoundingSphere();
             }
@@ -3438,6 +3540,35 @@ function renderDisplayPanel() {
             const settingsDiv = document.createElement('div');
             settingsDiv.className = 'display-topic-item-settings';
 
+            // ── Style 선택 (RViz 스타일) ──
+            const pcStyle = settings.style || 'squares';
+
+            const styleLabel = document.createElement('label');
+            styleLabel.textContent = 'Style';
+
+            const styleSelect = document.createElement('select');
+            styleSelect.title = '렌더링 스타일 선택 (RViz 스타일)';
+            [
+                { value: 'points',       label: 'Points' },
+                { value: 'squares',      label: 'Squares' },
+                { value: 'flat_squares', label: 'Flat Squares' },
+                { value: 'spheres',      label: 'Spheres' },
+                { value: 'boxes',        label: 'Boxes' },
+                { value: 'tiles',        label: 'Tiles' },
+            ].forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                if (opt.value === pcStyle) option.selected = true;
+                styleSelect.appendChild(option);
+            });
+            styleSelect.addEventListener('change', function() {
+                updatePointStyle(topicName, this.value);
+            });
+
+            settingsDiv.appendChild(styleLabel);
+            settingsDiv.appendChild(styleSelect);
+
             // ── 색상 모드 선택 (Rainbow / By Line / Solid) ──
             const colorModeLabel = document.createElement('label');
             colorModeLabel.textContent = '색상 모드';
@@ -3532,7 +3663,9 @@ function renderDisplayPanel() {
             // ── Tag Filter 체크박스 (Livox 전용: 노이즈 제외) ──
             const tagFilterRow = document.createElement('div');
             tagFilterRow.className = 'pc2-setting-row';
+            tagFilterRow.style.flexDirection = 'row';
             tagFilterRow.style.alignItems = 'center';
+            tagFilterRow.style.justifyContent = 'flex-start';
             tagFilterRow.style.gap = '6px';
 
             const tagFilterCheckbox = document.createElement('input');
@@ -3546,7 +3679,7 @@ function renderDisplayPanel() {
 
             const tagFilterLabel = document.createElement('label');
             tagFilterLabel.htmlFor     = tagFilterCheckbox.id;
-            tagFilterLabel.textContent = '노이즈 제외 (tag bit[3:2])';
+            tagFilterLabel.textContent = '노이즈 제외';
             tagFilterLabel.style.cursor = 'pointer';
 
             tagFilterRow.appendChild(tagFilterCheckbox);
