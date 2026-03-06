@@ -712,7 +712,8 @@ async function updateBagState() {
 }
 
 /**
- * ROS1 재생 속도 슬라이더 변경 핸들러
+ * 재생 속도 슬라이더 변경 핸들러 (ROS1/ROS2 공용)
+ * 재생 중이거나 일시정지 중이면 즉시 API를 호출해 배속을 반영한다.
  * @param {string|number} sliderValue - 슬라이더 값 (1~40, 실제 속도 = value / 10)
  */
 function updatePlaybackRate(sliderValue) {
@@ -721,6 +722,36 @@ function updatePlaybackRate(sliderValue) {
     const label = domCache.get('playback-rate-label');
     if (label) {
         label.textContent = `${rate.toFixed(1)}x`;
+    }
+
+    // 재생 중(Play → Stop 버튼) 또는 일시정지 중이면 즉시 배속 변경 API 호출
+    const playButton = domCache.get('bag-play-button');
+    const pauseButton = domCache.get('bag-pause-button');
+    const isActive = playButton && playButton.textContent === 'Stop';
+    const isPaused = pauseButton && pauseButton.textContent === 'Resume';
+
+    if (isActive || isPaused) {
+        applyPlaybackRateLive(rate);
+    }
+}
+
+/**
+ * 재생/일시정지 중 배속을 서버에 즉시 반영
+ * @param {number} rate - 재생 속도 배율
+ */
+async function applyPlaybackRateLive(rate) {
+    try {
+        const result = await apiCall('/api/bag/set_rate', {
+            rate: rate,
+            bag_type: bagPlayerState.bagType  // 'ros1' or 'ros2'
+        });
+        if (result.success) {
+            console.log(`[Playback Rate] Applied ${rate.toFixed(1)}x live (${bagPlayerState.bagType})`);
+        } else {
+            console.warn('[Playback Rate] Live rate change failed:', result.message);
+        }
+    } catch (e) {
+        console.warn('[Playback Rate] Live rate change error:', e);
     }
 }
 

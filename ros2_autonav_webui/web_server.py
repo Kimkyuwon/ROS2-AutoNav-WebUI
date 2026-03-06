@@ -123,6 +123,15 @@ class Ros1BagPlayerThread(threading.Thread):
         with self._lock:
             self._status = 'stopped'
 
+    def set_rate(self, new_rate: float):
+        """재생 중 속도 배율 변경 (즉시 반영).
+
+        Args:
+            new_rate (float): 새 속도 배율 (예: 2.0 = 2배속). 0.01 미만은 0.01로 클램프.
+        """
+        with self._lock:
+            self._playback_rate = max(new_rate, 0.01)
+
     def get_status(self):
         """현재 상태 딕셔너리 반환"""
         with self._lock:
@@ -1249,6 +1258,7 @@ class WebGUINode(Node):
         self.bag_playing = False
         self.bag_paused = False
         self.bag_process = None
+        self.bag_playback_rate = 1.0  # 현재 설정된 재생 속도 배율
 
         # Bag Recorder state
         self.recorder_bag_name = ""
@@ -2735,6 +2745,7 @@ class WebGUINode(Node):
 
                 # Add playback rate (ros2 bag play --rate <rate>)
                 rate = max(0.01, float(rate))
+                self.bag_playback_rate = rate  # 현재 속도 저장
                 if rate != 1.0:
                     cmd.extend(['--rate', str(rate)])
                 self.get_logger().info(f'Playback rate: {rate}x')
@@ -2815,8 +2826,8 @@ class WebGUINode(Node):
             # Stop current playback
             self.bag_play_toggle()
             time.sleep(0.1)
-            # Restart from new position
-            self.bag_play_toggle(self.bag_selected_topics, target_time)
+            # Restart from new position (현재 속도 유지)
+            self.bag_play_toggle(self.bag_selected_topics, target_time, self.bag_playback_rate)
         else:
             # Just update the position
             self.bag_current_time = target_time
@@ -2824,6 +2835,97 @@ class WebGUINode(Node):
 
         self.get_logger().info(f'Set bag position to {target_time}s ({position_ratio*100}%)')
         return True
+
+    def set_bag_playback_rate(self, rate: float) -> dict:
+        """ROS2 bag 재생 중 속도 변경.
+
+        재생 중이면 /rosbag2_player/set_rate 서비스를 호출해 즉시 반영.
+        정지/일시정지 상태면 self.bag_playback_rate만 갱신하여 다음 재생에 적용.
+
+        Args:
+            rate (float): 새 속도 배율 (> 0)
+
+        Returns:
+            dict: {'success': bool, 'rate': float, 'message': str}
+        """
+        rate = max(0.01, float(rate))
+        self.bag_playback_rate = rate
+
+        if not self.bag_playing or not self.bag_process:
+            # 재생 중이 아님 – 다음 Play 시 적용
+            self.get_logger().info(f'[bag set_rate] Stored rate={rate}x (not playing)')
+            return {'success': True, 'rate': rate, 'message': 'Rate stored for next playback'}
+
+        # 재생 중: /rosbag2_player/set_rate 서비스 호출
+        try:
+            from rosbag2_interfaces.srv import SetRate
+        except ImportError:
+            self.get_logger().warn(
+                '[bag set_rate] rosbag2_interfaces not available; cannot change rate live'
+            )
+            return {
+                'success': False, 'rate': rate,
+                'message': 'rosbag2_interfaces not available'
+            }
+
+        client = self.create_client(SetRate, '/rosbag2_player/set_rate')
+        if not client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('[bag set_rate] /rosbag2_player/set_rate service not available')
+            return {
+                'success': False, 'rate': rate,
+                'message': '/rosbag2_player/set_rate service not available'
+            }
+
+        req = SetRate.Request()
+        req.rate = rate
+        future = client.call_async(req)
+
+        # 동기 대기 (폴링, 최대 2초)
+        # rclpy.spin()이 메인 스레드에서 실행 중이므로 HTTP 핸들러 스레드에서는
+        # future.done()을 폴링하는 방식으로 완료를 기다린다.
+        timeout = 2.0
+        start = time.time()
+        while not future.done() and time.time() - start < timeout:
+            time.sleep(0.01)
+
+        if not future.done():
+            self.get_logger().warn(f'[bag set_rate] Service call timed out for rate={rate}')
+            return {'success': False, 'rate': rate, 'message': 'Service call timed out'}
+
+        try:
+            result = future.result()
+            if result is not None and result.success:
+                self.get_logger().info(f'[bag set_rate] Rate changed to {rate}x via service')
+                return {'success': True, 'rate': rate, 'message': f'Rate set to {rate}x'}
+            else:
+                self.get_logger().warn(f'[bag set_rate] Service returned failure for rate={rate}')
+                return {'success': False, 'rate': rate, 'message': 'Service returned failure'}
+        except Exception as e:
+            self.get_logger().error(f'[bag set_rate] Service call failed: {e}')
+            return {'success': False, 'rate': rate, 'message': str(e)}
+
+    def set_ros1_bag_rate(self, rate: float) -> dict:
+        """ROS1 bag 재생 중 속도 변경.
+
+        재생 중이면 Ros1BagPlayerThread.set_rate()를 호출해 즉시 반영.
+
+        Args:
+            rate (float): 새 속도 배율 (> 0)
+
+        Returns:
+            dict: {'success': bool, 'rate': float, 'message': str}
+        """
+        rate = max(0.01, float(rate))
+        self.ros1_player_rate = rate
+
+        thread = self.ros1_player_thread
+        if thread is not None and thread.is_alive():
+            thread.set_rate(rate)
+            self.get_logger().info(f'[ROS1 set_rate] Rate changed to {rate}x during playback')
+            return {'success': True, 'rate': rate, 'message': f'Rate set to {rate}x'}
+        else:
+            self.get_logger().info(f'[ROS1 set_rate] Stored rate={rate}x (not playing)')
+            return {'success': True, 'rate': rate, 'message': 'Rate stored for next playback'}
 
     def get_bag_state(self):
         """Get current bag player state"""
@@ -3389,6 +3491,14 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             position_ratio = position / 10000.0
             success = self.node.set_bag_position(position_ratio)
             response = {'success': success}
+        elif parsed_path.path == '/api/bag/set_rate':
+            rate = float(data.get('rate', 1.0))
+            bag_type = data.get('bag_type', 'ros2')  # 'ros1' or 'ros2'
+            if bag_type == 'ros1':
+                result = self.node.set_ros1_bag_rate(rate)
+            else:
+                result = self.node.set_bag_playback_rate(rate)
+            response = result
         elif parsed_path.path == '/api/bag/convert_ros1':
             result = self.node.convert_ros1_bag()
             response = result
