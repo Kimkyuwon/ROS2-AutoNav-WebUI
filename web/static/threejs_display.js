@@ -1621,7 +1621,7 @@ function resetAll3DViewer() {
 function _getPC2StreamWorker() {
     if (_pc2StreamWorker) return _pc2StreamWorker;
 
-    _pc2StreamWorker = new Worker('/static/pc2_stream_worker.js');
+    _pc2StreamWorker = new Worker('/static/pc2_stream_worker.js?v=' + Date.now());
 
     // ── 스트림 워커 결과 수신 (메인 스레드) ──
     _pc2StreamWorker.onmessage = function (ev) {
