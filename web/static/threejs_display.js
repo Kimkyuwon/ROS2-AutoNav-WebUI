@@ -1512,11 +1512,10 @@ function unsubscribeFromTopic(topicName) {
             console.warn('[Image] Failed to unsubscribe:', topicName, e);
         }
         viewer3DState.imageSubscriptions.delete(topicName);
+        removeImageCell(topicName);
+        const imgIdx = viewer3DState.selectedImageTopics.indexOf(topicName);
+        if (imgIdx !== -1) viewer3DState.selectedImageTopics.splice(imgIdx, 1);
     }
-    // imageSubscriptions 유무와 관계없이 DOM 셀 및 상태 항상 정리
-    removeImageCell(topicName);
-    const imgIdx = viewer3DState.selectedImageTopics.indexOf(topicName);
-    if (imgIdx !== -1) viewer3DState.selectedImageTopics.splice(imgIdx, 1);
 }
 
 // 단일 토픽의 시각화 오브젝트만 씬에서 제거 (구독/선택 상태는 유지)
@@ -3792,26 +3791,18 @@ function renderDisplayPanel() {
             const header     = document.createElement('div');
             header.className = 'display-topic-item-header';
 
-            // 체크박스: image cell 구독 해제/재구독 (선택된 토픽만 시각화)
+            // 체크박스: image cell 표시/숨기기
             const cellId  = 'image-cell-' + topicName.replace(/\//g, '_');
             const cell    = document.getElementById(cellId);
-            const visible = !!cell;   // 셀이 DOM에 존재하면 체크됨
+            const visible = !cell || cell.style.display !== 'none';
 
             const checkbox   = document.createElement('input');
             checkbox.type    = 'checkbox';
             checkbox.checked = visible;
             checkbox.title   = '표시/숨기기';
             checkbox.addEventListener('change', function() {
-                if (this.checked) {
-                    // 재구독 + selectedImageTopics 복원
-                    if (!viewer3DState.selectedImageTopics.includes(topicName)) {
-                        viewer3DState.selectedImageTopics.push(topicName);
-                    }
-                    subscribeToImage(topicName);
-                } else {
-                    // 구독 해제 + DOM 제거 + selectedImageTopics 업데이트
-                    unsubscribeFromImage(topicName);
-                }
+                const c = document.getElementById(cellId);
+                if (c) c.style.display = this.checked ? '' : 'none';
             });
 
             const nameSpan     = document.createElement('span');
