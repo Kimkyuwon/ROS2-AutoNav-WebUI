@@ -1477,10 +1477,11 @@ function unsubscribeFromTopic(topicName) {
             console.warn('[Image] Failed to unsubscribe:', topicName, e);
         }
         viewer3DState.imageSubscriptions.delete(topicName);
-        removeImageCell(topicName);
-        const imgIdx = viewer3DState.selectedImageTopics.indexOf(topicName);
-        if (imgIdx !== -1) viewer3DState.selectedImageTopics.splice(imgIdx, 1);
     }
+    // imageSubscriptions 유무와 관계없이 DOM 셀 및 상태 항상 정리
+    removeImageCell(topicName);
+    const imgIdx = viewer3DState.selectedImageTopics.indexOf(topicName);
+    if (imgIdx !== -1) viewer3DState.selectedImageTopics.splice(imgIdx, 1);
 }
 
 // 단일 토픽의 시각화 오브젝트만 씬에서 제거 (구독/선택 상태는 유지)
@@ -1654,15 +1655,20 @@ function _uploadPC2ToGPU(topicName, pos, col, count) {
             renderSz = Math.max(1, sz * _getTopdownPixelsPerUnit());
         }
         const tex = _getStyleTexture(pcStyle);
+        // transparent는 opacity 기준으로만 판단 (tex 유무는 transparent에 영향 X)
+        // → Alpha=1이면 transparent=false → depth 정렬 변동 없이 완전 불투명으로 표시
+        // alphaTest: 0.4 → 0.01 로 낮춤
+        // → 텍스처 가장자리(alpha≈0)만 clip하고, opacity가 낮아도 포인트가 사라지지 않음
+        // depthWrite: opacity=1이면 true, 반투명이면 false (Three.js 권장)
         return new THREE.PointsMaterial({
-            size:           renderSz,
-            vertexColors:   true,
+            size:            renderSz,
+            vertexColors:    true,
             sizeAttenuation: true,
-            transparent:    a < 1.0 || tex !== null,
-            opacity:        a,
-            map:            tex,
-            alphaTest:      tex ? 0.4 : 0,
-            depthWrite:     tex ? false : true,
+            transparent:     a < 1.0,
+            opacity:         a,
+            map:             tex,
+            alphaTest:       tex ? 0.01 : 0,
+            depthWrite:      a >= 1.0,
         });
     }
 
@@ -1713,8 +1719,8 @@ function _uploadPC2ToGPU(topicName, pos, col, count) {
         }
     }
 
-    if (decayTime > 0 && pcStyle !== 'boxes') {
-        // ═══ DECAY 모드: 매 프레임 독립 Points 객체 생성·누적 ═══
+    if (decayTime > 0) {
+        // ═══ DECAY 모드: 매 프레임 독립 오브젝트 생성·누적 (Boxes 포함) ═══
         const curMesh = viewer3DState.pointCloudMeshes[topicName];
         if (curMesh) {
             pcFrameGroup.remove(curMesh);
@@ -1722,17 +1728,24 @@ function _uploadPC2ToGPU(topicName, pos, col, count) {
             curMesh.material.dispose();
             viewer3DState.pointCloudMeshes[topicName] = null;
         }
-        // pos/col 은 Worker에서 이미 count 크기로 subarray되어 전달됨
-        // slice()로 독립 복사 → 이 Points 객체가 살아있는 동안 데이터 보존
-        const posArr = pos.slice();
-        const colArr = col.slice();
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-        geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
-        const decayPoints = new THREE.Points(geo, makeMaterial(pointSize, alpha));
-        pcFrameGroup.add(decayPoints);
+
+        let decayObj;
+        if (pcStyle === 'boxes') {
+            // Boxes 스타일: InstancedMesh를 프레임마다 생성하여 누적
+            decayObj = makeBoxMesh(pos, col, count, pointSize, alpha);
+        } else {
+            // Points 계열: pos/col을 slice()로 독립 복사하여 누적
+            const posArr = pos.slice();
+            const colArr = col.slice();
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+            geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+            decayObj = new THREE.Points(geo, makeMaterial(pointSize, alpha));
+        }
+
+        pcFrameGroup.add(decayObj);
         const arr = viewer3DState.decayObjects.get(topicName) || [];
-        arr.push({ points: decayPoints, time: performance.now() });
+        arr.push({ points: decayObj, time: performance.now() });
         viewer3DState.decayObjects.set(topicName, arr);
 
     } else {
@@ -1791,7 +1804,8 @@ function _uploadPC2ToGPU(topicName, pos, col, count) {
             geometry.setDrawRange(0, count);
             curMesh.material.size        = pointSize;
             curMesh.material.opacity     = alpha;
-            curMesh.material.transparent = alpha < 1.0 || _getStyleTexture(pcStyle) !== null;
+            curMesh.material.transparent = alpha < 1.0;
+            curMesh.material.depthWrite  = alpha >= 1.0;
             curMesh.material.needsUpdate = true;
             if (fc % 30 === 0) geometry.computeBoundingSphere();
         }
@@ -3645,18 +3659,26 @@ function renderDisplayPanel() {
             const header     = document.createElement('div');
             header.className = 'display-topic-item-header';
 
-            // 체크박스: image cell 표시/숨기기
+            // 체크박스: image cell 구독 해제/재구독 (선택된 토픽만 시각화)
             const cellId  = 'image-cell-' + topicName.replace(/\//g, '_');
             const cell    = document.getElementById(cellId);
-            const visible = !cell || cell.style.display !== 'none';
+            const visible = !!cell;   // 셀이 DOM에 존재하면 체크됨
 
             const checkbox   = document.createElement('input');
             checkbox.type    = 'checkbox';
             checkbox.checked = visible;
             checkbox.title   = '표시/숨기기';
             checkbox.addEventListener('change', function() {
-                const c = document.getElementById(cellId);
-                if (c) c.style.display = this.checked ? '' : 'none';
+                if (this.checked) {
+                    // 재구독 + selectedImageTopics 복원
+                    if (!viewer3DState.selectedImageTopics.includes(topicName)) {
+                        viewer3DState.selectedImageTopics.push(topicName);
+                    }
+                    subscribeToImage(topicName);
+                } else {
+                    // 구독 해제 + DOM 제거 + selectedImageTopics 업데이트
+                    unsubscribeFromImage(topicName);
+                }
             });
 
             const nameSpan     = document.createElement('span');
@@ -4256,15 +4278,21 @@ function updatePointAlpha(topicName, alpha) {
     updateTopicSetting(topicName, 'alpha', alpha);
     const mesh = viewer3DState.pointCloudMeshes[topicName];
     if (mesh) {
+        const hasMap = !!(mesh.material.map);
         mesh.material.opacity     = alpha;
-        mesh.material.transparent = alpha < 1.0 || (mesh.material.map !== null && mesh.material.map !== undefined);
+        mesh.material.transparent = alpha < 1.0;
+        mesh.material.depthWrite  = alpha >= 1.0;
+        mesh.material.alphaTest   = hasMap ? 0.01 : 0;  // 스타일 전환 후에도 올바른 값 유지
         mesh.material.needsUpdate = true;
     }
     const arr = viewer3DState.decayObjects.get(topicName);
     if (arr) arr.forEach(item => {
         if (item.points && item.points.material) {
+            const hasMap = !!(item.points.material.map);
             item.points.material.opacity     = alpha;
-            item.points.material.transparent = alpha < 1.0 || (item.points.material.map !== null && item.points.material.map !== undefined);
+            item.points.material.transparent = alpha < 1.0;
+            item.points.material.depthWrite  = alpha >= 1.0;
+            item.points.material.alphaTest   = hasMap ? 0.01 : 0;
             item.points.material.needsUpdate = true;
         }
     });
@@ -5718,8 +5746,14 @@ function confirmAddDisplaySelection() {
 
         const currentTopics = viewer3DState[cat.stateKey] || [];
 
+        // Image 카테고리: 상태(selectedImageTopics)에 없더라도
+        // imageSubscriptions에 남아있는 고아 구독(이전 bag 잔재)까지 제거 대상에 포함
+        const topicsToRemove = (cat.stateKey === 'selectedImageTopics')
+            ? new Set([...currentTopics, ...viewer3DState.imageSubscriptions.keys()])
+            : new Set(currentTopics);
+
         // 제거된 토픽: 구독 해제
-        currentTopics.forEach(function(topic) {
+        topicsToRemove.forEach(function(topic) {
             if (!newTopics.includes(topic)) {
                 unsubscribeFromTopic(topic);
             }
