@@ -2295,7 +2295,8 @@ class WebGUINode(Node):
         if self.bag_playing and not self.bag_paused:
             current_real_time = time.time()
             elapsed_time = current_real_time - self.bag_start_real_time
-            self.bag_current_time = self.bag_start_offset + elapsed_time
+            # bag_playback_rate 배속을 반영하여 bag 시간 업데이트
+            self.bag_current_time = self.bag_start_offset + elapsed_time * self.bag_playback_rate
 
             # Stop when reaching end
             if self.bag_current_time >= self.bag_duration:
@@ -2849,10 +2850,10 @@ class WebGUINode(Node):
             dict: {'success': bool, 'rate': float, 'message': str}
         """
         rate = max(0.01, float(rate))
-        self.bag_playback_rate = rate
 
         if not self.bag_playing or not self.bag_process:
             # 재생 중이 아님 – 다음 Play 시 적용
+            self.bag_playback_rate = rate
             self.get_logger().info(f'[bag set_rate] Stored rate={rate}x (not playing)')
             return {'success': True, 'rate': rate, 'message': 'Rate stored for next playback'}
 
@@ -2895,6 +2896,14 @@ class WebGUINode(Node):
         try:
             result = future.result()
             if result is not None and result.success:
+                # 속도 변경 성공 시, 타임라인 추적 기준을 현재 시점으로 재설정
+                # 이전 속도로 진행된 bag 시간을 새 시작 오프셋으로 저장
+                now = time.time()
+                if not self.bag_paused:
+                    elapsed = now - self.bag_start_real_time
+                    self.bag_start_offset = self.bag_start_offset + elapsed * self.bag_playback_rate
+                    self.bag_start_real_time = now
+                self.bag_playback_rate = rate
                 self.get_logger().info(f'[bag set_rate] Rate changed to {rate}x via service')
                 return {'success': True, 'rate': rate, 'message': f'Rate set to {rate}x'}
             else:
