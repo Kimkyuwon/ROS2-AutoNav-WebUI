@@ -309,7 +309,7 @@ function _colorAndPost(topicName, frameId,
             if (fv > newMax) newMax = fv;
 
             const t   = Math.min(1.0, Math.max(0.0, (fv - rangeMin) / rangeSpan));
-            const hue = (1.0 - t) * 0.667;
+            const hue = t * 0.75;                    // 빨강(0.0) → 보라(0.75)
             const h6  = hue * 6.0;
             const hi  = h6 | 0;
             const f_  = h6 - hi;
