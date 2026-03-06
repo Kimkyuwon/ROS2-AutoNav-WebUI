@@ -236,6 +236,7 @@ h3 {
 .form-group button,
 .bag-control-buttons button,
 .modal-footer button,
+.player-actions button,
 .primary-button {
     background: linear-gradient(135deg, #1f3a56, #1b3046);
     color: var(--text);
@@ -251,6 +252,7 @@ h3 {
 .form-group button:hover,
 .bag-control-buttons button:hover,
 .modal-footer button:hover,
+.player-actions button:hover,
 .primary-button:hover {
     border-color: rgba(74, 214, 255, 0.5);
     box-shadow: 0 6px 20px rgba(74, 214, 255, 0.18);
@@ -259,6 +261,7 @@ h3 {
 .form-group button:active,
 .bag-control-buttons button:active,
 .modal-footer button:active,
+.player-actions button:active,
 .primary-button:active {
     transform: translateY(1px);
 }
@@ -300,15 +303,97 @@ h3 {
     accent-color: var(--accent);
 }
 
-.player-grid {
-    display: grid;
-    grid-template-columns: 1fr repeat(2, 110px);
-    gap: 10px;
-    align-items: center;
+.player-control {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
-.player-grid label {
+.player-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.player-info {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.player-info-key {
     color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 64px;
+}
+
+.player-info-val {
+    color: var(--text);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    font-family: monospace;
+    opacity: 0.8;
+}
+
+.player-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.player-actions button {
+    min-width: 88px;
+    padding: 7px 12px;
+    font-size: 13px;
+}
+
+/* Save bag 진행바 버튼 */
+.save-progress-btn {
+    position: relative !important;
+    overflow: hidden !important;
+    cursor: default !important;
+    background: linear-gradient(135deg, #0f2336, #0c1e30) !important;
+    border-color: rgba(34, 197, 94, 0.6) !important;
+    box-shadow: 0 0 12px rgba(34, 197, 94, 0.15) !important;
+    padding: 0 !important;
+    min-width: 88px !important;
+}
+
+.save-progress-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    background: linear-gradient(90deg, #15803d, #22c55e);
+    transition: width 0.25s ease;
+    border-radius: 9px;
+}
+
+.save-progress-text {
+    position: relative;
+    z-index: 1;
+    display: block;
+    padding: 7px 12px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+    text-align: center;
+    letter-spacing: 0.3px;
+}
+
+.player-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 10px 0;
 }
 
 .player-options {
@@ -316,19 +401,17 @@ h3 {
     gap: 16px;
     align-items: center;
     flex-wrap: wrap;
-    margin: 12px 0;
 }
 
 .player-options label {
     color: var(--muted);
+    font-size: 13px;
     gap: 6px;
     display: flex;
     align-items: center;
+    cursor: pointer;
 }
 
-.speed-control input[type="number"] {
-    width: 90px;
-}
 
 .modal {
     display: none;
@@ -1762,6 +1845,15 @@ h3 {
 .views-body button {
     font-size: 11px;
     padding: 2px 6px;
+}
+
+/* Invert Z Axis 체크박스 */
+.views-checkbox {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
 }
 
 /* ======================================

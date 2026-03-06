@@ -284,7 +284,7 @@ const viewer3DState = {
     activeCamera: null,                // animate() 루프에서 사용하는 현재 활성 카메라
     cameraTargetFrame: '<Fixed Frame>', // Views 패널 Target Frame
     viewSettings: {
-        orbit:   { distance: 10, yaw: 0.785, pitch: 0.785, nearClip: 0.01 },
+        orbit:   { distance: 10, yaw: 0.785, pitch: 0.785, nearClip: 0.01, invertZ: false },
         topdown: { scale: 1.0, nearClip: 0.01 }
     },
 
@@ -509,9 +509,10 @@ function switchViewType(type) {
     const controls = viewer3DState.controls;
 
     if (type === 'orbit') {
-        // PerspectiveCamera 활성화 (Z-up 보장)
+        // PerspectiveCamera 활성화 (Z-up 보장, invertZ 설정 반영)
         viewer3DState.activeCamera = viewer3DState.camera;
-        viewer3DState.camera.up.set(0, 0, 1);
+        const orbitZUp = viewer3DState.viewSettings.orbit.invertZ ? -1 : 1;
+        viewer3DState.camera.up.set(0, 0, orbitZUp);
         if (controls) {
             // TopDown yaw 핸들러 해제 및 mouse button 복원
             if (viewer3DState.renderer) {
@@ -606,6 +607,7 @@ function updateTopdownPointSizes() {
     Object.keys(viewer3DState.pointCloudMeshes).forEach(function(topicName) {
         const mesh = viewer3DState.pointCloudMeshes[topicName];
         if (!mesh || !mesh.material) return;
+        if (mesh._isBoxMesh) return;  // Boxes: InstancedMesh → size 적용 불필요
         const settings  = viewer3DState.topicSettings.get(topicName) || {};
         const worldSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
         mesh.material.size = Math.max(1, worldSize * scale);
@@ -694,6 +696,7 @@ function renderViewsPanel() {
     let html = '';
 
     if (type === 'orbit') {
+        const invertZChecked = settings.invertZ ? ' checked' : '';
         html = `
             <div class="views-row">
                 <label>Distance:</label>
@@ -709,6 +712,13 @@ function renderViewsPanel() {
                 <label>Pitch:</label>
                 <input type="number" value="${settings.pitch || 0.785}" step="0.05"
                        onchange="onViewParamChange('orbit','pitch', parseFloat(this.value))">
+            </div>
+            <div class="views-row">
+                <label for="invert-z-checkbox">Invert Z Axis:</label>
+                <input type="checkbox" id="invert-z-checkbox"
+                       class="views-checkbox"${invertZChecked}
+                       onchange="onViewInvertZToggle()"
+                       title="Z축 반전 (RViz Invert Z Axis와 동일)">
             </div>`;
     } else if (type === 'topdown') {
         html = `
@@ -756,8 +766,9 @@ function resetViewCamera() {
     const type = viewer3DState.currentViewType;
     if (type === 'orbit') {
         // RViz Orbit 초기화 시점: 뒤쪽(-Y) + 위쪽(+Z)에서 원점을 비스듬히 바라봄
-        // camera.up=(0,0,1) → Z가 화면 위쪽, OrbitControls가 Z축 기준으로 orbit
-        viewer3DState.camera.up.set(0, 0, 1);
+        // camera.up Z 성분은 invertZ 설정을 반영
+        const resetZUp = viewer3DState.viewSettings.orbit.invertZ ? -1 : 1;
+        viewer3DState.camera.up.set(0, 0, resetZUp);
         viewer3DState.camera.position.set(0, -10, 7);
         viewer3DState.camera.lookAt(0, 0, 0);
         if (viewer3DState.controls) {
@@ -826,6 +837,31 @@ function onViewParamChange(viewType, param, value) {
     console.log('[Views] Param changed:', viewType, param, value);
 }
 window.onViewParamChange = onViewParamChange;
+
+/**
+ * onViewInvertZToggle()
+ * Orbit 뷰 전용: Z축 반전 토글 (RViz "Invert Z Axis"와 동일)
+ * camera.up의 Z 성분을 +1 / -1 로 반전하여 씬을 뒤집는다.
+ */
+function onViewInvertZToggle() {
+    const settings = viewer3DState.viewSettings.orbit;
+    settings.invertZ = !settings.invertZ;
+
+    // Orbit 뷰가 활성 상태일 때만 즉시 적용
+    if (viewer3DState.currentViewType === 'orbit' && viewer3DState.camera) {
+        const zUp = settings.invertZ ? -1 : 1;
+        viewer3DState.camera.up.set(0, 0, zUp);
+        if (viewer3DState.controls) {
+            viewer3DState.controls.update();
+        }
+        viewer3DState.needsRender = true;
+    }
+
+    // UI 토글 버튼 갱신
+    renderViewsPanel();
+    console.log('[Views] Invert Z Axis:', settings.invertZ);
+}
+window.onViewInvertZToggle = onViewInvertZToggle;
 
 function onWindowResize() {
     const container = getActiveDisplayContainer();
@@ -966,6 +1002,77 @@ function connectToROS() {
 }
 
 // =============================================
+// PointCloud2 Style 텍스처 캐시
+// RViz 스타일: Points / Squares / Flat Squares / Spheres / Boxes / Tiles
+// =============================================
+const _styleTextureCache = {};
+
+/**
+ * 스타일에 대응하는 Canvas 스프라이트 텍스처를 반환 (최초 생성 후 캐시)
+ * 'squares': 텍스처 없음 (PointsMaterial 기본 정사각형)
+ * 'boxes'  : InstancedMesh 사용 → 텍스처 없음
+ * @param {string} style
+ * @returns {THREE.CanvasTexture|null}
+ */
+function _getStyleTexture(style) {
+    if (_styleTextureCache[style] !== undefined) return _styleTextureCache[style];
+
+    if (style === 'squares' || style === 'boxes') {
+        _styleTextureCache[style] = null;
+        return null;
+    }
+
+    const SIZE = 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = SIZE;
+    const ctx = canvas.getContext('2d');
+    const C = SIZE / 2, R = C - 2;
+
+    ctx.clearRect(0, 0, SIZE, SIZE);
+
+    if (style === 'points') {
+        // 원형 점
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(C, C, R, 0, Math.PI * 2);
+        ctx.fill();
+
+    } else if (style === 'flat_squares') {
+        // 평면 정사각형
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(4, 4, SIZE - 8, SIZE - 8);
+
+    } else if (style === 'spheres') {
+        // 방사형 그라디언트로 구 표현
+        const g = ctx.createRadialGradient(C * 0.7, C * 0.65, R * 0.05, C, C, R);
+        g.addColorStop(0,   '#ffffff');
+        g.addColorStop(0.4, '#cccccc');
+        g.addColorStop(0.8, '#666666');
+        g.addColorStop(1,   '#111111');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(C, C, R, 0, Math.PI * 2);
+        ctx.fill();
+
+    } else if (style === 'tiles') {
+        // 테두리 있는 정사각형 타일
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(3, 3, SIZE - 6, SIZE - 6);
+        ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(3, 3, SIZE - 6, SIZE - 6);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    _styleTextureCache[style] = tex;
+    return tex;
+}
+
+// Boxes 스타일 최대 인스턴스 수 (성능 보호)
+const PC2_BOX_MAX_INSTANCES = 30000;
+
+// =============================================
 // PointCloud2 파싱 성능 최적화: 모듈 레벨 재사용 버퍼
 // - Array.push 완전 제거 (GC 압력 제거)
 // - 단일 패스 처리 (2패스 → 1패스)
@@ -1081,9 +1188,9 @@ function parsePointCloud2(message, settings, prevMin, prevMax) {
             if (fv > newMax) newMax = fv;
 
             // ── HSV Rainbow 인라인 (s=1,v=1 특수화 → 객체/함수 생성 없음) ──
-            // t: 0.0(파랑) → 1.0(빨강)
+            // t: 0.0(빨강) → 1.0(보라)
             const t   = rangeSpan > 0 ? Math.min(1.0, Math.max(0.0, (fv - rangeMin) / rangeSpan)) : 0.5;
-            const hue = (1.0 - t) * 0.667;          // 파랑(0.667) → 빨강(0.0)
+            const hue = t * 0.75;                    // 빨강(0.0) → 보라(0.75)
             const h6  = hue * 6;
             const hi  = h6 | 0;                     // Math.floor 대체
             const f   = h6 - hi;
@@ -1233,9 +1340,9 @@ function parseLivoxCustomMsg(message, settings, prevMin, prevMax) {
                 if (fv < newMin) newMin = fv;
                 if (fv > newMax) newMax = fv;
             }
-            // HSV Rainbow 인라인 (파랑→빨강)
+            // HSV Rainbow 인라인 (빨강→보라)
             const t   = rangeSpan > 0 ? Math.min(1.0, Math.max(0.0, (fv - rangeMin) / rangeSpan)) : 0.5;
-            const hue = (1.0 - t) * 0.667;
+            const hue = t * 0.75;
             const h6  = hue * 6;
             const hi  = h6 | 0;
             const f   = h6 - hi;
@@ -1405,10 +1512,11 @@ function unsubscribeFromTopic(topicName) {
             console.warn('[Image] Failed to unsubscribe:', topicName, e);
         }
         viewer3DState.imageSubscriptions.delete(topicName);
-        removeImageCell(topicName);
-        const imgIdx = viewer3DState.selectedImageTopics.indexOf(topicName);
-        if (imgIdx !== -1) viewer3DState.selectedImageTopics.splice(imgIdx, 1);
     }
+    // imageSubscriptions 유무와 관계없이 DOM 셀 및 상태 항상 정리
+    removeImageCell(topicName);
+    const imgIdx = viewer3DState.selectedImageTopics.indexOf(topicName);
+    if (imgIdx !== -1) viewer3DState.selectedImageTopics.splice(imgIdx, 1);
 }
 
 // 단일 토픽의 시각화 오브젝트만 씬에서 제거 (구독/선택 상태는 유지)
@@ -1571,7 +1679,9 @@ function _uploadPC2ToGPU(topicName, pos, col, count) {
     const pointSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
     const alpha     = settings.alpha     !== undefined ? settings.alpha     : 1.0;
     const decayTime = settings.decayTime !== undefined ? settings.decayTime : 0;
+    const pcStyle   = settings.style     || 'squares';  // RViz 스타일
 
+    // ── 스프라이트(Points) 재질 생성 ──
     // TopDown(OrthographicCamera) 시 frustum 스케일 적용
     // Orbit(PerspectiveCamera) 시 sizeAttenuation:true → 원근감 자동 적용
     function makeMaterial(sz, a) {
@@ -1579,38 +1689,98 @@ function _uploadPC2ToGPU(topicName, pos, col, count) {
         if (viewer3DState.currentViewType === 'topdown') {
             renderSz = Math.max(1, sz * _getTopdownPixelsPerUnit());
         }
+        const tex = _getStyleTexture(pcStyle);
+        // transparent는 opacity 기준으로만 판단 (tex 유무는 transparent에 영향 X)
+        // → Alpha=1이면 transparent=false → depth 정렬 변동 없이 완전 불투명으로 표시
+        // alphaTest: 0.4 → 0.01 로 낮춤
+        // → 텍스처 가장자리(alpha≈0)만 clip하고, opacity가 낮아도 포인트가 사라지지 않음
+        // depthWrite: opacity=1이면 true, 반투명이면 false (Three.js 권장)
         return new THREE.PointsMaterial({
-            size: renderSz,
-            vertexColors: true,
+            size:            renderSz,
+            vertexColors:    true,
             sizeAttenuation: true,
-            transparent: a < 1.0,
-            opacity: a,
+            transparent:     a < 1.0,
+            opacity:         a,
+            map:             tex,
+            alphaTest:       tex ? 0.01 : 0,
+            depthWrite:      a >= 1.0,
         });
+    }
+
+    // ── Boxes: InstancedMesh 생성 ──
+    function makeBoxMesh(posArr, colArr, count, sz, a) {
+        const n = Math.min(count, PC2_BOX_MAX_INSTANCES);
+        const geo = new THREE.BoxGeometry(sz, sz, sz);
+        const mat = new THREE.MeshLambertMaterial({
+            transparent: a < 1.0,
+            opacity:     a,
+        });
+        const im = new THREE.InstancedMesh(geo, mat, n);
+        im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        // instanceColor 설정
+        im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+        im.instanceColor.setUsage(THREE.DynamicDrawUsage);
+        const dummy = new THREE.Object3D();
+        const colBuf = im.instanceColor.array;
+        for (let i = 0; i < n; i++) {
+            const pi = i * 3;
+            dummy.position.set(posArr[pi], posArr[pi + 1], posArr[pi + 2]);
+            dummy.updateMatrix();
+            im.setMatrixAt(i, dummy.matrix);
+            colBuf[pi]     = colArr[pi];
+            colBuf[pi + 1] = colArr[pi + 1];
+            colBuf[pi + 2] = colArr[pi + 2];
+        }
+        im.count = n;
+        im.instanceMatrix.needsUpdate = true;
+        im.instanceColor.needsUpdate  = true;
+        im._isBoxMesh = true;  // 식별 플래그
+        return im;
     }
 
     const mesh = viewer3DState.pointCloudMeshes[topicName];
     const fc   = (_pc2FrameCounts.get(topicName) || 0) + 1;
     _pc2FrameCounts.set(topicName, fc);
 
-    if (decayTime > 0) {
-        // ═══ DECAY 모드: 매 프레임 독립 Points 객체 생성·누적 ═══
-        if (mesh) {
+    // ── 스타일 전환 감지: 이전 mesh 타입과 현재 스타일 불일치 시 강제 재생성 ──
+    if (mesh) {
+        const wasBox    = mesh._isBoxMesh === true;
+        const isNowBox  = pcStyle === 'boxes';
+        if (wasBox !== isNowBox) {
             pcFrameGroup.remove(mesh);
             mesh.geometry.dispose();
             mesh.material.dispose();
             viewer3DState.pointCloudMeshes[topicName] = null;
         }
-        // pos/col 은 Worker에서 이미 count 크기로 subarray되어 전달됨
-        // slice()로 독립 복사 → 이 Points 객체가 살아있는 동안 데이터 보존
-        const posArr = pos.slice();
-        const colArr = col.slice();
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-        geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
-        const decayPoints = new THREE.Points(geo, makeMaterial(pointSize, alpha));
-        pcFrameGroup.add(decayPoints);
+    }
+
+    if (decayTime > 0) {
+        // ═══ DECAY 모드: 매 프레임 독립 오브젝트 생성·누적 (Boxes 포함) ═══
+        const curMesh = viewer3DState.pointCloudMeshes[topicName];
+        if (curMesh) {
+            pcFrameGroup.remove(curMesh);
+            curMesh.geometry.dispose();
+            curMesh.material.dispose();
+            viewer3DState.pointCloudMeshes[topicName] = null;
+        }
+
+        let decayObj;
+        if (pcStyle === 'boxes') {
+            // Boxes 스타일: InstancedMesh를 프레임마다 생성하여 누적
+            decayObj = makeBoxMesh(pos, col, count, pointSize, alpha);
+        } else {
+            // Points 계열: pos/col을 slice()로 독립 복사하여 누적
+            const posArr = pos.slice();
+            const colArr = col.slice();
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+            geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+            decayObj = new THREE.Points(geo, makeMaterial(pointSize, alpha));
+        }
+
+        pcFrameGroup.add(decayObj);
         const arr = viewer3DState.decayObjects.get(topicName) || [];
-        arr.push({ points: decayPoints, time: performance.now() });
+        arr.push({ points: decayObj, time: performance.now() });
         viewer3DState.decayObjects.set(topicName, arr);
 
     } else {
@@ -1625,8 +1795,21 @@ function _uploadPC2ToGPU(topicName, pos, col, count) {
             viewer3DState.decayObjects.set(topicName, []);
         }
 
-        if (!mesh) {
-            // ── 첫 메시지: GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
+        const curMesh = viewer3DState.pointCloudMeshes[topicName];
+
+        if (pcStyle === 'boxes') {
+            // ── Boxes: 매 프레임 InstancedMesh 재생성 (수 변동 대응) ──
+            if (curMesh) {
+                pcFrameGroup.remove(curMesh);
+                curMesh.geometry.dispose();
+                curMesh.material.dispose();
+            }
+            const newBox = makeBoxMesh(pos, col, count, pointSize, alpha);
+            viewer3DState.pointCloudMeshes[topicName] = newBox;
+            pcFrameGroup.add(newBox);
+
+        } else if (!curMesh) {
+            // ── 첫 메시지(Points 계열): GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
             const posArr = new Float32Array(PC2_MAX_POINTS * 3);
             const colArr = new Float32Array(PC2_MAX_POINTS * 3);
             posArr.set(pos);   // pos는 이미 count 크기
@@ -1643,21 +1826,22 @@ function _uploadPC2ToGPU(topicName, pos, col, count) {
             const newMesh = new THREE.Points(geometry, makeMaterial(pointSize, alpha));
             viewer3DState.pointCloudMeshes[topicName] = newMesh;
             pcFrameGroup.add(newMesh);
-            console.log('[PC2] Mesh created (StreamWorker):', topicName, '|', count, 'pts');
+            console.log('[PC2] Mesh created (StreamWorker):', topicName, '|', count, 'pts', '| style:', pcStyle);
         } else {
             // ── 업데이트: 기존 GPU 버퍼를 in-place 갱신 (할당 0회) ──
-            const geometry = mesh.geometry;
+            const geometry = curMesh.geometry;
             const posAttr  = geometry.attributes.position;
             const colAttr  = geometry.attributes.color;
-                posAttr.array.set(pos);   // pos는 이미 count 크기
-                colAttr.array.set(col);
+            posAttr.array.set(pos);   // pos는 이미 count 크기
+            colAttr.array.set(col);
             posAttr.needsUpdate = true;
             colAttr.needsUpdate = true;
             geometry.setDrawRange(0, count);
-            mesh.material.size        = pointSize;
-            mesh.material.opacity     = alpha;
-            mesh.material.transparent = alpha < 1.0;
-            mesh.material.needsUpdate = true;
+            curMesh.material.size        = pointSize;
+            curMesh.material.opacity     = alpha;
+            curMesh.material.transparent = alpha < 1.0;
+            curMesh.material.depthWrite  = alpha >= 1.0;
+            curMesh.material.needsUpdate = true;
             if (fc % 30 === 0) geometry.computeBoundingSphere();
         }
     }
@@ -1773,6 +1957,7 @@ function subscribeToLivox(topicName) {
         const pointSize = settings.pointSize !== undefined ? settings.pointSize : 0.1;
         const alpha     = settings.alpha     !== undefined ? settings.alpha     : 1.0;
         const decayTime = settings.decayTime !== undefined ? settings.decayTime : 0;
+        const pcStyle   = settings.style     || 'squares';  // RViz 스타일
 
         // ── Livox CustomMsg 고성능 파싱 (단일 패스, 재사용 버퍼) ──
         const { count, newMin, newMax } = parseLivoxCustomMsg(message, settings, adaptiveMin, adaptiveMax);
@@ -1783,42 +1968,94 @@ function subscribeToLivox(topicName) {
         if (isFinite(newMax)) adaptiveMax = newMax;
         frameCount++;
 
-        // ── Helper: PointsMaterial 생성 ──
+        // ── Helper: PointsMaterial 생성 (스타일 텍스처 적용) ──
         function makeMaterial(sz, a) {
             let renderSz = sz;
             if (viewer3DState.currentViewType === 'topdown') {
                 renderSz = Math.max(1, sz * _getTopdownPixelsPerUnit());
             }
+            const tex = _getStyleTexture(pcStyle);
             return new THREE.PointsMaterial({
-                size: renderSz,
-                vertexColors: true,
+                size:            renderSz,
+                vertexColors:    true,
                 sizeAttenuation: true,   // 항상 true 유지 (셰이더 재컴파일 방지)
-                transparent: a < 1.0,
-                opacity: a,
+                transparent:     a < 1.0,
+                opacity:         a,
+                map:             tex,
+                alphaTest:       tex ? 0.01 : 0,
+                depthWrite:      a >= 1.0,
             });
         }
 
+        // ── Helper: Boxes InstancedMesh 생성 (Livox용) ──
+        function makeBoxMesh(sz, a) {
+            const n = Math.min(count, PC2_BOX_MAX_INSTANCES);
+            const geo = new THREE.BoxGeometry(sz, sz, sz);
+            const mat = new THREE.MeshLambertMaterial({
+                transparent: a < 1.0,
+                opacity:     a,
+            });
+            const im = new THREE.InstancedMesh(geo, mat, n);
+            im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+            im.instanceColor.setUsage(THREE.DynamicDrawUsage);
+            const dummy  = new THREE.Object3D();
+            const colBuf = im.instanceColor.array;
+            for (let i = 0; i < n; i++) {
+                const pi = i * 3;
+                dummy.position.set(_pc2PosBuffer[pi], _pc2PosBuffer[pi + 1], _pc2PosBuffer[pi + 2]);
+                dummy.updateMatrix();
+                im.setMatrixAt(i, dummy.matrix);
+                colBuf[pi]     = _pc2ColBuffer[pi];
+                colBuf[pi + 1] = _pc2ColBuffer[pi + 1];
+                colBuf[pi + 2] = _pc2ColBuffer[pi + 2];
+            }
+            im.count = n;
+            im.instanceMatrix.needsUpdate = true;
+            im.instanceColor.needsUpdate  = true;
+            im._isBoxMesh = true;
+            return im;
+        }
+
+        // ── 스타일 전환 감지: boxes ↔ Points 계열 전환 시 기존 mesh 강제 제거 ──
+        const existMesh = viewer3DState.pointCloudMeshes[topicName];
+        if (existMesh) {
+            const wasBox   = existMesh._isBoxMesh === true;
+            const isNowBox = pcStyle === 'boxes';
+            if (wasBox !== isNowBox) {
+                pcFrameGroup.remove(existMesh);
+                existMesh.geometry.dispose();
+                existMesh.material.dispose();
+                viewer3DState.pointCloudMeshes[topicName] = null;
+            }
+        }
+
         if (decayTime > 0) {
-            // ═══ DECAY 모드: 매 프레임 독립 Points 객체 생성·누적 ═══
-            if (viewer3DState.pointCloudMeshes[topicName]) {
-                pcFrameGroup.remove(viewer3DState.pointCloudMeshes[topicName]);
-                viewer3DState.pointCloudMeshes[topicName].geometry.dispose();
-                viewer3DState.pointCloudMeshes[topicName].material.dispose();
+            // ═══ DECAY 모드: 매 프레임 독립 Points/Boxes 객체 생성·누적 ═══
+            const curMesh = viewer3DState.pointCloudMeshes[topicName];
+            if (curMesh) {
+                pcFrameGroup.remove(curMesh);
+                curMesh.geometry.dispose();
+                curMesh.material.dispose();
                 viewer3DState.pointCloudMeshes[topicName] = null;
             }
 
-            const posArr = _pc2PosBuffer.subarray(0, count * 3).slice();
-            const colArr = _pc2ColBuffer.subarray(0, count * 3).slice();
+            let decayObj;
+            if (pcStyle === 'boxes') {
+                // Boxes 스타일: InstancedMesh를 프레임마다 생성하여 누적
+                decayObj = makeBoxMesh(pointSize, alpha);
+            } else {
+                const posArr = _pc2PosBuffer.subarray(0, count * 3).slice();
+                const colArr = _pc2ColBuffer.subarray(0, count * 3).slice();
+                const geo = new THREE.BufferGeometry();
+                geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+                geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+                decayObj = new THREE.Points(geo, makeMaterial(pointSize, alpha));
+            }
 
-            const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-            geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
-
-            const decayPoints = new THREE.Points(geo, makeMaterial(pointSize, alpha));
-            pcFrameGroup.add(decayPoints);
-
+            pcFrameGroup.add(decayObj);
             const arr = viewer3DState.decayObjects.get(topicName) || [];
-            arr.push({ points: decayPoints, time: performance.now() });
+            arr.push({ points: decayObj, time: performance.now() });
             viewer3DState.decayObjects.set(topicName, arr);
 
         } else {
@@ -1833,8 +2070,21 @@ function subscribeToLivox(topicName) {
                 viewer3DState.decayObjects.set(topicName, []);
             }
 
-            if (!mesh) {
-                // ── 첫 메시지: GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
+            const curMesh = viewer3DState.pointCloudMeshes[topicName];
+
+            if (pcStyle === 'boxes') {
+                // ── Boxes: 매 프레임 InstancedMesh 재생성 (수 변동 대응) ──
+                if (curMesh) {
+                    pcFrameGroup.remove(curMesh);
+                    curMesh.geometry.dispose();
+                    curMesh.material.dispose();
+                }
+                const newBox = makeBoxMesh(pointSize, alpha);
+                viewer3DState.pointCloudMeshes[topicName] = newBox;
+                pcFrameGroup.add(newBox);
+
+            } else if (!curMesh) {
+                // ── 첫 메시지(Points 계열): GPU 버퍼를 MAX_POINTS 크기로 미리 할당 ──
                 const posArr = new Float32Array(PC2_MAX_POINTS * 3);
                 const colArr = new Float32Array(PC2_MAX_POINTS * 3);
                 posArr.set(_pc2PosBuffer.subarray(0, count * 3));
@@ -1854,11 +2104,11 @@ function subscribeToLivox(topicName) {
                 const newMesh = new THREE.Points(geometry, makeMaterial(pointSize, alpha));
                 viewer3DState.pointCloudMeshes[topicName] = newMesh;
                 pcFrameGroup.add(newMesh);
-                console.log('[Livox] Mesh added:', topicName, '|', count, 'pts');
+                console.log('[Livox] Mesh added:', topicName, '|', count, 'pts', '| style:', pcStyle);
 
             } else {
                 // ── 업데이트: 기존 GPU 버퍼를 in-place 갱신 (할당 0회) ──
-                const geometry = mesh.geometry;
+                const geometry = curMesh.geometry;
                 const posAttr  = geometry.attributes.position;
                 const colAttr  = geometry.attributes.color;
 
@@ -1868,10 +2118,11 @@ function subscribeToLivox(topicName) {
                 colAttr.needsUpdate = true;
                 geometry.setDrawRange(0, count);
 
-                mesh.material.size        = pointSize;
-                mesh.material.opacity     = alpha;
-                mesh.material.transparent = alpha < 1.0;
-                mesh.material.needsUpdate = true;
+                curMesh.material.size        = pointSize;
+                curMesh.material.opacity     = alpha;
+                curMesh.material.transparent = alpha < 1.0;
+                curMesh.material.depthWrite  = alpha >= 1.0;
+                curMesh.material.needsUpdate = true;
 
                 if (frameCount % 30 === 0) geometry.computeBoundingSphere();
             }
@@ -2570,6 +2821,7 @@ function renderDisplayPanel() {
             const pointSize  = settings.pointSize  !== undefined ? settings.pointSize  : 0.1;
             const alpha      = settings.alpha      !== undefined ? settings.alpha      : 1.0;
             const decayTime  = settings.decayTime  !== undefined ? settings.decayTime  : 0;
+            const pcStyle    = settings.style      || 'squares';
             const visible = viewer3DState.pointCloudMeshes[topicName]
                 ? viewer3DState.pointCloudMeshes[topicName].visible !== false
                 : true;
@@ -2599,11 +2851,38 @@ function renderDisplayPanel() {
             header.appendChild(checkbox);
             header.appendChild(nameSpan);
 
-            // 설정 영역: 색상 모드 + 필드 선택
+            // 설정 영역: Style + 색상 모드 + 필드 선택
             const settingsDiv = document.createElement('div');
             settingsDiv.className = 'display-topic-item-settings';
 
-            // 색상 모드 선택
+            // ── Style 선택 (RViz 스타일) ──
+            const styleLabel = document.createElement('label');
+            styleLabel.textContent = 'Style';
+
+            const styleSelect = document.createElement('select');
+            styleSelect.title = '렌더링 스타일 선택 (RViz 스타일)';
+            [
+                { value: 'points',       label: 'Points' },
+                { value: 'squares',      label: 'Squares' },
+                { value: 'flat_squares', label: 'Flat Squares' },
+                { value: 'spheres',      label: 'Spheres' },
+                { value: 'boxes',        label: 'Boxes' },
+                { value: 'tiles',        label: 'Tiles' },
+            ].forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                if (opt.value === pcStyle) option.selected = true;
+                styleSelect.appendChild(option);
+            });
+            styleSelect.addEventListener('change', function() {
+                updatePointStyle(topicName, this.value);
+            });
+
+            settingsDiv.appendChild(styleLabel);
+            settingsDiv.appendChild(styleSelect);
+
+            // ── 색상 모드 선택 ──
             const colorModeLabel = document.createElement('label');
             colorModeLabel.textContent = '색상 모드';
 
@@ -3261,6 +3540,35 @@ function renderDisplayPanel() {
             const settingsDiv = document.createElement('div');
             settingsDiv.className = 'display-topic-item-settings';
 
+            // ── Style 선택 (RViz 스타일) ──
+            const pcStyle = settings.style || 'squares';
+
+            const styleLabel = document.createElement('label');
+            styleLabel.textContent = 'Style';
+
+            const styleSelect = document.createElement('select');
+            styleSelect.title = '렌더링 스타일 선택 (RViz 스타일)';
+            [
+                { value: 'points',       label: 'Points' },
+                { value: 'squares',      label: 'Squares' },
+                { value: 'flat_squares', label: 'Flat Squares' },
+                { value: 'spheres',      label: 'Spheres' },
+                { value: 'boxes',        label: 'Boxes' },
+                { value: 'tiles',        label: 'Tiles' },
+            ].forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                if (opt.value === pcStyle) option.selected = true;
+                styleSelect.appendChild(option);
+            });
+            styleSelect.addEventListener('change', function() {
+                updatePointStyle(topicName, this.value);
+            });
+
+            settingsDiv.appendChild(styleLabel);
+            settingsDiv.appendChild(styleSelect);
+
             // ── 색상 모드 선택 (Rainbow / By Line / Solid) ──
             const colorModeLabel = document.createElement('label');
             colorModeLabel.textContent = '색상 모드';
@@ -3355,7 +3663,9 @@ function renderDisplayPanel() {
             // ── Tag Filter 체크박스 (Livox 전용: 노이즈 제외) ──
             const tagFilterRow = document.createElement('div');
             tagFilterRow.className = 'pc2-setting-row';
+            tagFilterRow.style.flexDirection = 'row';
             tagFilterRow.style.alignItems = 'center';
+            tagFilterRow.style.justifyContent = 'flex-start';
             tagFilterRow.style.gap = '6px';
 
             const tagFilterCheckbox = document.createElement('input');
@@ -3369,7 +3679,7 @@ function renderDisplayPanel() {
 
             const tagFilterLabel = document.createElement('label');
             tagFilterLabel.htmlFor     = tagFilterCheckbox.id;
-            tagFilterLabel.textContent = '노이즈 제외 (tag bit[3:2])';
+            tagFilterLabel.textContent = '노이즈 제외';
             tagFilterLabel.style.cursor = 'pointer';
 
             tagFilterRow.appendChild(tagFilterCheckbox);
@@ -3482,18 +3792,26 @@ function renderDisplayPanel() {
             const header     = document.createElement('div');
             header.className = 'display-topic-item-header';
 
-            // 체크박스: image cell 표시/숨기기
+            // 체크박스: image cell 구독 해제/재구독 (선택된 토픽만 시각화)
             const cellId  = 'image-cell-' + topicName.replace(/\//g, '_');
             const cell    = document.getElementById(cellId);
-            const visible = !cell || cell.style.display !== 'none';
+            const visible = !!cell;   // 셀이 DOM에 존재하면 체크됨
 
             const checkbox   = document.createElement('input');
             checkbox.type    = 'checkbox';
             checkbox.checked = visible;
             checkbox.title   = '표시/숨기기';
             checkbox.addEventListener('change', function() {
-                const c = document.getElementById(cellId);
-                if (c) c.style.display = this.checked ? '' : 'none';
+                if (this.checked) {
+                    // 재구독 + selectedImageTopics 복원
+                    if (!viewer3DState.selectedImageTopics.includes(topicName)) {
+                        viewer3DState.selectedImageTopics.push(topicName);
+                    }
+                    subscribeToImage(topicName);
+                } else {
+                    // 구독 해제 + DOM 제거 + selectedImageTopics 업데이트
+                    unsubscribeFromImage(topicName);
+                }
             });
 
             const nameSpan     = document.createElement('span');
@@ -4030,6 +4348,31 @@ function updatePathColor(topicName, colorHex) {
 // =============================================
 
 /**
+ * PointCloud2 렌더링 스타일 변경 (Points / Squares / Flat Squares / Spheres / Boxes / Tiles)
+ * 스타일 전환 시 현재 mesh를 제거하고 다음 데이터 프레임에서 재생성.
+ * @param {string} topicName
+ * @param {string} style - 'points' | 'squares' | 'flat_squares' | 'spheres' | 'boxes' | 'tiles'
+ */
+function updatePointStyle(topicName, style) {
+    updateTopicSetting(topicName, 'style', style);
+
+    // 현재 mesh 제거 → 다음 _uploadPC2ToGPU 호출 시 새 스타일로 재생성
+    const pcFG = viewer3DState.pcFrameGroups.get(topicName);
+    const mesh = viewer3DState.pointCloudMeshes[topicName];
+    if (mesh && pcFG) {
+        pcFG.remove(mesh);
+        mesh.geometry.dispose();
+        mesh.material.dispose();
+        viewer3DState.pointCloudMeshes[topicName] = null;
+    }
+    // decay 누적 mesh도 초기화
+    clearDecayObjects(topicName);
+
+    viewer3DState.needsRender = true;
+    console.log(`[PC2 Style] ${topicName} → ${style}`);
+}
+
+/**
  * PointCloud2 포인트 사이즈 즉시 업데이트
  * @param {string} topicName
  * @param {number} size - 포인트 크기(m)
@@ -4043,12 +4386,19 @@ function updatePointSize(topicName, size) {
 
     const mesh = viewer3DState.pointCloudMeshes[topicName];
     if (mesh) {
-        mesh.material.size = renderSize;
+        if (mesh._isBoxMesh) {
+            // Boxes: 지오메트리 재생성이 필요하므로 다음 프레임에서 자동 처리
+            // (updatePointStyle 호출 없이 다음 _uploadPC2ToGPU에서 새 BoxGeometry 사용)
+        } else {
+            mesh.material.size = renderSize;
+        }
     }
     // decay 모드의 누적 mesh들도 즉시 반영
     const arr = viewer3DState.decayObjects.get(topicName);
     if (arr) arr.forEach(item => {
-        item.points.material.size = renderSize;
+        if (item.points && item.points.material && !item.points._isBoxMesh) {
+            item.points.material.size = renderSize;
+        }
     });
 }
 
@@ -4061,15 +4411,23 @@ function updatePointAlpha(topicName, alpha) {
     updateTopicSetting(topicName, 'alpha', alpha);
     const mesh = viewer3DState.pointCloudMeshes[topicName];
     if (mesh) {
+        const hasMap = !!(mesh.material.map);
         mesh.material.opacity     = alpha;
         mesh.material.transparent = alpha < 1.0;
+        mesh.material.depthWrite  = alpha >= 1.0;
+        mesh.material.alphaTest   = hasMap ? 0.01 : 0;  // 스타일 전환 후에도 올바른 값 유지
         mesh.material.needsUpdate = true;
     }
     const arr = viewer3DState.decayObjects.get(topicName);
     if (arr) arr.forEach(item => {
-        item.points.material.opacity     = alpha;
-        item.points.material.transparent = alpha < 1.0;
-        item.points.material.needsUpdate = true;
+        if (item.points && item.points.material) {
+            const hasMap = !!(item.points.material.map);
+            item.points.material.opacity     = alpha;
+            item.points.material.transparent = alpha < 1.0;
+            item.points.material.depthWrite  = alpha >= 1.0;
+            item.points.material.alphaTest   = hasMap ? 0.01 : 0;
+            item.points.material.needsUpdate = true;
+        }
     });
 }
 
@@ -5521,8 +5879,14 @@ function confirmAddDisplaySelection() {
 
         const currentTopics = viewer3DState[cat.stateKey] || [];
 
+        // Image 카테고리: 상태(selectedImageTopics)에 없더라도
+        // imageSubscriptions에 남아있는 고아 구독(이전 bag 잔재)까지 제거 대상에 포함
+        const topicsToRemove = (cat.stateKey === 'selectedImageTopics')
+            ? new Set([...currentTopics, ...viewer3DState.imageSubscriptions.keys()])
+            : new Set(currentTopics);
+
         // 제거된 토픽: 구독 해제
-        currentTopics.forEach(function(topic) {
+        topicsToRemove.forEach(function(topic) {
             if (!newTopics.includes(topic)) {
                 unsubscribeFromTopic(topic);
             }

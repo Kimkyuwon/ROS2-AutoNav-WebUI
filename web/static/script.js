@@ -712,7 +712,8 @@ async function updateBagState() {
 }
 
 /**
- * ROS1 재생 속도 슬라이더 변경 핸들러
+ * 재생 속도 슬라이더 변경 핸들러 (ROS1/ROS2 공용)
+ * 재생 중이거나 일시정지 중이면 즉시 API를 호출해 배속을 반영한다.
  * @param {string|number} sliderValue - 슬라이더 값 (1~40, 실제 속도 = value / 10)
  */
 function updatePlaybackRate(sliderValue) {
@@ -721,6 +722,36 @@ function updatePlaybackRate(sliderValue) {
     const label = domCache.get('playback-rate-label');
     if (label) {
         label.textContent = `${rate.toFixed(1)}x`;
+    }
+
+    // 재생 중(Play → Stop 버튼) 또는 일시정지 중이면 즉시 배속 변경 API 호출
+    const playButton = domCache.get('bag-play-button');
+    const pauseButton = domCache.get('bag-pause-button');
+    const isActive = playButton && playButton.textContent === 'Stop';
+    const isPaused = pauseButton && pauseButton.textContent === 'Resume';
+
+    if (isActive || isPaused) {
+        applyPlaybackRateLive(rate);
+    }
+}
+
+/**
+ * 재생/일시정지 중 배속을 서버에 즉시 반영
+ * @param {number} rate - 재생 속도 배율
+ */
+async function applyPlaybackRateLive(rate) {
+    try {
+        const result = await apiCall('/api/bag/set_rate', {
+            rate: rate,
+            bag_type: bagPlayerState.bagType  // 'ros1' or 'ros2'
+        });
+        if (result.success) {
+            console.log(`[Playback Rate] Applied ${rate.toFixed(1)}x live (${bagPlayerState.bagType})`);
+        } else {
+            console.warn('[Playback Rate] Live rate change failed:', result.message);
+        }
+    } catch (e) {
+        console.warn('[Playback Rate] Live rate change error:', e);
     }
 }
 
@@ -824,6 +855,13 @@ async function loadPlayerPath() {
         if (result.success) {
             domCache.get('player-path-label').textContent = path;
             console.log('Player data loaded successfully');
+
+            // Auto start: 체크박스가 켜져 있으면 로드 직후 자동 재생
+            const autoStartCheck = domCache.get('player-auto-start');
+            if (autoStartCheck && autoStartCheck.checked) {
+                console.log('[File Player] Auto start enabled — starting playback');
+                await playPlayer();
+            }
         } else {
             domCache.get('player-path-label').textContent = 'Failed to load';
             alert('Failed to load player data: ' + result.message);
@@ -849,16 +887,69 @@ async function pausePlayer() {
 
 async function saveBag() {
     const button = event.target;
-    const originalText = button.textContent;
-    button.textContent = 'Converting...';
-    const result = await apiCall('/api/player/save_bag', {});
-    setTimeout(() => {
-        button.textContent = originalText;
-    }, 1000);
-}
+    if (button.classList.contains('save-progress-btn')) {
+        return; // 이미 저장 중
+    }
 
-async function setSpeed(speed) {
-    await apiCall('/api/player/set_speed', { speed: parseFloat(speed) });
+    const originalHTML = button.innerHTML;
+
+    // 버튼 → 진행바로 변환
+    function setProgress(pct) {
+        const fill = button.querySelector('.save-progress-fill');
+        const text = button.querySelector('.save-progress-text');
+        if (fill) { fill.style.width = pct + '%'; }
+        if (text) { text.textContent = pct + '%'; }
+    }
+
+    function toProgressBar(pct) {
+        button.classList.add('save-progress-btn');
+        button.disabled = true;
+        button.innerHTML = `
+            <div class="save-progress-fill" style="width:${pct}%"></div>
+            <span class="save-progress-text">${pct}%</span>
+        `;
+    }
+
+    function restoreButton(success) {
+        button.classList.remove('save-progress-btn');
+        button.disabled = false;
+        button.innerHTML = originalHTML;
+        if (!success) {
+            alert('Bag save failed.');
+        }
+    }
+
+    toProgressBar(0);
+
+    // 저장 시작 (백그라운드 스레드 실행 — 즉시 응답)
+    const startResult = await apiCall('/api/player/save_bag', {});
+    if (!startResult || !startResult.success) {
+        restoreButton(false);
+        alert('Failed to start bag save: ' + (startResult ? startResult.message : 'Unknown error'));
+        return;
+    }
+
+    // save_bag_saving이 false가 될 때까지 300ms마다 폴링
+    const success = await new Promise((resolve) => {
+        const interval = setInterval(async () => {
+            const state = await apiCall('/api/player/state');
+            if (!state) { return; }
+
+            if (state.save_bag_progress !== null && state.save_bag_progress !== undefined) {
+                const pct = parseInt(state.save_bag_progress);
+                if (!isNaN(pct)) { setProgress(pct); }
+            }
+
+            if (!state.save_bag_saving) {
+                clearInterval(interval);
+                resolve(state.save_bag_success);
+            }
+        }, 500);
+    });
+
+    // 완료 시 100%로 채운 뒤 버튼 복원
+    setProgress(100);
+    setTimeout(() => restoreButton(success), 1200);
 }
 
 async function setLoop(loop) {
@@ -884,12 +975,6 @@ async function updatePlayerState() {
         domCache.get('player-loop').checked = state.loop || false;
         domCache.get('player-skip-stop').checked = state.skip_stop !== undefined ? state.skip_stop : true;
         domCache.get('player-auto-start').checked = state.auto_start || false;
-
-        // Only update speed if not currently focused (user is not typing)
-        const speedField = domCache.get('player-speed');
-        if (document.activeElement !== speedField) {
-            speedField.value = state.speed || 1.0;
-        }
 
         domCache.get('player-slider').value = state.slider_pos || 0;
         domCache.get('player-timestamp-label').textContent = state.timestamp || 0;

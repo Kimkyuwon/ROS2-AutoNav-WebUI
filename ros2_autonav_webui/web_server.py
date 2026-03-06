@@ -17,7 +17,13 @@ import asyncio
 import json
 import os
 import time
+import socketserver
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    """HTTP 서버: 요청마다 새 스레드로 처리해 저장 작업 중 폴링 응답 지연 제거"""
+    daemon_threads = True
 from urllib.parse import parse_qs, urlparse
 import subprocess
 import signal
@@ -122,6 +128,15 @@ class Ros1BagPlayerThread(threading.Thread):
         self._play_event.set()  # block 해제 후 종료
         with self._lock:
             self._status = 'stopped'
+
+    def set_rate(self, new_rate: float):
+        """재생 중 속도 배율 변경 (즉시 반영).
+
+        Args:
+            new_rate (float): 새 속도 배율 (예: 2.0 = 2배속). 0.01 미만은 0.01로 클램프.
+        """
+        with self._lock:
+            self._playback_rate = max(new_rate, 0.01)
 
     def get_status(self):
         """현재 상태 딕셔너리 반환"""
@@ -1249,6 +1264,7 @@ class WebGUINode(Node):
         self.bag_playing = False
         self.bag_paused = False
         self.bag_process = None
+        self.bag_playback_rate = 1.0  # 현재 설정된 재생 속도 배율
 
         # Bag Recorder state
         self.recorder_bag_name = ""
@@ -1279,6 +1295,9 @@ class WebGUINode(Node):
         self.player_data_loaded = False
         self.player_processed_stamp = 0
         self.player_prev_time = 0
+        self.save_bag_progress = None   # None: idle, "0%"~"100%": saving in progress
+        self.save_bag_saving = False    # True while background save thread is running
+        self.save_bag_success = False   # Result of last save operation
 
         # ROS1 Bag Player state
         self.ros1_player_thread = None
@@ -1313,6 +1332,7 @@ class WebGUINode(Node):
         # Playback thread
         self.playback_thread = None
         self.playback_active = False
+        self.player_seek_requested = False  # seek 후 worker 인덱스 재설정 신호
 
         # Timer for playback (matching C++ implementation)
         self.create_timer(0.0001, self.timer_callback)  # 100us = 0.0001s
@@ -2050,6 +2070,27 @@ class WebGUINode(Node):
     # File Player Functions
     def load_player_data(self, path):
         """Load file player data from the specified path"""
+        # 기존 재생 스레드를 완전히 정지시킨 후 새 데이터 로드
+        # (두 번째 디렉토리 로드 후 재생 안 되는 버그 수정)
+        self.player_playing = False
+        self.player_paused = False
+        self.player_processed_stamp = 0
+        self.player_prev_time = 0
+        self.player_slider_pos = 0
+        self.player_timestamp = 0
+        self.player_seek_requested = False
+
+        if self.playback_active:
+            self.playback_active = False
+            thread = self.playback_thread
+            self.playback_thread = None
+            if thread and thread.is_alive():
+                thread.join(timeout=1.0)
+
+        # 캐시 초기화 (이전 데이터 완전 제거)
+        self.livox_cache = {}
+        self.cam_cache = {}
+
         self.player_path = path
         self.player_data_loaded = False
 
@@ -2266,14 +2307,14 @@ class WebGUINode(Node):
             return None
 
     def timer_callback(self):
-        """Timer callback to update processed_stamp (matches C++ implementation)"""
+        """Timer callback to update processed_stamp (1배속 고정)"""
         current_time = time.time()
 
         if self.player_playing and not self.player_paused:
             if self.player_prev_time > 0:
                 dt = current_time - self.player_prev_time
-                # processed_stamp increases based on real time and play_rate
-                self.player_processed_stamp += int(dt * 1e9 * self.player_speed)
+                # 실제 경과 시간(ns) 만큼 processed_stamp 증가 (1배속)
+                self.player_processed_stamp += int(dt * 1e9)
 
         self.player_prev_time = current_time
 
@@ -2285,7 +2326,8 @@ class WebGUINode(Node):
         if self.bag_playing and not self.bag_paused:
             current_real_time = time.time()
             elapsed_time = current_real_time - self.bag_start_real_time
-            self.bag_current_time = self.bag_start_offset + elapsed_time
+            # bag_playback_rate 배속을 반영하여 bag 시간 업데이트
+            self.bag_current_time = self.bag_start_offset + elapsed_time * self.bag_playback_rate
 
             # Stop when reaching end
             if self.bag_current_time >= self.bag_duration:
@@ -2303,19 +2345,35 @@ class WebGUINode(Node):
 
         if self.player_playing:
             self.get_logger().info('Starting playback...')
+
+            # 이전 스레드가 살아 있으면 완전히 종료 후 새로 시작
+            # (디렉토리 재선택 후 재생 안 되는 버그 근본 해결)
+            if self.playback_active:
+                self.playback_active = False
+                old_thread = self.playback_thread
+                self.playback_thread = None
+                if old_thread and old_thread.is_alive():
+                    old_thread.join(timeout=0.5)
+
             self.player_prev_time = time.time()
-            if not self.playback_active:
-                self.playback_active = True
-                self.playback_thread = threading.Thread(target=self.playback_worker, daemon=True)
-                self.playback_thread.start()
+            self.playback_active = True
+            self.playback_thread = threading.Thread(
+                target=self.playback_worker, daemon=True
+            )
+            self.playback_thread.start()
         else:
-            # When stopping (End button pressed), reset to beginning but keep worker active
+            # End 버튼: 처음 위치로 리셋, 스레드도 정지
             self.get_logger().info('Stopping playback - resetting to beginning...')
+            if self.playback_active:
+                self.playback_active = False
+                old_thread = self.playback_thread
+                self.playback_thread = None
+                if old_thread and old_thread.is_alive():
+                    old_thread.join(timeout=0.5)
             self.player_processed_stamp = 0
             self.player_timestamp = self.player_initial_stamp
             self.player_slider_pos = 0
             self.player_paused = False
-            # Keep playback_active = True so worker thread stays alive for replay
 
         return True
 
@@ -2735,6 +2793,7 @@ class WebGUINode(Node):
 
                 # Add playback rate (ros2 bag play --rate <rate>)
                 rate = max(0.01, float(rate))
+                self.bag_playback_rate = rate  # 현재 속도 저장
                 if rate != 1.0:
                     cmd.extend(['--rate', str(rate)])
                 self.get_logger().info(f'Playback rate: {rate}x')
@@ -2815,8 +2874,8 @@ class WebGUINode(Node):
             # Stop current playback
             self.bag_play_toggle()
             time.sleep(0.1)
-            # Restart from new position
-            self.bag_play_toggle(self.bag_selected_topics, target_time)
+            # Restart from new position (현재 속도 유지)
+            self.bag_play_toggle(self.bag_selected_topics, target_time, self.bag_playback_rate)
         else:
             # Just update the position
             self.bag_current_time = target_time
@@ -2824,6 +2883,105 @@ class WebGUINode(Node):
 
         self.get_logger().info(f'Set bag position to {target_time}s ({position_ratio*100}%)')
         return True
+
+    def set_bag_playback_rate(self, rate: float) -> dict:
+        """ROS2 bag 재생 중 속도 변경.
+
+        재생 중이면 /rosbag2_player/set_rate 서비스를 호출해 즉시 반영.
+        정지/일시정지 상태면 self.bag_playback_rate만 갱신하여 다음 재생에 적용.
+
+        Args:
+            rate (float): 새 속도 배율 (> 0)
+
+        Returns:
+            dict: {'success': bool, 'rate': float, 'message': str}
+        """
+        rate = max(0.01, float(rate))
+
+        if not self.bag_playing or not self.bag_process:
+            # 재생 중이 아님 – 다음 Play 시 적용
+            self.bag_playback_rate = rate
+            self.get_logger().info(f'[bag set_rate] Stored rate={rate}x (not playing)')
+            return {'success': True, 'rate': rate, 'message': 'Rate stored for next playback'}
+
+        # 재생 중: /rosbag2_player/set_rate 서비스 호출
+        try:
+            from rosbag2_interfaces.srv import SetRate
+        except ImportError:
+            self.get_logger().warn(
+                '[bag set_rate] rosbag2_interfaces not available; cannot change rate live'
+            )
+            return {
+                'success': False, 'rate': rate,
+                'message': 'rosbag2_interfaces not available'
+            }
+
+        client = self.create_client(SetRate, '/rosbag2_player/set_rate')
+        if not client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('[bag set_rate] /rosbag2_player/set_rate service not available')
+            return {
+                'success': False, 'rate': rate,
+                'message': '/rosbag2_player/set_rate service not available'
+            }
+
+        req = SetRate.Request()
+        req.rate = rate
+        future = client.call_async(req)
+
+        # 동기 대기 (폴링, 최대 2초)
+        # rclpy.spin()이 메인 스레드에서 실행 중이므로 HTTP 핸들러 스레드에서는
+        # future.done()을 폴링하는 방식으로 완료를 기다린다.
+        timeout = 2.0
+        start = time.time()
+        while not future.done() and time.time() - start < timeout:
+            time.sleep(0.01)
+
+        if not future.done():
+            self.get_logger().warn(f'[bag set_rate] Service call timed out for rate={rate}')
+            return {'success': False, 'rate': rate, 'message': 'Service call timed out'}
+
+        try:
+            result = future.result()
+            if result is not None and result.success:
+                # 속도 변경 성공 시, 타임라인 추적 기준을 현재 시점으로 재설정
+                # 이전 속도로 진행된 bag 시간을 새 시작 오프셋으로 저장
+                now = time.time()
+                if not self.bag_paused:
+                    elapsed = now - self.bag_start_real_time
+                    self.bag_start_offset = self.bag_start_offset + elapsed * self.bag_playback_rate
+                    self.bag_start_real_time = now
+                self.bag_playback_rate = rate
+                self.get_logger().info(f'[bag set_rate] Rate changed to {rate}x via service')
+                return {'success': True, 'rate': rate, 'message': f'Rate set to {rate}x'}
+            else:
+                self.get_logger().warn(f'[bag set_rate] Service returned failure for rate={rate}')
+                return {'success': False, 'rate': rate, 'message': 'Service returned failure'}
+        except Exception as e:
+            self.get_logger().error(f'[bag set_rate] Service call failed: {e}')
+            return {'success': False, 'rate': rate, 'message': str(e)}
+
+    def set_ros1_bag_rate(self, rate: float) -> dict:
+        """ROS1 bag 재생 중 속도 변경.
+
+        재생 중이면 Ros1BagPlayerThread.set_rate()를 호출해 즉시 반영.
+
+        Args:
+            rate (float): 새 속도 배율 (> 0)
+
+        Returns:
+            dict: {'success': bool, 'rate': float, 'message': str}
+        """
+        rate = max(0.01, float(rate))
+        self.ros1_player_rate = rate
+
+        thread = self.ros1_player_thread
+        if thread is not None and thread.is_alive():
+            thread.set_rate(rate)
+            self.get_logger().info(f'[ROS1 set_rate] Rate changed to {rate}x during playback')
+            return {'success': True, 'rate': rate, 'message': f'Rate set to {rate}x'}
+        else:
+            self.get_logger().info(f'[ROS1 set_rate] Stored rate={rate}x (not playing)')
+            return {'success': True, 'rate': rate, 'message': 'Rate stored for next playback'}
 
     def get_bag_state(self):
         """Get current bag player state"""
@@ -2838,98 +2996,145 @@ class WebGUINode(Node):
         }
 
     def playback_worker(self):
-        """Worker thread for playing back data (matches C++ DataStampThread)"""
+        """Worker thread for playing back data (matches C++ DataStampThread)
+
+        개선 사항:
+        - timestamps 는 Play 시작 시 한 번 복사 → 새 디렉토리 로드 후 재생 시 갱신됨
+        - 인덱스(current_idx) 추적으로 매 루프 O(n) 전체 순회를 O(k) 로 단축
+          (k: 이번 루프에서 실제로 발행할 스탬프 수)
+        - 배속(player_speed)은 timer_callback 에서 processed_stamp 를 증가시키므로
+          worker 는 단순히 current_idx 를 앞으로 전진시키기만 하면 됨
+        """
         self.get_logger().info('Playback worker started')
 
-        timestamps = sorted(self.data_stamp.keys())
+        timestamps = []      # Play 시작 시 data_stamp 에서 복사
+        current_idx = 0      # 다음 처리할 timestamps 인덱스
+        was_playing = False  # 이전 루프의 재생 상태 (재시작 감지용)
 
         while self.playback_active:
             time.sleep(0.001)  # 1ms sleep
 
             if not self.player_playing:
+                if was_playing:
+                    # 방금 정지 → 다음 재생을 위해 인덱스 초기화
+                    current_idx = 0
+                    timestamps = []
+                was_playing = False
                 time.sleep(0.01)
                 continue
 
-            # Find current timestamp based on processed_stamp
+            # Play 시작 시(또는 재시작 시) timestamps 를 현재 data_stamp 로 갱신
+            if not was_playing:
+                timestamps = sorted(self.data_stamp.keys())
+                # current_idx 를 player_timestamp 직후로 이동 (seek 후 재생 대비)
+                current_idx = 0
+                while current_idx < len(timestamps) and timestamps[current_idx] <= self.player_timestamp:
+                    current_idx += 1
+                self.player_seek_requested = False
+                self.get_logger().info(
+                    f'Playback started: {len(timestamps)} stamps, idx={current_idx}, '
+                    f'speed={self.player_speed}'
+                )
+            elif self.player_seek_requested:
+                # 재생 중 seek → 인덱스를 새 위치로 재설정
+                self.player_seek_requested = False
+                current_idx = 0
+                while current_idx < len(timestamps) and timestamps[current_idx] <= self.player_timestamp:
+                    current_idx += 1
+                self.get_logger().info(f'Seek: idx reset to {current_idx}')
+            was_playing = True
+
+            # 현재 목표 스탬프 계산
             target_stamp = self.player_initial_stamp + self.player_processed_stamp
 
-            # Find data to publish
-            for stamp in timestamps:
+            # 인덱스를 앞으로 전진하면서 target_stamp 이하의 스탬프만 발행 (O(k))
+            while current_idx < len(timestamps):
+                stamp = timestamps[current_idx]
                 if stamp > target_stamp:
                     break
+                current_idx += 1
 
-                if stamp <= target_stamp and stamp > self.player_timestamp:
-                    # This data should be published
-                    data_type = self.data_stamp.get(stamp, "")
+                if stamp <= self.player_timestamp:
+                    # 이미 발행한 스탬프 (seek 복귀 시 skip)
+                    continue
 
-                    if data_type == "pose" and stamp in self.pose_data:
-                        x, y, z = self.pose_data[stamp]
-                        msg = PointStamped()
-                        msg.header.stamp = Time(nanoseconds=stamp).to_msg()
-                        msg.header.frame_id = 'imu_link'
-                        msg.point.x = x
-                        msg.point.y = y
-                        msg.point.z = z
-                        self.pose_pub.publish(msg)
+                data_type = self.data_stamp.get(stamp, "")
 
-                    elif data_type == "imu" and stamp in self.imu_data:
-                        imu_values = self.imu_data[stamp]
-                        msg = Imu()
-                        msg.header.stamp = Time(nanoseconds=stamp).to_msg()
-                        msg.header.frame_id = 'imu_link'
-                        # IMU data: q_x, q_y, q_z, q_w, w_x, w_y, w_z, a_x, a_y, a_z
-                        msg.orientation.x = imu_values[0]
-                        msg.orientation.y = imu_values[1]
-                        msg.orientation.z = imu_values[2]
-                        msg.orientation.w = imu_values[3]
-                        msg.angular_velocity.x = imu_values[4]
-                        msg.angular_velocity.y = imu_values[5]
-                        msg.angular_velocity.z = imu_values[6]
-                        msg.linear_acceleration.x = imu_values[7]
-                        msg.linear_acceleration.y = imu_values[8]
-                        msg.linear_acceleration.z = imu_values[9]
-                        self.imu_pub.publish(msg)
+                if data_type == "pose" and stamp in self.pose_data:
+                    x, y, z = self.pose_data[stamp]
+                    msg = PointStamped()
+                    msg.header.stamp = Time(nanoseconds=stamp).to_msg()
+                    msg.header.frame_id = 'imu_link'
+                    msg.point.x = x
+                    msg.point.y = y
+                    msg.point.z = z
+                    self.pose_pub.publish(msg)
 
-                    elif data_type == "livox":
-                        # Load and publish LiDAR data
-                        livox_msg = self.load_livox_data(stamp)
-                        if livox_msg and self.livox_pub:
-                            self.livox_pub.publish(livox_msg)
-                        else:
-                            self.get_logger().warn(f'Failed to load LiDAR data for stamp {stamp}', throttle_duration_sec=5.0)
+                elif data_type == "imu" and stamp in self.imu_data:
+                    imu_values = self.imu_data[stamp]
+                    msg = Imu()
+                    msg.header.stamp = Time(nanoseconds=stamp).to_msg()
+                    msg.header.frame_id = 'imu_link'
+                    # IMU data: q_x, q_y, q_z, q_w, w_x, w_y, w_z, a_x, a_y, a_z
+                    msg.orientation.x = imu_values[0]
+                    msg.orientation.y = imu_values[1]
+                    msg.orientation.z = imu_values[2]
+                    msg.orientation.w = imu_values[3]
+                    msg.angular_velocity.x = imu_values[4]
+                    msg.angular_velocity.y = imu_values[5]
+                    msg.angular_velocity.z = imu_values[6]
+                    msg.linear_acceleration.x = imu_values[7]
+                    msg.linear_acceleration.y = imu_values[8]
+                    msg.linear_acceleration.z = imu_values[9]
+                    self.imu_pub.publish(msg)
 
-                    elif data_type == "cam":
-                        # Load and publish camera data
-                        cam_data = self.load_camera_data(stamp)
-                        if cam_data:
-                            img_msg, cam_info_msg = cam_data
-                            self.cam_pub.publish(img_msg)
-                            self.cam_info_pub.publish(cam_info_msg)
-                        else:
-                            self.get_logger().warn(f'Failed to load camera data for stamp {stamp}', throttle_duration_sec=5.0)
+                elif data_type == "livox":
+                    livox_msg = self.load_livox_data(stamp)
+                    if livox_msg and self.livox_pub:
+                        self.livox_pub.publish(livox_msg)
+                    else:
+                        self.get_logger().warn(
+                            f'Failed to load LiDAR data for stamp {stamp}',
+                            throttle_duration_sec=5.0
+                        )
 
-                    # Publish clock every 10ms
-                    clock_msg = Clock()
-                    clock_msg.clock = Time(nanoseconds=stamp).to_msg()
-                    self.clock_pub.publish(clock_msg)
+                elif data_type == "cam":
+                    cam_data = self.load_camera_data(stamp)
+                    if cam_data:
+                        img_msg, cam_info_msg = cam_data
+                        self.cam_pub.publish(img_msg)
+                        self.cam_info_pub.publish(cam_info_msg)
+                    else:
+                        self.get_logger().warn(
+                            f'Failed to load camera data for stamp {stamp}',
+                            throttle_duration_sec=5.0
+                        )
 
-                    self.player_timestamp = stamp
+                # 클락 메시지 발행
+                clock_msg = Clock()
+                clock_msg.clock = Time(nanoseconds=stamp).to_msg()
+                self.clock_pub.publish(clock_msg)
 
-            # Update slider position
+                self.player_timestamp = stamp
+
+            # 슬라이더 위치 업데이트
             if self.player_last_stamp > self.player_initial_stamp:
-                progress = (target_stamp - self.player_initial_stamp) / (self.player_last_stamp - self.player_initial_stamp)
-                self.player_slider_pos = int(progress * 10000)
+                progress = (target_stamp - self.player_initial_stamp) / \
+                           (self.player_last_stamp - self.player_initial_stamp)
+                self.player_slider_pos = int(min(progress, 1.0) * 10000)
 
-            # Check if reached end
+            # 재생 종료 체크
             if target_stamp >= self.player_last_stamp:
                 if self.player_loop:
                     self.get_logger().info('Looping playback...')
                     self.player_processed_stamp = 0
                     self.player_timestamp = self.player_initial_stamp
+                    current_idx = 0
                 else:
                     self.get_logger().info('Playback finished')
                     self.player_playing = False
                     self.player_processed_stamp = 0
+                    current_idx = 0
 
         self.get_logger().info('Playback worker stopped')
 
@@ -2952,6 +3157,9 @@ class WebGUINode(Node):
         # Reset timer for smooth playback after seeking
         self.player_prev_time = time.time()
 
+        # worker 에게 인덱스를 재설정하도록 신호
+        self.player_seek_requested = True
+
         self.get_logger().info(f'Reset position to {position} (stamp: {target_stamp}, processed: {self.player_processed_stamp}ns)')
 
     def save_rosbag(self):
@@ -2962,6 +3170,7 @@ class WebGUINode(Node):
 
         try:
             bag_path = os.path.join(self.player_path, "output")
+            self.save_bag_progress = "0%"
             self.get_logger().info(f'Starting rosbag conversion to: {bag_path}')
 
             # Create writer
@@ -3030,9 +3239,31 @@ class WebGUINode(Node):
                 writer.create_topic(cam_info_topic)
                 topic_id += 1
 
+            # Calculate total items for progress tracking
+            livox_stamps = []
+            cam_stamps = []
+            if LIVOX_AVAILABLE and len(self.livox_file_list) > 0:
+                livox_stamps = [stamp for stamp, dtype in self.data_stamp.items() if dtype == "livox"]
+            if len(self.cam_file_list) > 0:
+                cam_stamps = [stamp for stamp, dtype in self.data_stamp.items() if dtype == "cam"]
+
+            total_items = len(self.pose_data) + len(self.imu_data) + len(livox_stamps) + len(cam_stamps)
+            processed_items = 0
+            last_pct = -1
+
+            def update_progress():
+                """퍼센트가 바뀔 때만 상태 업데이트 + GIL 반납 (최대 100회)"""
+                nonlocal processed_items, last_pct
+                processed_items += 1
+                if total_items > 0:
+                    pct = int(processed_items / total_items * 100)
+                    if pct != last_pct:
+                        self.save_bag_progress = f"{pct}%"
+                        last_pct = pct
+                        time.sleep(0)  # GIL 반납 → HTTP 스레드가 폴링 요청 처리 가능
+
             # Write pose data
             self.get_logger().info(f'Writing {len(self.pose_data)} pose messages...')
-            count = 0
             for stamp, (x, y, z) in sorted(self.pose_data.items()):
                 msg = PointStamped()
                 msg.header.stamp = Time(nanoseconds=stamp).to_msg()
@@ -3046,13 +3277,10 @@ class WebGUINode(Node):
                     serialize_message(msg),
                     stamp
                 )
-                count += 1
-                if count % 100 == 0:
-                    self.get_logger().info(f'Pose: {count}/{len(self.pose_data)}')
+                update_progress()
 
             # Write IMU data
             self.get_logger().info(f'Writing {len(self.imu_data)} IMU messages...')
-            count = 0
             for stamp, imu_values in sorted(self.imu_data.items()):
                 msg = Imu()
                 msg.header.stamp = Time(nanoseconds=stamp).to_msg()
@@ -3073,16 +3301,11 @@ class WebGUINode(Node):
                     serialize_message(msg),
                     stamp
                 )
-                count += 1
-                if count % 100 == 0:
-                    self.get_logger().info(f'IMU: {count}/{len(self.imu_data)}')
+                update_progress()
 
             # Write LiDAR data
-            if LIVOX_AVAILABLE and len(self.livox_file_list) > 0:
-                # Get LiDAR stamps from data_stamp
-                livox_stamps = [stamp for stamp, dtype in self.data_stamp.items() if dtype == "livox"]
+            if LIVOX_AVAILABLE and len(livox_stamps) > 0:
                 self.get_logger().info(f'Writing {len(livox_stamps)} LiDAR messages...')
-                count = 0
                 for stamp in sorted(livox_stamps):
                     livox_msg = self.load_livox_data(stamp)
                     if livox_msg:
@@ -3091,16 +3314,11 @@ class WebGUINode(Node):
                             serialize_message(livox_msg),
                             stamp
                         )
-                        count += 1
-                        if count % 10 == 0:
-                            self.get_logger().info(f'LiDAR: {count}/{len(livox_stamps)}')
+                    update_progress()
 
             # Write Camera data
-            if len(self.cam_file_list) > 0:
-                # Get camera stamps from data_stamp
-                cam_stamps = [stamp for stamp, dtype in self.data_stamp.items() if dtype == "cam"]
+            if len(cam_stamps) > 0:
                 self.get_logger().info(f'Writing {len(cam_stamps)} camera messages...')
-                count = 0
                 for stamp in sorted(cam_stamps):
                     cam_data = self.load_camera_data(stamp)
                     if cam_data:
@@ -3115,19 +3333,38 @@ class WebGUINode(Node):
                             serialize_message(cam_info_msg),
                             stamp
                         )
-                        count += 1
-                        if count % 10 == 0:
-                            self.get_logger().info(f'Camera: {count}/{len(cam_stamps)}')
+                    update_progress()
 
             del writer
+            self.save_bag_progress = None
             self.get_logger().info('Rosbag conversion complete!')
             return True
 
         except Exception as e:
+            self.save_bag_progress = None
             self.get_logger().error(f'Failed to save rosbag: {str(e)}')
             import traceback
             traceback.print_exc()
             return False
+
+    def start_save_rosbag(self):
+        """Start save_rosbag() in a background thread so HTTP server stays responsive."""
+        if self.save_bag_saving:
+            self.get_logger().warn('Bag save already in progress')
+            return False
+
+        def _run():
+            self.save_bag_saving = True
+            self.save_bag_success = False
+            try:
+                self.save_bag_success = self.save_rosbag()
+            finally:
+                self.save_bag_saving = False
+                self.save_bag_progress = None
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return True
 
     def file_player_start_callback(self, msg):
         if msg.data and not self.player_playing:
@@ -3145,10 +3382,12 @@ class WebGUINode(Node):
             'loop': self.player_loop,
             'skip_stop': self.player_skip_stop,
             'auto_start': self.player_auto_start,
-            'speed': self.player_speed,
             'timestamp': self.player_timestamp,
             'slider_pos': self.player_slider_pos,
-            'data_loaded': self.player_data_loaded
+            'data_loaded': self.player_data_loaded,
+            'save_bag_progress': self.save_bag_progress,
+            'save_bag_saving': self.save_bag_saving,
+            'save_bag_success': self.save_bag_success
         }
 
     def kill_slam_processes(self):
@@ -3389,6 +3628,14 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             position_ratio = position / 10000.0
             success = self.node.set_bag_position(position_ratio)
             response = {'success': success}
+        elif parsed_path.path == '/api/bag/set_rate':
+            rate = float(data.get('rate', 1.0))
+            bag_type = data.get('bag_type', 'ros2')  # 'ros1' or 'ros2'
+            if bag_type == 'ros1':
+                result = self.node.set_ros1_bag_rate(rate)
+            else:
+                result = self.node.set_bag_playback_rate(rate)
+            response = result
         elif parsed_path.path == '/api/bag/convert_ros1':
             result = self.node.convert_ros1_bag()
             response = result
@@ -3627,11 +3874,8 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
             success = self.node.player_pause_toggle()
             response = {'success': success, 'paused': self.node.player_paused}
         elif parsed_path.path == '/api/player/save_bag':
-            success = self.node.save_rosbag()
-            response = {'success': success, 'message': 'Bag saved successfully' if success else 'Failed to save bag'}
-        elif parsed_path.path == '/api/player/set_speed':
-            self.node.player_speed = data.get('speed', 1.0)
-            response = {'success': True}
+            started = self.node.start_save_rosbag()
+            response = {'success': started, 'message': 'Save started' if started else 'Save already in progress'}
         elif parsed_path.path == '/api/player/set_loop':
             self.node.player_loop = data.get('loop', False)
             response = {'success': True}
@@ -3701,7 +3945,7 @@ def run_web_server(node, port=8080):
 
     WebRequestHandler.web_dir = web_dir
     global _web_server
-    _web_server = HTTPServer(('0.0.0.0', port), WebRequestHandler)
+    _web_server = ThreadedHTTPServer(('0.0.0.0', port), WebRequestHandler)
 
     # Get local IP for network access
     local_ip = get_local_ip()
